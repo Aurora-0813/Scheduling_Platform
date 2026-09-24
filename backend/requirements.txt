@@ -1,0 +1,38 @@
+# 《项目文档.md》3.6 后端依赖清单——版本已锁定，禁止自行升降级
+# 部署与 CI 使用 requirements.lock（pip freeze 生成）
+
+# ============ Web 框架 ============
+fastapi==0.115.0
+uvicorn==0.30.6
+python-multipart==0.0.12
+
+# ============ 数据校验与配置 ============
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-dotenv==1.0.1
+
+# ============ 数据库（异步） ============
+sqlalchemy==2.0.35
+asyncmy==0.2.10
+
+# ============ 缓存 ============
+redis==5.0.8
+
+# ============ 认证授权 ============
+PyJWT==2.9.0
+passlib==1.7.4
+bcrypt==4.0.1
+
+# ============ AI 编排（LangChain 1.x） ============
+langchain==1.3.11
+langchain-openai==1.5.0
+langchain-classic==1.0.0
+
+# ============ HTTP 客户端（外部 API 调用） ============
+httpx==0.27.2
+aiofiles==24.1.0
+
+# ============ 测试（仅开发环境） ============
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
