@@ -51,8 +51,24 @@ SQLite 与云库的差异（**已知且有意忽略**）
 from __future__ import annotations
 
 import os
+import tempfile
 
 # ---- 必须最先执行，见模块 docstring 最后一段 ----
+# 把全局 `DATABASE_URL` 指向临时 SQLite（§13.1 自测路径）。
+#
+# 为什么必须有：`app.core.database` 的模块级 `async_engine` / `AsyncSessionLocal`
+# 在**导入时**就按 `settings.database_url` 固化了。`tests/module3/` 直接使用
+# 这两个模块级对象（见该目录 conftest），若不覆盖，它们会指向 .env 里的云库
+# `smart_scheduler_dev` —— 跑一次用例就把开发库写脏。环境变量优先于 `.env`，
+# 因此这里的覆盖是有效的。
+#
+# 本文件自己的 `engine` / `db_session` 夹具走 `db_path(tmp_path)`，每个用例一个
+# 独立文件库，**不受**这一行影响；受影响的是「直接用模块级引擎」的那部分用例。
+_MODULE3_TEST_DB = os.path.join(
+    tempfile.gettempdir(), "smart_scheduler_module3_test.db"
+).replace("\\", "/")
+os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_MODULE3_TEST_DB}"
+
 # 关掉 Redis：默认走内存实现，且 /ready 探针不会去连 127.0.0.1:6380 白等超时
 os.environ["REDIS_ENABLED"] = "false"
 # bcrypt 成本 4（约 1 毫秒）而不是 12（约 250 毫秒）。

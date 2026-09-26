@@ -1,0 +1,44 @@
+{
+  "pages": [
+    {
+      "path": "pages/reserve/list",
+      "style": { "navigationBarTitleText": "我的预约" }
+    },
+    {
+      "path": "pages/reserve/create",
+      "style": { "navigationBarTitleText": "创建预约" }
+    },
+    {
+      "path": "pages/reserve/detail",
+      "style": { "navigationBarTitleText": "预约详情" }
+    },
+    {
+      "path": "pages/notify/list",
+      "style": { "navigationBarTitleText": "通知" }
+    },
+    {
+      "path": "pages/notify/detail",
+      "style": { "navigationBarTitleText": "通知详情" }
+    },
+    {
+      "path": "pages/agent/schedule",
+      "style": { "navigationBarTitleText": "智能预约" }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "预约通知",
+    "navigationBarBackgroundColor": "#ffffff",
+    "backgroundColor": "#f5f6f7"
+  },
+  "tabBar": {
+    "color": "#999999",
+    "selectedColor": "#2b85e4",
+    "backgroundColor": "#ffffff",
+    "list": [
+      { "pagePath": "pages/reserve/list", "text": "预约" },
+      { "pagePath": "pages/agent/schedule", "text": "智能预约" },
+      { "pagePath": "pages/notify/list", "text": "通知" }
+    ]
+  }
+}

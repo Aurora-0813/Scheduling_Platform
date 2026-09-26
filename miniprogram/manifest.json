@@ -1,0 +1,20 @@
+{
+  "name": "预约与通知模块",
+  "appid": "",
+  "description": "移动端预约与通知模块",
+  "versionName": "1.0.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "app-plus": {
+    "usingComponents": true
+  },
+  "mp-weixin": {
+    "appid": "",
+    "setting": {
+      "urlCheck": false,
+      "es6": true
+    },
+    "usingComponents": true
+  },
+  "h5": {}
+}

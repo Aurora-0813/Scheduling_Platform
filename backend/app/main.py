@@ -50,7 +50,7 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
@@ -64,6 +64,7 @@ from app.core.metrics import reset_metric_store
 from app.core.redis import check_health as redis_check_health
 from app.core.response import register_exception_handlers
 from app.middlewares import AgentMetricsMiddleware, RequestContextMiddleware
+from app.websocket import manager
 
 __all__ = ["app", "create_app", "lifespan"]
 
@@ -268,6 +269,25 @@ def create_app() -> FastAPI:
         StaticFiles(directory=str(settings.image_upload_path)),
         name="uploads",
     )
+
+    # ------------------------------------------------------------------
+    # 模块 3：WebSocket 通知通道
+    # ------------------------------------------------------------------
+    # 预约确认 / 取消后由 services/message_service.py 经 ConnectionManager 推送。
+    # 路径刻意**不带** `/api/v1` 前缀：它是 REST 之外的实时通道，
+    # 与 REST 树分开，前端连 `ws://<host>/ws/notify?user_id=xxx`。
+    @app.websocket("/ws/notify")
+    async def ws_notify(websocket: WebSocket, user_id: int) -> None:
+        """通知推送通道：`/ws/notify?user_id=xxx`（模块 3）。"""
+        await manager.connect(user_id, websocket)
+        try:
+            while True:
+                # 心跳/保活：客户端定时发文本，服务端收到即确认存活。
+                # 收不到就靠 WebSocketDisconnect 退出 —— 这条循环没有业务含义，
+                # 只是维持连接不被中间层按空闲回收。
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            manager.disconnect(user_id, websocket)
 
     if settings.DEBUG:
         # 延迟导入：Mock 路由只在开发环境存在，生产环境连模块都不加载。
