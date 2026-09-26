@@ -1,20 +1,26 @@
 """
 预约订单模型
 包含：reserve_order
+
+主键类型用 `PK_TYPE`（本模块对团队版的唯一偏离），原因见 core/database.py。
+
+跨模块字段说明：`user_id` 指向公用表 `sys_user.id`，此处为**真外键**（与团队版一致）。
+真外键要求 `sys_user` 实体同时注册在 metadata 中，故本模块一并引入
+`app.models.system`（见 models/__init__.py）；云库中的外键约束由集成组的 Alembic 迁移建立。
 """
 from datetime import datetime
 
 from sqlalchemy import BigInteger, String, Integer, DateTime, JSON, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.database import Base
+from app.core.database import PK_TYPE, Base
 
 
 class ReserveOrder(Base):
     """预约订单表"""
     __tablename__ = "reserve_order"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
+    id: Mapped[int] = mapped_column(PK_TYPE, primary_key=True, autoincrement=True, comment="主键")
     user_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("sys_user.id"), nullable=False, comment="预约人ID"
     )
@@ -36,7 +42,8 @@ class ReserveOrder(Base):
     agent_request: Mapped[str | None] = mapped_column(
         String(1024), nullable=True, comment="用户原始需求"
     )
-    agent_trace: Mapped[dict | None] = mapped_column(
+    # §5.3：trace 落库为 JSON **数组**（元素为 TraceStep 对象，见 schemas/agent.py）
+    agent_trace: Mapped[list | None] = mapped_column(
         JSON, nullable=True, comment="AI思考过程追踪"
     )
 

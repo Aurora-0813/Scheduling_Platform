@@ -1,20 +1,25 @@
 """
 消息通知模型
 包含：notify_message
+
+主键类型用 `PK_TYPE`（本模块对团队版的唯一偏离），原因见 core/database.py。
+
+跨模块字段说明：`receiver_id` 指向公用表 `sys_user.id`，与 `ReserveOrder.user_id`
+同为真外键（依赖 `app.models.system` 注册，见 models/__init__.py）。
 """
 from datetime import datetime
 
 from sqlalchemy import BigInteger, String, Text, Integer, DateTime, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.database import Base
+from app.core.database import PK_TYPE, Base
 
 
 class NotifyMessage(Base):
     """消息通知表"""
     __tablename__ = "notify_message"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
+    id: Mapped[int] = mapped_column(PK_TYPE, primary_key=True, autoincrement=True, comment="主键")
     receiver_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("sys_user.id"), nullable=False, comment="接收人ID"
     )
