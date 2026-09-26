@@ -1,9 +1,7 @@
-# 《项目文档.md》3.6 后端依赖清单——版本已锁定，禁止自行升降级
-# 部署与 CI 使用 requirements.lock（pip freeze 生成）
-
 # ============ Web 框架 ============
 fastapi==0.115.0
-uvicorn==0.30.6
+# 保留 [standard]：本模块依赖 WebSocket（附 websockets），版本精确锁定满足 §3.1
+uvicorn[standard]==0.30.6
 python-multipart==0.0.12
 
 # ============ 数据校验与配置 ============
@@ -11,8 +9,12 @@ pydantic==2.9.2
 pydantic-settings==2.5.2
 python-dotenv==1.0.1
 
-# ============ 数据库（异步） ============
+# ============ 数据库（异步，§3.4） ============
 sqlalchemy==2.0.35
+# SQLAlchemy 异步引擎的实际运行依赖：greenlet 负责在同步 ORM 与 asyncio 之间切栈，
+# 缺失时 `import sqlalchemy.ext.asyncio` 直接失败。也是 .coveragerc 中
+# `concurrency = greenlet` 的前提，勿删。
+greenlet==3.5.6
 asyncmy==0.2.10
 
 # ============ 缓存 ============
@@ -36,3 +38,5 @@ aiofiles==24.1.0
 pytest==9.1.1
 pytest-asyncio==1.4.0
 pytest-cov==7.1.0
+# 测试库驱动：用例跑在临时 SQLite 上，与云库隔离（§10.2 / §13.1）
+aiosqlite==0.22.1

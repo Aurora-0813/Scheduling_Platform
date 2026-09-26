@@ -1,20 +1,25 @@
 """
 巡检与工单模型
 包含：inspect_record, repair_ticket
+
+主键类型用 `PK_TYPE`（本模块对团队版的唯一偏离），原因见 core/database.py。
+
+本模块（移动端预约与通知）不直接使用这两张表；引入它们是为了让 metadata 与
+团队 `app/models/__init__.py` 保持一致，使团队的 Alembic autogenerate 不会漏表。
 """
 from datetime import datetime
 
 from sqlalchemy import BigInteger, String, Integer, DateTime, JSON, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.database import Base
+from app.core.database import PK_TYPE, Base
 
 
 class InspectRecord(Base):
     """巡检记录表"""
     __tablename__ = "inspect_record"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
+    id: Mapped[int] = mapped_column(PK_TYPE, primary_key=True, autoincrement=True, comment="主键")
     space_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("space_resource.id"), nullable=True, comment="巡检关联的空间ID"
     )
@@ -33,7 +38,7 @@ class RepairTicket(Base):
     """维修工单表"""
     __tablename__ = "repair_ticket"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
+    id: Mapped[int] = mapped_column(PK_TYPE, primary_key=True, autoincrement=True, comment="主键")
     inspect_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("inspect_record.id"), nullable=True, comment="关联巡检记录ID"
     )
