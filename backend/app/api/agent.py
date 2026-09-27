@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.database import get_db
 from ..core.deps import get_current_user
 from ..core.response import ok
-from ..models import ReserveOrder, SpaceResource
+from ..models import ACTIVE_ORDER_STATUSES, ReserveOrder, SpaceResource
 from ..schemas.agent import ScheduleRequest
 from ..services.agent_client import (
     MOCK_SPACE_ID,
@@ -14,7 +14,6 @@ from ..services.agent_client import (
     schedule,
     transcribe_audio,
 )
-from ..state_machine import OrderStatus
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -29,9 +28,7 @@ async def schedule_plan(
     # 查询真实占用时段，供 mock 调度器避让（真实 Agent 则自行调 Tool 查询）
     result = await db.execute(
         select(ReserveOrder.start_time, ReserveOrder.end_time).where(
-            ReserveOrder.order_status.in_(
-                [OrderStatus.PENDING.value, OrderStatus.CONFIRMED.value]
-            )
+            ReserveOrder.order_status.in_(ACTIVE_ORDER_STATUSES)
         )
     )
     occupied = result.all()  # [(start, end), ...] 只取时段两列，避免加载整行

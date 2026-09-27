@@ -7,6 +7,10 @@
 *.key
 secrets.json
 
+# 本地 SSH 隧道脚本：内置服务器 root 密码，含明文凭证，禁止提交（§8.6 / §9.4）
+# 本文件当前未跟踪；这行是防止误 `git add` 的兜底。
+start_tunnel.ps1
+
 # ==================== Python ====================
 __pycache__/
 *.py[cod]

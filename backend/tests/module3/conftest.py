@@ -13,7 +13,7 @@ from app.core.database import AsyncSessionLocal, Base, async_engine
 from app.main import app
 from app.models import DeviceResource, SpaceResource
 
-from .helpers import MOCK_USER_ID
+from .helpers import MOCK_USER_ID, OTHER_USER_ID
 
 
 def _seed_spaces() -> list[SpaceResource]:
@@ -48,20 +48,24 @@ def _seed_devices() -> list[DeviceResource]:
 
 
 def _seed_users():
-    """种子用户：1 个。
+    """种子用户：2 个（本人 + 越权用例用的另一人）。
 
     团队的 `reserve_order.user_id` / `notify_message.receiver_id` 声明了指向
     `sys_user.id` 的真外键（与云库一致）。SQLite 默认不强制外键，但灌上更贴近真库，
     也能在有人打开 `PRAGMA foreign_keys` 时不让写路径莫名失败。
+
+    第二个人不只是为了越权用例：`services/order_service.create_order` 会先校验
+    预约人存在（云库上 user_id 是真外键），只种一个人的话，「替他人下单」这条
+    路径会因为查不到人而失败，测出来的就不是越权行为了。
     """
     from app.models import SysUser
 
+    password = "$2b$12$WPAzHZb7EolabiZR5BLNMeZs1iYXMklXA9S0GRF4B4soj3Jmh45N."
     return [
-        SysUser(
-            id=MOCK_USER_ID, username="zhangsan",
-            password="$2b$12$WPAzHZb7EolabiZR5BLNMeZs1iYXMklXA9S0GRF4B4soj3Jmh45N.",
-            role_id=None, status=1,
-        ),
+        SysUser(id=MOCK_USER_ID, username="zhangsan", password=password,
+                role_id=None, status=1),
+        SysUser(id=OTHER_USER_ID, username="lisi", password=password,
+                role_id=None, status=1),
     ]
 
 

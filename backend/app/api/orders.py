@@ -3,6 +3,9 @@
 - POST /api/v1/orders/create、GET /api/v1/orders/my、PUT /api/v1/orders/{orderId}/cancel
   为契约接口；GET /{orderId}、PUT /{orderId}/confirm 为模块内补充（状态机走「已确认」必需）。
 - 身份一律从 JWT 解析（§5.1），请求体不再携带 userId。
+- **归属校验逐条做**：详情/确认/取消三条都必须取「本人的单」（`_get_owned_order`）。
+  认证层只回答「你是谁」，回答不了「这单是不是你的」——只注入 `user_id` 而不比对，
+  等于任何人拿到别人的 orderId 就能读、能确认、能取消。越权一律 404，不泄露存在性。
 """
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -11,9 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.database import get_db
 from ..core.deps import get_current_user
 from ..core.response import ok
-from ..core.utils import format_time, parse_time
-from ..models import DeviceResource, ReserveOrder, SpaceResource
+from ..core.utils import format_time
+from ..models import ReserveOrder
 from ..schemas.order import OrderCreate
+from ..services import order_service
 from ..services.message_service import create_message
 from ..state_machine import (
     OrderStatus,
@@ -42,47 +46,29 @@ def _order_out(o: ReserveOrder) -> dict:
     }
 
 
-async def _create_order(db: AsyncSession, user_id: int, data: OrderCreate) -> ReserveOrder:
-    """创建预约核心逻辑（手动创建与 Agent 确认复用同一套校验）。"""
-    # 场地/设备存在性校验（§9.3：后端二次校验，拒绝非法参数入库）
-    if not await db.get(SpaceResource, data.spaceId):
-        raise HTTPException(status_code=404, detail="场地不存在")
-    for did in data.deviceIds:
-        if not await db.get(DeviceResource, did):
-            raise HTTPException(status_code=404, detail=f"设备 {did} 不存在")
+#: `services` 层返回的 `conflictType` -> HTTP 状态码。映射只属于路由层：
+#: services 层不认识 HTTP（§7.3），它只回结构化原因。
+_CONFLICT_STATUS = {
+    "invalid_param": 422,
+    "not_found": 404,
+    "time_conflict": 409,
+    "device_conflict": 409,
+}
 
-    start = parse_time(data.startTime)
-    end = parse_time(data.endTime)
 
-    # 时间段冲突检测（硬编码兜底，防 Agent 幻觉）
-    result = await db.execute(
-        select(ReserveOrder)
-        .where(
-            ReserveOrder.space_id == data.spaceId,
-            ReserveOrder.order_status.in_(
-                [OrderStatus.PENDING.value, OrderStatus.CONFIRMED.value]
-            ),
-            ReserveOrder.end_time > start,
-            ReserveOrder.start_time < end,
-        )
-        .limit(1)
-    )
-    if result.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="该时段已被占用")
+async def _get_owned_order(db: AsyncSession, order_id: int, user_id: int) -> ReserveOrder:
+    """取「当前用户自己的」订单；不存在、或不属于本人，一律 404。
 
-    order = ReserveOrder(
-        user_id=user_id,
-        space_id=data.spaceId,
-        device_ids=data.deviceIds,
-        start_time=start,
-        end_time=end,
-        order_status=OrderStatus.PENDING.value,
-        agent_request=data.agentRequest,
-        agent_trace=data.agentTrace,
-    )
-    db.add(order)
-    await db.commit()
-    await db.refresh(order)
+    归属校验必须逐条做，不能靠认证层兜：`get_current_user` 只回答「你是谁」，
+    回答不了「这单是不是你的」。同一个 `X-User-Id` 换成别人的就绕过去了。
+
+    用 404 而不是 403：403 等于承认「这单存在，只是不是你的」，攻击者可以据此
+    枚举出全库有哪些订单。`messages.py::read_message` 对越权消息也是 404，两处
+    口径必须一致（§5.1 身份一律从 JWT 解析）。
+    """
+    order = await db.get(ReserveOrder, order_id)
+    if order is None or order.user_id != user_id:
+        raise HTTPException(status_code=404, detail="预约不存在")
     return order
 
 
@@ -92,7 +78,29 @@ async def create_order(
     user_id: int = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    order = await _create_order(db, user_id, data)
+    """创建预约（§5.3 模块3）——薄壳，校验与落单全在 `order_service.create_order`。
+
+    这是本模块**唯一**的写入口：Agent 的 `lock_resources` Tool 调的是同一个函数
+    （§4.3 / §9.3），所以手动预约与 Agent 自动预约共用同一套 §5.5 六步事务，
+    不存在两份真值。路由只做两件事：把 JWT 里的身份传下去、把结构化结果翻译成
+    HTTP 状态码。
+    """
+    result = await order_service.create_order(
+        user_id=user_id,
+        space_id=data.spaceId,
+        device_ids=data.deviceIds,
+        start_time=data.startTime,
+        end_time=data.endTime,
+        agent_request=data.agentRequest,
+        agent_trace=data.agentTrace,
+    )
+    if not result["ok"]:
+        raise HTTPException(
+            status_code=_CONFLICT_STATUS.get(result["conflictType"], 400),
+            detail=result["reason"],
+        )
+
+    order = await db.get(ReserveOrder, result["orderId"])
     return ok(_order_out(order), "预约创建成功")
 
 
@@ -129,10 +137,13 @@ async def list_orders(
 
 
 @router.get("/{orderId}")
-async def get_order(orderId: int, db: AsyncSession = Depends(get_db)):
-    order = await db.get(ReserveOrder, orderId)
-    if not order:
-        raise HTTPException(status_code=404, detail="预约不存在")
+async def get_order(
+    orderId: int,
+    user_id: int = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """订单详情（扩展）。仅限本人的单；他人单与不存在的单同样是 404。"""
+    order = await _get_owned_order(db, orderId, user_id)
     return ok(_order_out(order))
 
 
@@ -143,9 +154,8 @@ async def confirm_order(
     user_id: int = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    order = await db.get(ReserveOrder, orderId)
-    if not order:
-        raise HTTPException(status_code=404, detail="预约不存在")
+    """确认预约（扩展，状态机 1→2）。仅限本人的单；触发「预约已确认」通知。"""
+    order = await _get_owned_order(db, orderId, user_id)
     if not can_transition(order.order_status, OrderStatus.CONFIRMED):
         raise HTTPException(status_code=409, detail="当前状态不允许确认")
 
@@ -172,9 +182,8 @@ async def cancel_order(
     user_id: int = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    order = await db.get(ReserveOrder, orderId)
-    if not order:
-        raise HTTPException(status_code=404, detail="预约不存在")
+    """取消预约（契约）。仅限本人的单；取消「已确认」单时释放占用（§5.3 模块3）。"""
+    order = await _get_owned_order(db, orderId, user_id)
 
     was_confirmed = order.order_status == OrderStatus.CONFIRMED.value
     if not can_transition(order.order_status, OrderStatus.CANCELLED):

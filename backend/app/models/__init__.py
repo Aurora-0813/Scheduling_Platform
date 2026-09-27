@@ -13,7 +13,7 @@ inspection / notification）。本模块原先把预约、通知拆在 `order.py
 
 from app.models.inspection import InspectRecord, RepairTicket
 from app.models.notification import NotifyMessage
-from app.models.reservation import ReserveOrder
+from app.models.reservation import ACTIVE_ORDER_STATUSES, ReserveOrder
 from app.models.resource import DeviceResource, SpaceResource
 from app.models.system import SysPermission, SysRole, SysUser
 
@@ -24,6 +24,9 @@ __all__ = [
     "SpaceResource",
     "DeviceResource",
     "ReserveOrder",
+    # 模块 3：「占用资源」的订单状态口径（值 = 待确认 + 已确认）。
+    # 定义在 models/reservation.py，模块 4/7 与 order_service 都从这里取。
+    "ACTIVE_ORDER_STATUSES",
     "InspectRecord",
     "RepairTicket",
     "NotifyMessage",

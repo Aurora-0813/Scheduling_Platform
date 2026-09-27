@@ -82,6 +82,76 @@ async def test_cancel_missing_order_returns_404(client):
     assert r.json()["code"] == 404
 
 
+# ------------------------------------------------- 归属校验：他人订单一律 404
+
+# 这三条钉的是同一个性质的漏洞：认证层只回答「你是谁」，不回答「这单是不是你的」。
+# 路由里注入了 user_id 却不比对，等于把 orderId 当密码用——而 orderId 是自增的，
+# 换个 X-User-Id 头就能读、能确认、能取消别人的预约。
+
+
+async def test_cannot_read_others_order(client):
+    """他人订单详情 → 404。
+
+    这里必须是 404 而不是 403：403 等于承认「这单存在，只是不属于你」，
+    可以拿来枚举全库有哪些 orderId。`messages.py` 对越权消息也是 404，口径一致。
+    """
+    oid = await _create(client, user_id=OTHER_USER_ID)
+
+    r = await client.get(f"/api/v1/orders/{oid}")
+    assert r.status_code == 404
+
+
+async def test_cannot_confirm_others_order(client, db_session):
+    """确认他人订单 → 404，且状态与通知都不能被动过。
+
+    只断言 404 不够：这条路径的破坏力在于它**会写库**。若校验写在
+    `transition()` 之后，接口照样返回 404，单子却已经被确认、通知也发出去了。
+    """
+    oid = await _create(client, user_id=OTHER_USER_ID)
+
+    r = await client.put(f"/api/v1/orders/{oid}/confirm")
+    assert r.status_code == 404
+
+    order = await db_session.get(ReserveOrder, oid)
+    assert order.order_status == OrderStatus.PENDING.value, "状态被越权改动了"
+    # 通知不能发给原主人
+    unread = await client.get(
+        "/api/v1/messages/unread", headers={"X-User-Id": str(OTHER_USER_ID)}
+    )
+    assert unread.json()["data"]["count"] == 0
+
+
+async def test_cannot_cancel_others_order(client, db_session):
+    """取消他人订单 → 404，且状态不变（§5.3 取消是契约接口，越权影响面最大）。"""
+    oid = await _create(client, user_id=OTHER_USER_ID)
+
+    r = await client.put(f"/api/v1/orders/{oid}/cancel")
+    assert r.status_code == 404
+
+    order = await db_session.get(ReserveOrder, oid)
+    assert order.order_status == OrderStatus.PENDING.value, "状态被越权改动了"
+
+
+async def test_others_order_is_indistinguishable_from_missing(client):
+    """越权与不存在必须返回**完全相同**的响应，否则可用于探测哪些 orderId 存在。"""
+    oid = await _create(client, user_id=OTHER_USER_ID)
+
+    theirs = await client.get(f"/api/v1/orders/{oid}")
+    missing = await client.get("/api/v1/orders/999999")
+
+    assert theirs.status_code == missing.status_code == 404
+    assert theirs.json() == missing.json()
+
+
+async def test_owner_can_still_use_own_order(client):
+    """回归：加了归属校验之后，本人读 / 确认 / 取消照常可用（别把门焊死）。"""
+    oid = await _create(client)
+
+    assert (await client.get(f"/api/v1/orders/{oid}")).status_code == 200
+    assert (await client.put(f"/api/v1/orders/{oid}/confirm")).status_code == 200
+    assert (await client.put(f"/api/v1/orders/{oid}/cancel")).status_code == 200
+
+
 # ------------------------------------------------- 身份兜底（§5.1）
 
 

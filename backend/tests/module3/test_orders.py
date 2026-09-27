@@ -177,16 +177,19 @@ async def test_cancelled_slot_can_be_reused(client):
 
 async def test_list_my_orders_only_mine(client):
     """GET /orders/my 只返回当前用户的单，按创建时间倒序。"""
-    await _create(client, spaceId=1)
-    await _create(client, spaceId=2)
+    # 两条单同时段、不同场地 → 设备必须错开：同一设备在重叠时段只能被一条订单占用
+    # （§5.5 第 4 步，见 tests/module3/test_order_service.py）
+    await _create(client, spaceId=1, deviceIds=[1])
+    await _create(client, spaceId=2, deviceIds=[2])
 
-    # 另一个用户的单
-    await client.post(
+    # 另一个用户的单（断言状态码：这里静默失败过一次，列表用例会照常变绿）
+    theirs = await client.post(
         "/api/v1/orders/create",
         json={"spaceId": 1, "deviceIds": [], "startTime": time_str(2, 9),
               "endTime": time_str(2, 10)},
         headers={"X-User-Id": str(OTHER_USER_ID)},
     )
+    assert theirs.status_code == 200, theirs.text
 
     r = await client.get("/api/v1/orders/my")
     orders = r.json()["data"]
@@ -198,7 +201,7 @@ async def test_list_my_orders_only_mine(client):
 async def test_list_my_orders_filter_by_status(client):
     """状态筛选：status=2 只返回已确认单。"""
     _, oid = await _create(client)
-    await _create(client, spaceId=2)
+    await _create(client, spaceId=2, deviceIds=[2])
     await client.put(f"/api/v1/orders/{oid}/confirm")
 
     r = await client.get("/api/v1/orders/my", params={"status": 2})

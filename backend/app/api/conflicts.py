@@ -9,8 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
 from ..core.response import ok
-from ..models import ReserveOrder
-from ..state_machine import OrderStatus
+from ..models import ACTIVE_ORDER_STATUSES, ReserveOrder
 
 router = APIRouter(prefix="/conflicts", tags=["conflicts"])
 
@@ -19,9 +18,7 @@ router = APIRouter(prefix="/conflicts", tags=["conflicts"])
 async def conflict_scan(db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(ReserveOrder).where(
-            ReserveOrder.order_status.in_(
-                [OrderStatus.PENDING.value, OrderStatus.CONFIRMED.value]
-            )
+            ReserveOrder.order_status.in_(ACTIVE_ORDER_STATUSES)
         )
     )
     active = result.scalars().all()

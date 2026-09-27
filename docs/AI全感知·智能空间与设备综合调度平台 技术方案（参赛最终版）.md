@@ -221,7 +221,7 @@ PC 管理后台 ECharts 可视化大屏。
 
 ## 四、数据库核心表设计（简要）
 
-1. `sys_user` 用户表；`sys_role`角色表；`sys_user_role`用户角色关联；`sys_permission`权限表
+1. `sys_user` 用户表（`role_id` 直接外键关联 `sys_role.id`，**单角色设计**，无用户角色关联中间表）；`sys_role` 角色表；`sys_permission` 权限表
 
 2. `space_resource` 空间场地表：容量、位置、预算、开放时间、绑定设备 id 集合
 
