@@ -205,7 +205,44 @@ Navicat / DBeaver 仅作可视化查询用，连接信息从 `.env` 读取，**�
 
 > ⚠️ **以下 `ALTER TABLE` 由基础支撑与集成组统一执行，任何人不得自行在库上执行。**
 > 执行前需知会业务中台组（涉及 `inspect_record`、`repair_ticket`）。
-> 已全部执行完毕，此处仅作留档与变更溯源。
+>
+> **⚠️ 2026-09-27 更正**：本节此前声称整份 DDL 与索引均已执行完毕、仅作留档与变更溯源，
+> 该表述与库上实测矛盾，**已删除**。
+> §6.7 的 9 条 `CREATE INDEX` 中，**7 条尚未执行，2 条由 MySQL 外键自动覆盖**。
+> 详见下方实测对照表。
+>
+> 表结构变更按主文档 §6.5 归集成组执行。**本模块不得自建索引、不得改表结构**——
+> 下表只作状态记录，不含任何处置动作。
+
+### 索引实测对照表（2026-09-27）
+
+口径：以 `docs/database.md` §5 的 11 条规范索引为准，逐条比对 `smart_scheduler_dev`
+的 `information_schema.STATISTICS`（只读查询，未做任何变更）。
+
+| # | 规范索引（§5） | 表 | 规范字段 | 库上实测 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `uk_username` | `sys_user` | `username` UNIQUE | `username` 存在，UNIQUE | ⚠️ 功能等价，索引名不符 |
+| 2 | `idx_space_type` | `space_resource` | `space_type` | — | ⛔ **缺失** |
+| 3 | `idx_capacity` | `space_resource` | `capacity` | — | ⛔ **缺失** |
+| 4 | `idx_device_type` | `device_resource` | `device_type` | — | ⛔ **缺失** |
+| 5 | `idx_user_id` | `reserve_order` | `user_id` | `user_id` 存在（外键自动生成） | ⚠️ 功能等价，索引名不符 |
+| 6 | `idx_space_time` | `reserve_order` | `space_id, start_time, end_time` | 仅有 `space_id` 单列（外键自动生成） | ⛔ **缺失（关键）** |
+| 7 | `idx_status` | `reserve_order` | `order_status` | — | ⛔ **缺失** |
+| 8 | `idx_space_id` | `inspect_record` | `space_id` | `space_id` 存在（外键自动生成） | ⚠️ 功能等价，索引名不符 |
+| 9 | `idx_device_id` | `repair_ticket` | `device_id` | `device_id` 存在（外键自动生成） | ⚠️ 功能等价，索引名不符 |
+| 10 | `idx_ticket_status` | `repair_ticket` | `ticket_status` | — | ⛔ **缺失** |
+| 11 | `idx_receiver_read` | `notify_message` | `receiver_id, is_read` | 仅有 `receiver_id` 单列（外键自动生成） | ⛔ **缺失** |
+
+**结论**：11 条规范索引中，**7 条缺失**、4 条由外键自动索引在功能上覆盖（索引名与规范不符）。
+
+§5 的 11 条比 §6.7 的 9 条多出第 1、5 行（`uk_username`、`idx_user_id`）——
+这两条不在 `CREATE INDEX` 清单内，库上都已在功能上存在。
+§6.7 的 9 条 `CREATE INDEX` 对应本表第 2、3、4、6、7、8、9、10、11 行，
+其中 **7 条未执行**（第 2、3、4、6、7、10、11 行），2 条（第 8、9 行）外键已覆盖。
+
+**第 6 行 `idx_space_time` 缺失是本表的重点**：没有这个联合索引，
+`SELECT ... FOR UPDATE` 在冲突检测时会退化为全表扫描并放大锁范围（主文档 5.5），
+低并发下测不出问题，演示当天会翻车。§6.1 的自检 SQL 至今应报**空结果**。
 
 ```sql
 -- 1. space_resource 新增字段
