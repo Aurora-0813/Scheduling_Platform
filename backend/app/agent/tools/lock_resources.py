@@ -39,6 +39,17 @@ __all__ = ["lock_resources", "LockResourcesArgs"]
 #: 会在两边不一致时失败，起护栏作用。
 _RETRYABLE = frozenset({"time_conflict", "device_conflict", "not_found"})
 
+#: 交给 `create_order` 的时间格式。
+#:
+#: **为什么要在本层回写规范化**（遗留 #7）：本模块的 `parse_time` 收 4 种格式
+#: （含只有日期的 `%Y-%m-%d`），而 service 的 `_parse_time` 只收 3 种，且解不出时
+#: **直接抛 `ValueError`**（`order_service.py` 的 `_parse_time` 末尾）。两边一松一紧，
+#: 于是「Tool 说合法、service 说非法」：模型传 `"2026-10-15"`，本层校验通过，
+#: 原样传给 service 就炸成 traceback 并被 LangGraph 包进 ToolMessage——
+#: 模型拿到的不是结构化失败，没法据以改参数。
+#: 在本层按 service 的格式回写，分歧就只剩「本层能认、service 也一定能认」这一种。
+_SERVICE_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
 #: 冲突类型 → 给模型的中文行动建议。**给的是下一步动作，不是错误描述**——
 #: 模型据这句话决定改期、换场地还是换设备。
 _ACTION_HINT = {
@@ -77,7 +88,10 @@ async def lock_resources(
 ) -> dict:
     """锁定场地与设备并创建预约订单。**这是唯一会真正写库的工具。**
 
-    什么时候用：方案已确定、且用户的需求已被满足时调用，**每次运行最多调一次**。
+    什么时候用：**方案确定后就调用**，每次运行最多调一次。
+    **不要向用户追问「是否要锁定」**——锁定不等于最终生效：订单落库后是**待确认**状态，
+    用户确认后才转为**已确认**。所以「用户还没点头」不是不锁的理由；
+    不锁的话这个时段没有任何占位，随时可能被别人订走。
     调用前必须先用 query_spaces / query_devices 拿到真实的 ID——不要凭印象填数字。
     本工具会自动带上当前登录用户身份，你不需要也不要尝试指定用户。
 
@@ -134,7 +148,13 @@ async def lock_resources(
             actionHint=_ACTION_HINT["invalid_param"],
         )
 
-    # ---- 3. 调模块 3 的 service。Tool 不碰库、不管事务边界 ----
+    # ---- 3. 时间回写规范化：消掉「Tool 说合法、service 说非法」----
+    # 上面两个校验用的是**模型给的原文**（失败提示要照原样回显，模型才知道自己发了什么），
+    # 到了这一行必须换成 service 唯一保证接受的格式。见 `_SERVICE_TIME_FORMAT`。
+    start_time = start_dt.strftime(_SERVICE_TIME_FORMAT)
+    end_time = end_dt.strftime(_SERVICE_TIME_FORMAT)
+
+    # ---- 4. 调模块 3 的 service。Tool 不碰库、不管事务边界 ----
     # `agent_trace` 传 None：本 Tool 被调用时本次 Agent 运行还没结束，trace 注定残缺。
     # 按 2026-09-27 与蔡玉礼对齐的时序 (a)，落 None，由路由在 Agent 跑完后调
     # `update_agent_trace` 补一次 UPDATE。`None` 的语义是「尚未生成」，不是「生成了一半」。
