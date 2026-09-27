@@ -52,3 +52,28 @@
 | 4 | `smart_scheduler_test` 访问被拒 | `db_session` 只能连只读开发库（强制手段已实现：`_db_readonly_guard` 前置拒绝全部写语句）。**但它同时会把并发用例要验的真实写入一起打死**——测试库权限到位后须对本用例收窄拦截，否则 `AGENT-C-01/02` 仍过不了 | 申云飞 |
 
 原「阶段 3 唯一硬卡点」（`backend/app/core/` 为空）**已解除**：`config.py` 与 `database.py` 已就位，阶段 3 据此通过。
+
+### LLM 配置 baseline（模块 4 公布 · 2026-09-27）
+
+模块 8 索要的 baseline，可直接照抄。**Key 各人各把，只放本地 `backend/.env`，不入库。**
+
+| 项 | 取值 | 说明 |
+| --- | --- | --- |
+| `LLM_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | DashScope 的 OpenAI 兼容端点，公开 URL，不含凭据 |
+| `LLM_MODEL_NAME` | `qwen-plus` | 全组统一取值。**模型必须支持 Function Calling** |
+| `LLM_API_KEY` | 各自申请（DashScope） | 真实值只在本地 `.env`；仓库与文档一律占位 |
+| `LLM_TEMPERATURE` | `0.0`（`settings` 默认） | 调度决策要可复现；调高会让同一需求两次给出不同方案 |
+| `LLM_MAX_RETRIES` | `1`（`settings` 默认） | 外层已有 `AGENT_TIMEOUT` 兜底，重试不宜多 |
+
+变量名三项已与模块 8 对齐。注意 `backend/.env` 由 `pydantic-settings` 读入，
+**不是**导出到进程环境变量——直接用 `os.getenv("LLM_MODEL_NAME")` 会拿到 `None`。
+
+**反例（已实测）：`qwen-math-turbo` 不可用。** 它是数学专用模型，无 Function Calling
+能力，且输入上限 3072 token；本模块的 Prompt + 工具 schema 约 6968 字符，
+实测直接 `400 InternalError.Algo.InvalidParameter`。换 `qwen-plus` 后跑通。
+（2026-09-27，证据见 [stage-05](stage-05-completion.md) §3.1 / §3.2：4 步 trace、
+18.3 秒、`success=true`。）
+
+**未经实测、待模块 8 验证**：`with_structured_output` 在 langchain-openai 1.5.0 的
+`method` 默认值是 `json_schema`（签名已确认），DashScope 是否接受该格式我方没有走过
+这条路——本模块用的是 `create_agent` + Tool，不经过 `with_structured_output`。
