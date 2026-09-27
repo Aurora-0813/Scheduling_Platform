@@ -610,10 +610,10 @@ async def test_i02b_refresh_token_cannot_be_used_as_access(dev_client) -> None: 
     `jwt.decode` 对两者都验签通过——不单独校验 `type`，refreshToken 就是一把万能钥匙，
     而它的有效期是 accessToken 的 7 倍。本条把这个口子钉住。
 
-    注意本条走的是路由链上的依赖：agent 路由当前用 `core/security.py` 的实现，
-    那个实现**本来就有** `type` 校验。真正缺校验的是 `api/deps.py` 那份
-    （模块 2 的 image/voice 在用），单独由
-    `test_api_deps_rejects_refresh_token` 直接钉住。
+    2026-09-28 起全应用只有 `api/deps.py` 一份身份依赖（原先 agent 路由走
+    `core/security.py` 那份，它本来就有 `type` 校验；验收的是另一份依赖）。
+    口径细节与「为什么 `type` 缺失时放行」见
+    `test_api_deps_tolerates_token_without_type_claim`。
     """
     from app.core.security import create_refresh_token
 
@@ -630,14 +630,13 @@ async def test_i02b_refresh_token_cannot_be_used_as_access(dev_client) -> None: 
 
 
 async def test_api_deps_rejects_refresh_token(monkeypatch) -> None:  # noqa: ANN001
-    """`api/deps.py::get_current_user` 自己必须把 refreshToken 拦下。
+    """`api/deps.py::get_current_user` —— 全应用唯一的身份依赖 —— 必须把 refreshToken 拦下。
 
-    为什么单测这个依赖、而不只靠上面那条接口用例：
-
-    · 模块 4 的 agent / mock / monitor 路由走的是 `core/security.py` 那份实现，
-      它**本来就有** `type` 校验 —— 只测 agent 路由，验的是另一份依赖；
-    · 而 `app/api/deps.py` 这份原先没有，模块 2 的 image / voice 路由正直接
-      `Depends(get_current_user)` 指向它。也就是说：**接口用例绿着，洞还敞着**。
+    2026-09-28 之前这条要单测的理由是「接口用例绿着，洞还敞着」：模块 4 的
+    agent/mock/monitor 走 `core/security.py` 的实现（本来就有 `type` 校验），
+    只测 agent 路由验的是**另一份**依赖，而真正缺校验的 `api/deps.py`
+    只有模块 2 的 image/voice 在用。现在两份已并成一份，本条与上面那条接口用例
+    验的是同一段代码；留着是因为它不经过路由，直接钉住依赖本身。
 
     实测确认过（把 `_TOKEN_TYPE_REFRESH` 临时拨成别的值）：不校验时 refreshToken
     能一路穿过认证直达业务代码——在 `format_spoken_text` 里才开始建 LLM 客户端。
