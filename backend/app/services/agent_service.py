@@ -119,26 +119,36 @@ async def persist_agent_trace(
     返回是否写入成功。**失败不抛异常、也不影响响应**：trace 是「溯源」用的附加值，
     写不进去不该让用户拿不到已经生成的方案。失败原因由调用方记日志。
 
-    `agent_trace` 落的是 `{"steps": [...], "request": ..., "generatedAt": ...}`：
-    主文档 3.3 要求按 Thought-Action-Observation 映射，`steps` 就是那个映射结果；
-    外层两个字段是为了答辩溯源时能看清「这段思考是回答哪个需求的」。
+    `agent_trace` 落的是**裸的 TraceStep 对象数组**（主文档 3.3 的
+    Thought-Action-Observation 映射结果），不是包了一层的信封对象——
+    形状由 2026-09-27 冻结的服务层契约 §7.6 定死，见下方两处说明。
     """
-    from datetime import datetime
-
     if order_id is None:
         return False
 
-    payload = {
-        "steps": [step.model_dump() for step in outcome.data.trace],
-        "request": request_text,
-        "plan": outcome.data.plan.model_dump() if outcome.data.plan else None,
-        "degraded": outcome.degraded,
-        "generatedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }
+    # `request_text` 不再进载荷（理由见下），保留参数是因为路由的调用契约就是四项，
+    # 而需求原文已经落在 `agent_request` 列上——留在这里只是别让它看起来「被丢了」。
+    _ = request_text
+
+    # ⚠️ 这里**不要**包信封（`{"steps": [...], "request": ...}`）。冻结口径写的是
+    # `agent_trace: list  # TraceStep 对象数组，整体覆盖该列`，而 `update_agent_trace`
+    # 用 `isinstance(agent_trace, list)` 校验：信封 dict 会被判成 `invalid_param`。
+    # 后果之所以严重，是因为失败被静默吸收——本函数只把 `ok` 转成 bool、调用点仅记日志
+    # 不影响响应，于是「补写没生效」在接口上完全看不出来，库里 agent_trace 恒为 NULL，
+    # 而 TC-26 / TC-30 验收的恰恰是「溯源完整」。
+    # 信封里原本想带的 `request` 已由 `create_order` 落在 `agent_request` 列上，
+    # 不必在这里重复承载；`plan` / `degraded` 也在响应体里另有出口。
+    steps = [step.model_dump() for step in outcome.data.trace]
+
+    # 空数组要跳过而不是照发：§7.6 明文拒绝 `[]`（空链路在库里与 NULL「尚未生成」
+    # 区分不开，前端会把「没跑出东西」渲染成一条空链路），并写明「没有内容可补写时
+    # 不要调用本函数」。降级且一步未走时就会走到这里——那时确实不该补写。
+    if not steps:
+        return False
 
     result = await update_agent_trace(
         order_id=order_id,
         user_id=user_id,
-        agent_trace=payload,
+        agent_trace=steps,
     )
     return bool(result.get("ok"))
