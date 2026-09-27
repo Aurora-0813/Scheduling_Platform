@@ -3,7 +3,8 @@
 - POST /api/v1/orders/create、GET /api/v1/orders/my、PUT /api/v1/orders/{orderId}/cancel
   为契约接口；GET /{orderId}、PUT /{orderId}/confirm 为模块内补充（状态机走「已确认」必需）。
 - 身份一律从 JWT 解析（§5.1），请求体不再携带 userId。
-- **归属校验逐条做**：详情/确认/取消三条都必须取「本人的单」（`_get_owned_order`）。
+- **归属校验逐条做**：详情/确认/取消三条都必须取「本人的单」（`_get_owned_order`），
+  兼容路径 `GET /user/{userId}` 同样比对路径参数与当前身份。
   认证层只回答「你是谁」，回答不了「这单是不是你的」——只注入 `user_id` 而不比对，
   等于任何人拿到别人的 orderId 就能读、能确认、能取消。越权一律 404，不泄露存在性。
 """
@@ -124,9 +125,22 @@ async def list_my_orders(
 async def list_orders(
     userId: int,
     status: int | None = Query(default=None, description="状态筛选 1/2/3/4"),
+    user_id: int = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """兼容旧路径的用户预约列表（保留以兼容历史客户端，契约以 /my 为准）。"""
+    """兼容旧路径的用户预约列表（保留以兼容历史客户端，契约以 `/my` 为准）。
+
+    **路径参数只是历史包袱，身份仍然只认 JWT**（`§5.1`）：`userId` 与当前身份不符时
+    返回 404，与详情 / 确认 / 取消三条同口径。
+
+    这条原先**完全匿名** —— 连 `get_current_user` 都没有，任何人
+    `GET /api/v1/orders/user/1` 就能读到 1 号用户的全部订单（含 `agent_request`
+    原始需求文本）。比"少一层归属校验"更严重：它连"你是谁"都没问。
+    `userId` 不在 `§5.3` 的契约清单里（契约只有 `/orders/my`），本模块内也没有
+    任何客户端再走它，所以收紧不会破坏合法调用 —— 唯一被挡掉的用法就是跨用户读取。
+    """
+    if userId != user_id:
+        raise HTTPException(status_code=404, detail="预约不存在")
     q = select(ReserveOrder).where(ReserveOrder.user_id == userId)
     if status is not None:
         q = q.where(ReserveOrder.order_status == status)

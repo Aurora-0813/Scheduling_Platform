@@ -33,7 +33,11 @@ async def _create(client, space_id=1, days=1, hour=9, user_id=None):
 
 
 async def test_legacy_user_orders_endpoint_is_scoped(client, db_session):
-    """旧路径按路径参数查订单，且不会把他人订单带出来。"""
+    """旧路径只返回**本人**订单；查他人一律 404，且响应体里不带任何订单。
+
+    这条原先断言的是漏洞本身（「`GET /orders/user/2` 会返回 2 号的单」），方向已反过来。
+    查别人与被查用户不存在**同一处理**，不因原因不同而换个说法。
+    """
     mine_id = await _create(client)
 
     # 直插一条归属他人的订单（接口无法造出他人数据，故走会话）
@@ -44,15 +48,32 @@ async def test_legacy_user_orders_endpoint_is_scoped(client, db_session):
     ))
     await db_session.commit()
 
+    # 本人：仍然可用（这是收紧后唯一保留的用法）
     mine = (await client.get(f"/api/v1/orders/user/{UID}")).json()["data"]
     assert [o["orderId"] for o in mine] == [mine_id]
     assert {o["userId"] for o in mine} == {UID}
 
-    theirs = (await client.get(f"/api/v1/orders/user/{OTHER_USER_ID}")).json()["data"]
-    assert [o["userId"] for o in theirs] == [OTHER_USER_ID]
+    # 他人：404，且响应体不得泄露任何订单字段
+    theirs = await client.get(f"/api/v1/orders/user/{OTHER_USER_ID}")
+    assert theirs.status_code == 404
+    assert theirs.json()["message"] == "预约不存在"
+    assert theirs.json()["data"] is None
+    assert "orderId" not in theirs.text
 
-    nobody = (await client.get("/api/v1/orders/user/999999")).json()["data"]
-    assert nobody == []
+    # 被查用户不存在：与越权同一处理
+    nobody = await client.get("/api/v1/orders/user/999999")
+    assert nobody.status_code == 404
+    assert nobody.json() == theirs.json()
+
+
+async def test_legacy_user_orders_endpoint_accepts_matching_header(client):
+    """带 `X-User-Id` 且与路径一致时照常返回 —— 收紧挡的是跨用户，不是旧客户端。"""
+    oid = await _create(client)
+    r = await client.get(
+        f"/api/v1/orders/user/{UID}", headers={"X-User-Id": str(UID)}
+    )
+    assert r.status_code == 200
+    assert [o["orderId"] for o in r.json()["data"]] == [oid]
 
 
 async def test_legacy_user_orders_endpoint_status_filter(client):

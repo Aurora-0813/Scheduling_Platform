@@ -414,3 +414,154 @@ async def test_write_identity_is_never_taken_from_caller_body():
     r = await _call(user_id=OTHER_USER_ID)
     async with AsyncSessionLocal() as db:
         assert (await db.get(ReserveOrder, r["orderId"])).user_id == OTHER_USER_ID
+
+
+# ---------------------------------------------------------------- update_agent_trace
+
+
+#: 补写链路冻结的参数表（`create_order` 之外**新增**的函数，同样 keyword-only、无 `db`）。
+FROZEN_TRACE_PARAMS = ["order_id", "user_id", "agent_trace"]
+
+
+async def _call_trace(**overrides):
+    """按路由补写的调法调一次服务层。"""
+    kwargs = {
+        "order_id": 1,
+        "user_id": MOCK_USER_ID,
+        "agent_trace": [
+            {"step": 1, "result": "解析需求", "timestamp": "2026-01-01 09:00:00"}
+        ],
+    }
+    kwargs.update(overrides)
+    return await order_service.update_agent_trace(**kwargs)
+
+
+def test_update_trace_frozen_signature_is_keyword_only():
+    """补写函数与 `create_order` 同规格冻结，四个属性一次锁死。
+
+    `user_id` **必须**在签名里：它是归属校验的唯一输入（`§5.1`）。少了它，任何拿到
+    `order_id` 的调用方都能改别人的 trace，这个函数就变成了越权写入口。
+    """
+    params = list(signature(order_service.update_agent_trace).parameters.values())
+
+    assert [p.name for p in params] == FROZEN_TRACE_PARAMS
+    assert all(p.kind is Parameter.KEYWORD_ONLY for p in params), "全部参数必须 keyword-only"
+    assert "db" not in {p.name for p in params}, "签名里不得出现 db（会话自管）"
+    for p in params:
+        assert p.annotation is not Parameter.empty, f"{p.name} 缺类型标注"
+        assert p.default is Parameter.empty, f"{p.name} 是必填，不应有默认值"
+
+
+async def test_update_trace_result_keys_match_create_order():
+    """返回字段集与 `create_order` 完全一致 —— 调用方一处取值逻辑两处通用。"""
+    order_id = (await _call())["orderId"]
+
+    ok = await _call_trace(order_id=order_id)
+    bad = await _call_trace(order_id=999999)
+
+    assert set(ok) == FROZEN_RESULT_KEYS
+    assert set(bad) == FROZEN_RESULT_KEYS
+    assert ok["ok"] is True and ok["orderId"] == order_id and ok["conflictType"] is None
+    assert bad["ok"] is False and bad["orderId"] is None
+    assert bad["conflictType"] == "not_found"
+
+
+async def test_create_then_update_trace_is_the_agent_chain():
+    """AGENT-C-01 的完整链路：创建时 trace 为 `None`（尚未生成）→ Agent 跑完补写。
+
+    这正是「缺了 create_order 真实实现就只能走到跳过分支」所指的那条链路。
+    """
+    order_id = (await _call(agent_request="明天上午要个会议室"))["orderId"]
+
+    async with AsyncSessionLocal() as db:
+        assert (await db.get(ReserveOrder, order_id)).agent_trace is None, (
+            "创建时不得落残缺 trace —— 必须是 None，语义为「尚未生成」"
+        )
+
+    trace = [
+        {"step": 1, "result": "解析需求", "timestamp": "2026-01-01 09:00:00"},
+        {"step": 2, "result": "生成方案", "timestamp": "2026-01-01 09:00:03"},
+    ]
+    assert (await _call_trace(order_id=order_id, agent_trace=trace))["ok"] is True
+
+    async with AsyncSessionLocal() as db:
+        assert (await db.get(ReserveOrder, order_id)).agent_trace == trace
+
+
+async def test_update_trace_is_idempotent_on_identical_write():
+    """同一份 trace 补写两次都要返回 `ok`。
+
+    这条是给 MySQL 的 `affected_rows` 立的护栏：它默认只数**真正发生变化**的行，若实现
+    被"简化"成单条 `UPDATE`，第二次补写会返回 0 行、被误判成 `not_found`。SQLite 上两种
+    写法都能过，所以必须在**返回值**层面钉住，光看库里最终对不对是抓不到的。
+    """
+    order_id = (await _call())["orderId"]
+    trace = [{"step": 1, "result": "解析需求", "timestamp": "2026-01-01 09:00:00"}]
+
+    first = await _call_trace(order_id=order_id, agent_trace=trace)
+    second = await _call_trace(order_id=order_id, agent_trace=trace)
+
+    assert first["ok"] is True and second["ok"] is True
+    assert second["conflictType"] is None
+
+
+async def test_update_trace_rejects_other_users_order():
+    """越权：别人的单与不存在的单**同一处理**，既不泄露存在性，也不得改动内容。"""
+    order_id = (await _call())["orderId"]  # 归 MOCK_USER_ID
+    original = [{"step": 1, "result": "原始链路", "timestamp": "2026-01-01 09:00:00"}]
+    assert (await _call_trace(order_id=order_id, agent_trace=original))["ok"] is True
+
+    stolen = [{"step": 1, "result": "篡改", "timestamp": "2026-01-01 09:00:00"}]
+    r = await _call_trace(order_id=order_id, user_id=OTHER_USER_ID, agent_trace=stolen)
+
+    assert r["ok"] is False and r["conflictType"] == "not_found"
+    assert r["reason"] == "预约不存在", "越权与不存在必须同一个说法（403 会泄露存在性）"
+
+    async with AsyncSessionLocal() as db:
+        assert (await db.get(ReserveOrder, order_id)).agent_trace == original
+
+
+async def test_update_trace_rejects_empty_and_non_list():
+    """空数组与非数组一律 `invalid_param`，且被拒的调用不得动库里已有的值。
+
+    空数组拒绝是刻意的：它在库里与 `NULL`（尚未生成）区分不开，写进去只会让前端把
+    「没跑出东西」渲染成一条空链路。
+    """
+    order_id = (await _call())["orderId"]
+
+    empty = await _call_trace(order_id=order_id, agent_trace=[])
+    assert empty["ok"] is False and empty["conflictType"] == "invalid_param"
+    assert "空" in empty["reason"]
+
+    for bad_value in ({"step": 1}, "[]", None, 1):
+        r = await _call_trace(order_id=order_id, agent_trace=bad_value)
+        assert r["ok"] is False and r["conflictType"] == "invalid_param"
+
+    async with AsyncSessionLocal() as db:
+        assert (await db.get(ReserveOrder, order_id)).agent_trace is None
+
+
+async def test_update_trace_requires_user_id_and_valid_order_id():
+    """`user_id` 忘传（Agent 侧最容易漏的一环）与非法 `order_id` 都要在入库前挡住。"""
+    for missing in (None, 0, -1, "abc"):
+        r = await _call_trace(user_id=missing)
+        assert r["ok"] is False and r["conflictType"] == "invalid_param"
+        assert "user_id" in r["reason"]
+
+    for bad_id in (None, 0, -1, "abc"):
+        r = await _call_trace(order_id=bad_id)
+        assert r["ok"] is False and r["conflictType"] == "invalid_param"
+
+
+def test_services_package_reexports_are_the_same_object():
+    """`app.services` 的两个别名必须与定义处是**同一个函数对象**。
+
+    `services/__init__.py` 里的 re-export 是给 Tool 层用的稳定入口（§4.3）；写成
+    `from .order_service import X` 之外的任何形式（比如重新赋值、包装一层）都会让
+    「别名」和「权威定义」在某次改动后悄悄分家，而那种分家不会报错。
+    """
+    from app.services import create_order as alias_create
+    from app.services import update_agent_trace as alias_update
+
+    assert alias_create is create_order
+    assert alias_update is order_service.update_agent_trace

@@ -55,6 +55,18 @@ Tool 签名 `lock_resources(space_id, device_ids, start_time, end_time)`（`§5.
 比本函数少一个 `user_id`：身份一律从 JWT 解析（`§5.1`），由 Agent 运行上下文补入。
 其余参数一对一，`order_status` 由 Tool 传 `needConfirm` 推出的取值（默认 1 待确认）。
 
+## 补缺：`update_agent_trace`
+
+上面五项签名**一项都没动**。Agent 的思考链路是**跑完之后**才有的：落单那一刻还拿不到，
+所以链路只能分两步写——`create_order` 先落 `agent_trace=None`，Agent 跑完由路由调
+`update_agent_trace` 补一次 UPDATE。
+
+为什么创建时不落「残缺 trace」：残缺 trace 在库里与完整 trace 无法区分，前端会当成完整
+链路渲染，而 TC-26 / TC-30 验收的恰恰是「溯源完整」。`None` 的语义干净——**尚未生成**，
+不是**生成了一半**。事后一次覆盖是安全的，因为不存在中间态。
+
+这是**补缺，不是改契约**：冻的是已列的五项，补的是缺的那个函数。
+
 ## 异常边界
 
 只有**业务性失败**走结构化返回。基础设施异常（连不上库、连接断开等）仍会抛出，
@@ -74,7 +86,7 @@ from ..models import (
 )
 from ..state_machine import OrderStatus
 
-__all__ = ["create_order"]
+__all__ = ["create_order", "update_agent_trace"]
 
 #: `§6.3` 表 6：agent_request VARCHAR(1024)。超长截断而不是报错——需求文本是模型
 #: 生成的，因长度丢一次预约比截断更糟。
@@ -382,6 +394,85 @@ async def create_order(
         "ok": True,
         "orderId": order_id,
         "reason": "预约创建成功",
+        "conflictType": None,
+        "conflictDetail": None,
+    }
+
+
+async def update_agent_trace(
+    *,
+    order_id: int,
+    user_id: int,
+    agent_trace: list,
+) -> dict:
+    """补写 Agent 思考链路（`create_order` 之后由路由回调，见模块 docstring）。
+
+    与 `create_order` 同规矩：keyword-only、签名**不含 `db`**（会话与事务边界都自管）、
+    业务性失败返回 `ok=False` 而不抛异常。
+
+    参数：
+        order_id: 要补写的订单 ID
+        user_id: 归属校验用，由调用方从 JWT 解出后传入（`§5.1`）。**必须进签名**——
+            只凭 `order_id` 就能改任意订单的 `agent_trace`，等于把它变成可写公共字段。
+        agent_trace: Agent 思考过程（TraceStep 对象数组），**整体覆盖**库中该列
+
+    返回：字段集与 `create_order` **完全一致**，调用方一处取值逻辑两处通用。
+    可重复调用（同一份 trace 补写两次仍返回 `ok=True`）。
+    """
+    order_id = _as_int(order_id)
+    if order_id is None or order_id <= 0:
+        return _fail("invalid_param", "order_id 必须是正整数")
+
+    user_id = _as_int(user_id)
+    if user_id is None or user_id <= 0:
+        return _fail("invalid_param", "缺少 user_id：身份必须从 JWT 解析后传入（§5.1）")
+
+    if not isinstance(agent_trace, list):
+        return _fail(
+            "invalid_param",
+            "agent_trace 必须是 TraceStep 对象数组（§5.3 模块4）",
+        )
+    # 空数组拒绝：它在库里与 `NULL`（尚未生成）区分不开，写进去只会让前端把
+    # 「没跑出东西」渲染成一条空链路。没有内容可补写时**不要调用本函数**。
+    # 注意 `create_order` 允许空 list —— 那里 `None` 才是常态（补写链路的起点），
+    # 显式传 `[]` 是合法输入；两处宽严不同是刻意的。
+    if not agent_trace:
+        return _fail(
+            "invalid_param",
+            "agent_trace 不能为空数组：空链路与「尚未生成」无法区分，没有内容时勿调用",
+        )
+
+    async with AsyncSessionLocal() as db:
+        try:
+            async with db.begin():
+                # 刻意用「先 SELECT ... FOR UPDATE 再赋值」，而不是一条 UPDATE：
+                # MySQL 的 affected_rows 默认只数**真正发生变化**的行，同一份 trace
+                # 补写两次时第二条 UPDATE 返回 0，会被误判成 not_found。分成两步才能
+                # 把「不存在 / 非本人」与「值没变」分开。（SQLite 方言把 FOR UPDATE
+                # 编译掉，测试跑 aiosqlite 时锁不生效；云库 mysql+asyncmy 下真实生效。）
+                result = await db.execute(
+                    select(ReserveOrder)
+                    .where(
+                        ReserveOrder.id == order_id,
+                        ReserveOrder.user_id == user_id,
+                    )
+                    .with_for_update()
+                )
+                order = result.scalar_one_or_none()
+                if order is None:
+                    # 不存在与非本人**同一处理、不区分原因**：区分了就等于承认「这单
+                    # 存在，只是不是你的」，可据此枚举全库订单。与 api 层的
+                    # `_get_owned_order`、`messages.py::read_message` 同一口径。
+                    raise _Reject("not_found", "预约不存在")
+                order.agent_trace = agent_trace
+            # 上下文正常退出即 COMMIT
+        except _Reject as reject:
+            return _fail(reject.conflict_type, reject.reason, reject.detail)
+
+    return {
+        "ok": True,
+        "orderId": order_id,
+        "reason": "思考链路已补写",
         "conflictType": None,
         "conflictDetail": None,
     }

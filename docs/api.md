@@ -59,6 +59,7 @@
 - 当前用户从 JWT（`X-User-Id`）解析；响应 `data` 为订单数组，按创建时间倒序。
 
 > 兼容历史客户端保留 `GET /api/v1/orders/user/{userId}`，新代码请使用 `/orders/my`。
+> **旧路径的身份同样只认 JWT**：路径参数与当前身份不符时返回 `404`（与详情/确认/取消同口径）。
 
 ### 1.3 订单详情（扩展）
 
@@ -82,8 +83,13 @@
 > 证明不了「这单是不是你的」——`orderId` 是自增的，不做归属校验等于拿它当密码用。
 > 越权与不存在**返回完全相同的 `404` 响应体**，不泄露订单是否存在（与 §3.3 消息越权口径一致）。
 >
-> 例外：`GET /api/v1/orders/user/{userId}`（历史兼容路径）目前仍按路径参数返回，
-> **未加归属校验**，存在跨用户枚举风险，待集成组确认无外部依赖后收紧。
+> `GET /api/v1/orders/user/{userId}`（历史兼容路径）**已收紧**（2026-09-27）：路径参数与
+> 当前身份不符时返回 `404`，与上面三条同口径。它原先**连 `get_current_user` 都没有**，
+> 是**完全匿名**的 —— 任何人 `GET /orders/user/1` 就能读到 1 号用户的全部订单（含
+> `agentRequest` 原始需求文本），比「少一层归属校验」更严重：连「你是谁」都没问。
+> 该路径不在 `§5.3` 契约清单里（清单只有 `/orders/my`），本模块内也没有客户端再走它
+> （小程序 `api/reserve.js` 已改用 `/orders/my`），因此收紧**唯一挡掉的用法就是跨用户读取**，
+> 不需要等集成组确认外部依赖。
 
 ---
 
@@ -216,13 +222,15 @@
 > 交付对象：核心调度 Agent 模块（模块 4）的 `lock_resources` Tool。
 > 冻结含义：下面五项**均不得更改**——函数名与模块路径、参数名与顺序、keyword-only
 > 限定、"签名里没有 `db`"、返回结构。改动属于破坏性变更，必须先通知本模块。
+> 另有 `update_agent_trace`（§7.6）：那是**补缺**，不是对这五项的改动。
 
 `§4.3` / `§7.4` / `§9.3` 三条规范要求 Agent 只能通过 Tool 调用 `services/` 层异步函数、
-Tool 内禁止使用 `AsyncSession`，因此本模块提供一个不依赖 HTTP、不依赖调用方会话的入口：
+Tool 内禁止使用 `AsyncSession`，因此本模块提供两个不依赖 HTTP、不依赖调用方会话的入口：
 
 ```python
-from app.services.order_service import create_order   # 权威路径
-from app.services import create_order                 # 等价别名，同一个函数对象
+from app.services.order_service import create_order         # 权威路径
+from app.services import create_order                       # 等价别名，同一个函数对象
+from app.services.order_service import update_agent_trace    # 补写链路，见 §7.6
 ```
 
 ```python
@@ -300,3 +308,50 @@ Agent 侧若漏传，服务层会明确返回 `invalid_param`「缺少 user_id�
 - `time_conflict` / `device_conflict` / `not_found` / `invalid_param` 四条分支各有用例
 - §5.5 第 2 步的 `FOR UPDATE` 在 MySQL 方言下必须出现（SQLite 方言会编译掉它，
   单测跑在 SQLite 上，所以只能靠编译比对来防止锁被静默删掉）
+- `update_agent_trace`（§7.6）的签名同规格锁死，另有「越权与不存在同为 `not_found`」、
+  「重复补写同一份 trace 仍返回 `ok`」两条行为护栏
+
+### 7.6 `update_agent_trace` —— 补缺，不是改冻结口径
+
+Agent 的思考链路是**跑完之后**才有的，落单那一刻还拿不到。所以链路只能分两步写：
+`create_order` 先落 `agent_trace=None`（语义是「尚未生成」，**不是**「生成了一半」——
+残缺 trace 在库里与完整 trace 无法区分，前端会当成完整链路渲染，而 TC-26 / TC-30
+验收的恰恰是「溯源完整」），Agent 跑完再补一次 UPDATE。
+
+```python
+from app.services.order_service import update_agent_trace
+
+async def update_agent_trace(
+    *,
+    order_id: int,          # 要补写的订单
+    user_id: int,           # 归属校验；由调用方从 JWT 解出后传入（§5.1）
+    agent_trace: list,      # TraceStep 对象数组，**整体覆盖**该列
+) -> dict:                  # {ok, orderId, reason, conflictType, conflictDetail}
+```
+
+与 `create_order` 同规格：keyword-only、签名不含 `db`、业务失败返回 `ok=false` 不抛异常，
+且**返回字段集完全相同** —— 调用方一处取值逻辑两处通用。
+
+三条口径，改桩时别绕开：
+
+| 情形 | 返回 |
+| --- | --- |
+| 订单不存在，**或**不属于传入的 `user_id` | `ok=false` / `not_found` / `reason="预约不存在"` |
+| `agent_trace` 为空数组，或不是数组 | `ok=false` / `invalid_param` |
+| 同一份 `agent_trace` 重复补写 | `ok=true`（可重复调用） |
+
+前两条的理由：
+
+1. **越权与不存在必须同一个说法。** 区分了就等于承认「这单存在，只是不是你的」，
+   可据此枚举全库订单。与 `GET /orders/{orderId}`、`PUT /orders/{orderId}/cancel`
+   的 `_get_owned_order`、以及 `messages.py::read_message` 是同一口径。
+2. **空数组拒绝是刻意的。** 空链路在库里与 `NULL`（尚未生成）区分不开，写进去只会让
+   前端把「没跑出东西」渲染成一条空链路。没有内容可补写时**不要调用本函数**。
+   注意 `create_order` 允许传空 list（那里 `None` 才是常态），两处宽严不同是有意为之。
+
+**`user_id` 必须进签名**，不是可选参数：只凭 `order_id` 就能改任意订单的 `agent_trace`，
+等于把它变成可写公共字段。
+
+实现上刻意用「先 `SELECT … FOR UPDATE` 再赋值」，而不是一条 `UPDATE`：MySQL 的
+`affected_rows` 默认只数**真正发生变化**的行，同一份 trace 补写两次时第二条会返回 0 行，
+被误判成 `not_found`。分成两步才能把「不存在 / 非本人」与「值没变」分开。
