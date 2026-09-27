@@ -1,5 +1,21 @@
 """
 pytest 全局夹具
+===============
+
+本文件是全后端的公共夹具入口（模块 1/2/4/9/10 共用），分三段：
+
+1. 上方到「模块 1 / 模块 2 合并引入的夹具」之前 —— 基础支撑的通用夹具
+   （SQLite 引擎、`db_session`、令牌白名单、指标存储、HTTP 客户端、登录助手）；
+2. 「模块 1 / 模块 2 合并引入的夹具」段 —— 模块 2 的图片与假模型夹具；
+3. 文件末尾 —— 模块 4 核心调度 Agent 的假模型夹具（`agent_fake_llm`）。
+
+**模块 4 的假 LLM 选型结论**：`tests/smoke_fake_llm.py`（可独立运行，结论见
+`docs/test.md` 第二节）——实测 langchain-core 1.6.4 下
+`FakeMessagesListChatModel` 与 `GenericFakeChatModel` 都**没有**实现 `bind_tools`，
+挂到 `create_agent` 上直接抛 `NotImplementedError`，阶段 7 §3.1 给的示例夹具**不可用**，
+必须自实现一个 `bind_tools` 返回 `self` 的 `BaseChatModel` 子类
+（即下方 `StubChatModel`）。阶段 7 的夹具与用例见 `docs/spec/stage-07-testing.md`。
+"""
 
 整体策略（决策 8）
 ------------------
