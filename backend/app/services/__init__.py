@@ -33,12 +33,13 @@
 """
 from app.services.device_service import query_devices
 from app.services.notify_service import generate_notification
-from app.services.order_service import create_order
+from app.services.order_service import create_order, update_agent_trace
 from app.services.space_service import query_spaces
 
 __all__ = [
     "query_spaces",
     "query_devices",
     "create_order",
+    "update_agent_trace",
     "generate_notification",
 ]

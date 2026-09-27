@@ -9,7 +9,7 @@
 snake_case，前端取值拿到 None 却不报错，排查成本极高。直接命名没有这个风险。
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = ["ScheduleRequest", "TraceStep", "Plan", "ScheduleData"]
 
@@ -20,6 +20,15 @@ class ScheduleRequest(BaseModel):
     注意：**没有 userId 字段**。调用者身份一律从 JWT 解析（主文档 5.1、9.1），
     请求体夹带 userId 会被忽略——若从请求体取，任何人都能替别人预约。
     """
+
+    # `extra="ignore"` 是**显式**写出来的，虽然它就是 Pydantic v2 的默认值。
+    # 理由：`AGENT-I-04`（请求体夹带 `userId` 时被忽略）依赖这个行为，
+    # 而它离「默认值」只有一步之遥——将来若有人为了「及早发现前端传错字段」
+    # 改成 `extra="forbid"`，夹带 `userId` 会变成 422，越权防线从「忽略」变成「拒绝」，
+    # 用例红得莫名其妙。写在这里，改的人至少会看到这行注释。
+    # 注意：**忽略**不等于安全——真正不越权是因为身份只从 JWT 解析（见 core/security.py），
+    # 而不是因为这里丢掉了一个字段。
+    model_config = ConfigDict(extra="ignore")
 
     text: str = Field(
         ...,
