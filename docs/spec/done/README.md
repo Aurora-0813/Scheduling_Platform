@@ -33,9 +33,9 @@
 | 2 契约冻结 | **有条件通过** | [stage-02](stage-02-completion.md) | schema 与 `docs/api.md` 已交付；**缺前端书面回执** |
 | 3 依赖就绪度 | **通过** | [stage-03](stage-03-completion.md) | M1 的 `config.py` + `database.py` 已就位，据此产出 service 桩。注：集成组正式版就位前，模块 4 在阶段 6 自行补出了 `core/response.py`、`core/security.py`，见阶段 6 偏离 #2 |
 | 4 Tool 层 | **有条件通过** | [stage-04](stage-04-completion.md) | 5 个 Tool 全部落地、三条禁令未破；验收步骤 ①⑤ 依赖阶段 7 用例，改以等价手段取证 |
-| 5 Prompt 与组装 | **不通过** | [stage-05](stage-05-completion.md) | 真实 API 冒烟**已跑通**（`qwen-plus`，4 步 trace / 18.3 秒 / `success=true`），四条通过标准达成 3 条。**差的一条「设备降级为单投影」前提不成立**——`device_resource` 无价格字段，「预算与设备冲突」算不出来，模型交出双投影并说明「无需降级」，判断自洽。两次冒烟原始输出见 stage-05 §3.1 / §3.2。另暴露：「下周三」被算成 10-04（应 09-30）；真实路径未调 `lock_resources` |
+| 5 Prompt 与组装 | **不通过**（**待重判**） | [stage-05](stage-05-completion.md) | 真实 API 冒烟**已跑通**（`qwen-plus`，4 步 trace / 18.3 秒 / `success=true`），四条通过标准达成 3 条。**差的那条「设备降级为单投影」前提不成立**——`device_resource` 无价格字段，「预算与设备冲突」算不出来，模型交出双投影并说明「无需降级」，判断自洽。**该标准已按裁定 A + C 改写**（硬卡点 #1 已闭环），**状态待重判**。两次冒烟原始输出见 stage-05 §3.1 / §3.2。另暴露：「下周三」被算成 10-04（应 09-30，已做 Prompt 缓解）；真实路径未调 `lock_resources`（已裁定 (a)，Prompt 与 Tool 描述均已改） |
 | 6 API 层 | **有条件通过** | [stage-06](stage-06-completion.md) | 六步验收全部执行且符合标准；埋点为进程内计数、正常路径实测在注入假模型下完成 |
-| 7 测试 | **有条件通过** | [stage-07](stage-07-completion.md) | 82 例通过 + 2 例 `xfail(strict)`；`app/agent` 覆盖率 **92.29%**（阈值 80% 已入 `pytest.ini`）。**`AGENT-C-01/02` 未通过**——模块 3 的 `create_order` 仍是只读桩，标 `xfail(strict)` 并登记在案，不当作通过。另两条限制：`AGENT-S-01~05` 只验了透传与形状（决策质量需真实 LLM，`.env` 三项为空）；`db_session` 连的是只读开发库而非测试库 |
+| 7 测试 | **有条件通过** | [stage-07](stage-07-completion.md) | **84 例通过 + 2 例 `xfail(strict)`**（新增 `AGENT-S-06` 及其前提护栏两条）；`app/agent` 覆盖率 **92.37%**（阈值 80% 已入 `pytest.ini`）。**`AGENT-C-01/02` 未通过**——模块 3 的 `create_order` 仍是只读桩，标 `xfail(strict)` 并登记在案，不当作通过。另两条限制：`AGENT-S-01~06` 只验了透传与形状（决策质量需真实 LLM，`.env` 三项为空）；`db_session` 连的是只读开发库而非测试库。**阶段 7 完成文档里记的仍是 82 例 / 92.29%**，那是当时的原始输出，不改写 |
 | 8 联调准备 | **不通过** | [stage-08](stage-08-completion.md) | mock 数据与路由已交付且实测；**交接清单五项回执一项都没有**（需真实沟通，非代码可替代） |
 | 9 提交与合并 | 未开始 | — | 入口条件未满足（阶段 8 不通过），但验收内容（`.env` 不入库、CI 绿灯、tag）与之互不阻塞，可并行 |
 | 10 交接与后续 | 未开始 | — | |
@@ -46,9 +46,9 @@
 
 | # | 卡点 | 影响 | 责任人 |
 | --- | --- | --- | --- |
-| 1 | **场景 A 的验收标准「设备降级为单投影」前提不成立**（`device_resource` 无价格字段，设备不计费，「预算与设备冲突」没有可计算依据） | 阶段 5 与阶段 7 的 `AGENT-S-01` 挂在一个**不可达**的标准上。若为让它变绿而改 Prompt「教」模型降级，等于凭空造价格规则，违反 Prompt 自己写的「绝不编造价格」。需裁定：A 改标准措辞（保住场地+说明为何不需降级）／B 补设备单价口径（集成组数据模型）／C 换一条前提成立的降级用例。本模块倾向 A + C | 集成组（数据模型 / 总预算口径）+ 徐川（标准措辞） |
+| 1 | **场景 A 的验收标准「设备降级为单投影」前提不成立**（`device_resource` 无价格字段，设备不计费，「预算与设备冲突」没有可计算依据） | **已裁定 A + C（2026-09-27 项目群），本项闭环**：A 把标准改为「保住场地 + 说明为何不需降级」，C 另补一条前提真成立的降级用例。已落地：`AGENT-S-01` 断言改写为「`plan` 非空 / `spaceId` 命中 / `reason` 非空且说明无需降级」，新增 `AGENT-S-06`（要两台直播设备、库里只有 1 台可借）及前提护栏 `test_seed_supports_the_degradation_case`。**选项 B（补设备单价口径）未采纳**，留在集成组账上 | 集成组（数据模型 / 总预算口径）+ 徐川（标准措辞） |
 | 2 | 阶段 8 五项交接回执全空 | 联调当天才会暴露口径不一致，而这正是阶段 8 存在的意义 | 徐川（发起）+ 蔡玉礼 / 杨睿坤 / 黄嵩 / 前端 / 申云飞（回执） |
-| 3 | 模块 3 的 `create_order` 仍是只读桩（`orderId` 恒为 `None`） | 并发与库存扣减（`AGENT-C-01/02`）无法验证——**阶段 7 因此未完全达标**；`agent_trace` 补写链路只能走到「跳过」分支 | 蔡玉礼 |
+| 3 | 模块 3 的 `create_order` 仍是只读桩（`orderId` 恒为 `None`） | 并发与库存扣减（`AGENT-C-01/02`）无法验证——**阶段 7 因此未完全达标**；`agent_trace` 补写链路只能走到「跳过」分支。**补充（2026-09-27）**：① `needConfirm` 已裁定 **(a)**（Agent 一轮内锁 `status=1`，确认只是 1→2 的流转），**但 1→2 这段还没接通**——`PUT /api/v1/orders/{orderId}/confirm` 已在 `origin/feat/module3-caiyuli` 上实现，而 `/api/v1/agent/schedule` 的响应体**不透出 `orderId`**（只有 `plan`/`backupPlan`/`trace`/`needConfirm`），前端拿不到订单号；② 蔡玉礼的真实现已在 `origin/feat/module3-caiyuli` 分支上（`core/utils.py` / `state_machine.py` / `ACTIVE_ORDER_STATUSES` 三样本分支**都没有**），等并入 `main` | 蔡玉礼（推）+ 集成组（合入） |
 | 4 | `smart_scheduler_test` 访问被拒 | `db_session` 只能连只读开发库（强制手段已实现：`_db_readonly_guard` 前置拒绝全部写语句）。**但它同时会把并发用例要验的真实写入一起打死**——测试库权限到位后须对本用例收窄拦截，否则 `AGENT-C-01/02` 仍过不了 | 申云飞 |
 
 原「阶段 3 唯一硬卡点」（`backend/app/core/` 为空）**已解除**：`config.py` 与 `database.py` 已就位，阶段 3 据此通过。
