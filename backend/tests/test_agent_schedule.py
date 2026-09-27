@@ -1,4 +1,4 @@
-"""端到端调度的用例：`AGENT-S-01~05`（决策场景）、`AGENT-E-01~04`（异常与降级）、
+"""端到端调度的用例：`AGENT-S-01~06`（决策场景）、`AGENT-E-01~04`（异常与降级）、
 `AGENT-I-01~05`（接口）。
 
 ## 假模型在这里扮演什么角色，以及它证明不了什么
@@ -8,10 +8,11 @@
 真的统一响应体。所以「系统把模型的意图变成合规响应」这一段是真验证。
 
 **它证明不了模型的选择质量。**「800 元该不该把双投影降成单投影」「40 人该不该拆场地」
-是模型的判断，假模型只是把这个判断**当作输入喂进来**。因此 `AGENT-S-01~05` 断言的是
+是模型的判断，假模型只是把这个判断**当作输入喂进来**。因此 `AGENT-S-01~06` 断言的是
 **透传与形状**：模型给出的理由、备选方案、修改建议要一字不少地到达用户，不能在中途
-被吞掉或被改名。五条场景各自的**前提**（种子数据里确实存在「预算卡在场地价上」
-「会议室没有 40 人的」这些约束）单独用 `test_seed_supports_the_five_scenarios`
+被吞掉或被改名。各条场景的**前提**（种子数据里确实存在「预算卡在场地价上」
+「会议室没有 40 人的」「直播设备只剩一台可借」这些约束）单独用
+`test_seed_supports_the_five_scenarios` 与 `test_seed_supports_the_degradation_case`
 对着真库验——那部分是真的，不依赖模型。
 
 决策质量的验证卡在**未配置 LLM**（`backend/.env` 缺 `LLM_MODEL_NAME` / `LLM_API_KEY` /
@@ -163,34 +164,77 @@ async def test_seed_supports_the_five_scenarios(seed: dict, slots: dict) -> None
     assert screens["count"] >= 1, "显示屏不可借，场景 C 的替代路径断了"
 
 
+async def test_seed_supports_the_degradation_case(seed: dict) -> None:
+    """`AGENT-S-06` 的前提：**「直播设备只有 1 台可借」是算出来的，不是编出来的。**
+
+    与上面那条同样的理由单列：种子一改，这里会指名道姓地说「降级前提没了」，
+    而 `AGENT-S-06` 自己只会表现为「模型怎么选都对」的假绿。
+
+    依据是种子注释里那两个**互相独立**的见证者（`docs/seed.sql` 第 4 节 b 条）：
+    id=15 直播设备02 是 `status=1` 但 `available_count=0`，**只被「可用数」分支筛掉**；
+    id=13 无人机02 是 `available_count=1` 但 `status=2`，**只被「状态」分支筛掉**。
+    本条用前者当降级动因，顺带用后者证明两个分支各自真的在起作用——
+    若 Tool 的过滤条件漏写任一条，下面的断言会失败而不是「碰巧」通过。
+    """
+    from app.agent.tools import query_devices
+
+    live = await query_devices.ainvoke({"device_type": "直播设备"})
+    live_ids = [d["id"] for d in live["devices"]]
+    assert live["count"] == 1, f"直播设备可借数不是 1（{live_ids}），场景六的降级动因消失了"
+    assert live_ids == [seed["live_ok"]], "可借的不是直播设备01"
+    assert seed["live_exhausted"] not in live_ids, "available_count=0 的设备没被滤掉——「可用数」分支失效"
+
+    # 用户要两台 → 库里只有一台能借，这是**真降级**，不依赖任何时段或扣减口径。
+    assert live["count"] < 2, "能借满两台，降级就无从谈起"
+
+    # 另一条独立见证者：状态分支。无人机01 有 2 台可借，无人机02 因损坏被滤掉。
+    drones = await query_devices.ainvoke({"device_type": "无人机"})
+    drone_ids = [d["id"] for d in drones["devices"]]
+    assert drone_ids == [seed["drone_ok"]], "device_status=2 的设备没被滤掉——「状态」分支失效"
+    assert drones["devices"][0]["availableCount"] == 2, "无人机01 的可借数不是 2，见证者前提变了"
+
+
 # --------------------------------------------------------------------------
 # AGENT-S：五个决策场景
 # --------------------------------------------------------------------------
-async def test_s01_budget_downgrade_keeps_space_drops_one_projector(use_model, scripted, slots) -> None:  # noqa: ANN001
-    """A 预算降级（800 元 / 40 人 + 双投影）。
+async def test_s01_budget_keeps_space_and_explains_no_downgrade(use_model, scripted, slots) -> None:  # noqa: ANN001
+    """A 预算 / 设备（800 元 / 40 人 + 双投影）→ **保住场地，并说明为何无需降级**。
 
-    **验**：模型给出的降级理由与备选方案原封不动进响应；主方案只带一台投影仪时
-    `deviceIds` 就是一台（不能被系统补齐成两台）；备选方案走的是 `backup_plan`
+    ## 标准为什么从「设备降级为单投影」改成这一条
+
+    原标准的前提**算不出来**：`device_resource` 没有价格字段，设备不占预算科目，
+    而 800 元预算正好等于 A栋3楼展厅的场地费。也就是说「双投影 → 单投影」这个降级
+    在数据上没有任何动因，模型据此给出降级理由只能靠编。经项目群裁定改为 A+C：
+    预期改成本条（保场地 + 说明无需降级），另补一条前提真成立的降级用例 `AGENT-S-06`。
+    属**验收标准偏离**，已记入 `docs/spec/done/stage-05-completion.md`。
+
+    **验**：`plan` 非空、`spaceId` 命中 40 人展厅、`reason` 非空且说明了「无需降级」；
+    两台投影**都在** `deviceIds` 里（没被削成一台）；备选方案走 `backup_plan`
     （snake_case 入参）也能正确落到 `backupPlan`——这条路径最容易静默变成 None。
-    **不验**：该不该降级。
+    **不验**：该不该降级——那是模型的判断，本用例只验透传与形状。
     """
-    downgrade_reason = "预算 800 元恰好等于场地费，投影由两台降级为一台，保住 40 人场地。"
-    main = _plan(4, "A栋3楼展厅", [1], slots, downgrade_reason)
+    no_downgrade_reason = (
+        "场地与设备均在预算内，**无需降级**：A栋3楼展厅 800 元正好等于预算上限，"
+        "投影仪属库存借用、不占预算科目，两台均可保留，方案不做任何削减。"
+    )
+    main = _plan(4, "A栋3楼展厅", [1, 2], slots, no_downgrade_reason)
     backup = _plan(5, "C栋1楼展厅", [2], slots, "备选：35 人展厅，预算再省 200 元。")
 
     use_model(scripted([
         _spaces_call(40, 2, slots),
         _devices_call("投影仪"),
-        _submit_call(main, backup=backup, reason="预算内保场地，设备降级。"),
+        _submit_call(main, backup=backup, reason="预算内保场地，设备无需降级。"),
         _ai("已提交方案。"),
     ]))
 
     outcome = await builder.run_schedule(text="40人展厅，预算800，要两台投影", user_id=1)
 
     assert outcome.success and not outcome.degraded
-    assert outcome.data.plan.spaceId == 4
-    assert outcome.data.plan.deviceIds == [1], "降级后的设备清单被改动了"
-    assert outcome.data.plan.reason == downgrade_reason
+    assert outcome.data.plan is not None, "保住了场地却没有方案"
+    assert outcome.data.plan.spaceId == 4, "40 人场地的落点不是 A栋3楼展厅"
+    assert outcome.data.plan.deviceIds == [1, 2], "无需降级时设备清单被削减了"
+    assert outcome.data.plan.reason, "reason 为空——用户看不出为什么没降级"
+    assert "无需降级" in outcome.data.plan.reason, "reason 没有说明为何无需降级"
     assert outcome.data.backupPlan is not None, "backup_plan 没落到 backupPlan（字段名抹平失败）"
     assert outcome.data.backupPlan.spaceId == 5
     assert outcome.data.needConfirm is True
@@ -297,6 +341,52 @@ async def test_s05_merged_activity_keeps_the_saving_in_reason(use_model, scripte
     assert outcome.data.plan.reason == saving
     locks = [s for s in outcome.data.trace if s.action == "lock_resources"]
     assert len(locks) == 1, "合并后仍锁了多个场地"
+
+
+async def test_s06_insufficient_devices_degrades_to_what_is_available(use_model, scripted, slots) -> None:
+    """`AGENT-S-06` 设备**数量不足**（要两台直播设备，库里只有 1 台可借）→ 降级为可借数。
+
+    ## 与 `AGENT-S-01` 的分工
+
+    S-01 验「不需要降级时要说清楚为什么」；本条验「真需要降级时降得住、且理由透传」。
+    两条合起来才是完整的降级语义，缺一条都只覆盖一半。
+
+    ## 前提为什么是真的
+
+    `docs/seed.sql` 的 `直播设备×2` 里，id=15 是 `status=1` 但 `available_count=0`
+    （完好、全部借出）。`query_devices` 的可用性过滤把它滤掉，于是这个类型**只剩
+    id=14 一台**。用户要两台 → 只能给一台。这条链路**不需要时段参数、也不依赖
+    尚未定论的扣减口径**，今天就能算出来——这正是它比「投影仪在某时段被占满」
+    更适合当降级用例的原因（后者受 `query_devices` 无时段参数所限，进不了主链路）。
+    前提由 `test_seed_supports_the_degradation_case` 对着真库单独验。
+
+    **验**：`deviceIds` 就是可借的那**一台**（不能被系统补齐成两台，也不能改成坏设备
+    id=15）；降级理由原样透传；`trace` 里留有查询这一步，用户能溯源「为什么只给一台」。
+    **不验**：该不该降级、该不该改用替代类型——那是模型的判断。
+    """
+    degrade_reason = (
+        "直播设备当前仅有 1 台可借（另一台已全部借出），本次按 1 台满足；"
+        "若必须两台，建议改用无人机或调整使用日期。"
+    )
+
+    use_model(scripted([
+        _devices_call("直播设备", "c1"),
+        _submit_call(_plan(8, "中心广场", [14], slots, degrade_reason), reason="设备数量不足，按可借数降级。"),
+        _ai("已提交降级方案。"),
+    ]))
+
+    outcome = await builder.run_schedule(text="户外活动，要两台直播设备", user_id=1)
+
+    assert outcome.success, "数量不足是契约内降级，不该整单失败"
+    assert outcome.data.plan is not None, "降级后应该仍有方案，不是无方案"
+    assert outcome.data.plan.deviceIds == [14], "降级后的设备清单不是可借的那一台"
+    assert len(outcome.data.plan.deviceIds) == 1, "要两台却给回了两台——降级没发生"
+    assert outcome.data.plan.reason == degrade_reason, "降级理由没有原样透传"
+
+    # 可溯源：用户要能看出「为什么只给一台」，所以查询这一步必须在 trace 里。
+    queried = [s.actionInput["device_type"] for s in outcome.data.trace if s.action == "query_devices"]
+    assert queried == ["直播设备"], f"降级依据没留痕：{queried}"
+    assert outcome.data.needConfirm is True
 
 
 # --------------------------------------------------------------------------
