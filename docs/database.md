@@ -44,6 +44,20 @@ DATABASE_URL=mysql+asyncmy://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${D
 > 🔴 **`backend/.env` 必须被 `.gitignore` 忽略，`.env.example` 必须提交。**
 > 提交前 `git status` 看不到 `.env` 才算安全。凭据一旦进入 git 历史，改密码也不足以清除。
 
+> ⚠️ **2026-09-27 补记（这条红线此前是被破的）**：`backend/.env` 自首次提交
+> `589c5ea` 起就在版本控制里，`DB_PASSWORD` 与 `JWT_SECRET_KEY` 均已推到 `origin`。
+> 它先于 `backend/.gitignore` 的 `.env` 规则存在——**ignore 规则对已跟踪文件无效**，
+> 所以 Rule 一直显示"安全"却实际没生效。已在 `2843b71` 执行 `git rm --cached`（不动历史）。
+>
+> 两点后果：
+> 1. **新加入的成员 clone 后不再自带 `.env`**，需 `cp backend/.env.example backend/.env`
+>    再按上面第 25~31 行问集成组要连接信息。已有的本地副本不受影响。
+> 2. **凭据需轮换**（库密码 + `JWT_SECRET_KEY`）。不轮换的话，历史里那份仍然可用。
+>    轮换由集成组决定并执行。
+>
+> 教训：判断"安全"要看 `git ls-files` 而不是 `git check-ignore`——
+> 后者对已跟踪文件**不报忽略**，两者结论相反时以 `git ls-files` 为准。
+
 Navicat / DBeaver 仅作可视化查询用，连接信息从 `.env` 读取，**不写入任何文档**。
 
 ---
