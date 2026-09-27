@@ -677,3 +677,315 @@ def agent_fake_llm():
         )
 
     return _make
+
+
+# ==========================================================================
+# 模块 4 核心调度 Agent（2026-09-28 合并 origin/main 时并入）
+# ==========================================================================
+# 并入原则与两组夹具的分工
+# ------------------------
+# 上面的通用夹具（引擎 / `db_session` / `client` / 令牌 / 指标）来自基础支撑，
+# **全部离线**：SQLite 临时库 + 假 Redis，这是全组约定的默认形态。
+#
+# 模块 4 的阶段 7 用例（`tests/test_agent_schedule.py` 等）与此不同：它们要断言
+# 的主文档 6.9 种子数据事实（场地 8 / 设备 15 / 预约 10 的**真实 id 与状态**），
+# SQLite 空库里没有，只能连开发库。因此本段夹具**成对使用 `dev_` 前缀**，
+# 与离线夹具区分开：
+#
+#     dev_client      → 全局 `app`（不覆盖 get_db），请求打到开发库
+#     dev_db_session  → 开发库只读会话，只用于「查证据」
+#
+# 名字区分不是为了排版好看：`db_session` / `client` 这**两个名字**在同一个
+# conftest 里只能有一个语义，合并时取的是上面那套离线版（基础支撑的用例依赖它）。
+# 谁把 `dev_` 前缀去掉，就会同时打坏两边——离线用例连上真库、真库用例连上空库。
+#
+# ⚠️ 该依赖已登记在 `docs/spec/README.md` 硬卡点 #4（`smart_scheduler_test` 无权
+# 访问，责任人申云飞），测试库权限到位后才谈得上「全离线」。
+
+import asyncio  # noqa: E402
+import socket  # noqa: E402
+
+from pydantic import Field  # noqa: E402
+from sqlalchemy import event  # noqa: E402
+
+# --------------------------------------------------------------------------
+# 种子数据事实（6.9）—— 断言基准
+# --------------------------------------------------------------------------
+# 这些值来自开发库实测，不是文档抄录。**种子数据一变，这里与相关用例必须同步改**
+# （docs/test.md §3.2 末尾的明文要求）。
+#
+# 实测基线（2026-09-27）：
+#   space_resource  8 行：会议室×3（cap 12/20/30）、展厅×2（cap 50/35）、
+#                        多功能厅×2（cap 80/25）、户外×1（cap 100）
+#   device_resource 15 行：投影仪×4、音响×4、显示屏×3、无人机×2、直播设备×2
+#   reserve_order  10 行
+SEED = {
+    # 场地
+    "space_hall_40": 4,        # A栋3楼展厅，type=2，cap=50，¥800
+    "space_hall_35": 5,        # C栋1楼展厅，type=2，cap=35，¥600
+    "space_small_hall": 7,     # 综合楼小多功能厅，type=3，cap=25
+    "space_big_hall": 6,       # 综合楼大礼堂，type=3，cap=80
+    # 设备
+    "projectors": [1, 2, 3, 4],
+    "speakers": [5, 6, 7, 8],
+    "screens": [9, 10, 11],
+    "drone_ok": 12,            # 无人机01，status=1，available=2
+    "drone_broken": 13,        # 无人机02，status=2（损坏）→ 必须被 Tool 滤掉
+    "live_ok": 14,             # 直播设备01，status=1，available=1
+    "live_exhausted": 15,      # 直播设备02，status=1，available=0 → 必须被 Tool 滤掉
+}
+
+#: 一个**已被占用**的时段：`reserve_order` id=9（space=4，order_status=1）。
+#: 同段被占的还有 space 1/2/3/5，所以这是确定性冲突，不是「碰巧」。
+OCCUPIED_SLOT = ("2026-10-15 13:00:00", "2026-10-15 17:00:00")
+#: 同一天、同长度，但**没有任何订单**——用于「无冲突」路径。space 6 在该段是空的。
+FREE_SLOT = ("2026-10-15 09:00:00", "2026-10-15 11:00:00")
+
+#: 用例里的时间一律用这两个常量，避免各处硬编码导致互相矛盾。
+T_START = FREE_SLOT[0]
+T_END = FREE_SLOT[1]
+
+
+# --------------------------------------------------------------------------
+# 护栏一：断网
+# --------------------------------------------------------------------------
+_LOOPBACK = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _offline_guard() -> Any:
+    """任何到非回环地址的 socket 连接直接判失败。
+
+    阶段 7 §3.8 的原话是「**断网跑一遍验证这一点**，不要只凭『应该不联网』推断」。
+    本机没有可靠的断网手段（关网卡要管理员权限，且会连 SSH 隧道一起断掉——
+    而隧道断了连库的用例就没法跑了），所以用**拦截而不是拔线**：
+    拦截的覆盖范围比拔线更精确，拔线只断外部网络，拦截能证明**每条用例**都没往外连。
+
+    回环地址放行：`dev_*` 夹具要连隧道另一端的开发库（127.0.0.1:3308）。
+    """
+    real_connect = socket.socket.connect
+
+    def guarded(self: socket.socket, address: Any) -> Any:
+        host = address[0] if isinstance(address, tuple) else str(address)
+        if host not in _LOOPBACK:
+            raise AssertionError(
+                f"用例试图联网：{host}。主文档 10.2 规定真实 API 不进常规用例"
+                "（费用不可控 + 用例结果受外部影响）。"
+            )
+        return real_connect(self, address)
+
+    socket.socket.connect = guarded  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        socket.socket.connect = real_connect  # type: ignore[method-assign]
+
+
+# --------------------------------------------------------------------------
+# 护栏二：禁止写库
+# --------------------------------------------------------------------------
+#: 会被拦下的语句首关键字。故意**不含** `select` / `show` / `set` / `begin` 等
+#: ——`SELECT ... FOR UPDATE` 是读，必须放行（真实 `create_order` 靠它）。
+_FORBIDDEN_HEADS = frozenset({
+    "insert", "update", "delete", "replace",
+    "create", "drop", "alter", "truncate", "rename",
+    "grant", "revoke", "call",
+})
+
+
+class WriteForbiddenError(AssertionError):
+    """用例试图写库。见 `_db_readonly_guard`。"""
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _db_readonly_guard() -> Any:
+    """拦住所有写语句。
+
+    主文档 6.8 的红线是「测试禁止写 `reserve_order` 正式表」。正常做法是连测试库
+    `smart_scheduler_test` 并把用例包在事务里回滚——但**该库当前无权访问**
+    （`Access denied for user 'smart_dev'@'%' to database 'smart_scheduler_test'`），
+    只能连开发库。连开发库又必须保证不污染，于是把「靠回滚兜底」换成
+    「靠拦截保证根本写不进去」：**这个变体的安全性反而更高**，因为回滚方案在
+    用例中途崩掉时可能留下半截数据，而拦截是每次都生效的前置拒绝。
+
+    拦截是**全库级别**的，不只 `reserve_order`——测试里没有任何理由需要写库。
+
+    只挂应用侧的全局引擎：上面那套离线夹具用的 SQLite 引擎是各用例自建的，
+    不该被本护栏牵连（它们本来就该能写自己的临时库）。
+    """
+    from app.core.database import async_engine
+
+    written: list[str] = []
+
+    def _guard(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+        head = statement.lstrip().split(None, 1)[0].lower() if statement.strip() else ""
+        if head in _FORBIDDEN_HEADS:
+            written.append(statement)
+            raise WriteForbiddenError(
+                f"用例试图写库：{statement.strip()[:160]}\n"
+                "主文档 6.8：测试禁止写 reserve_order 正式表；"
+                "当前测试库无权访问，连的是开发库，任何写入都会污染种子数据——"
+                "而种子数据正是 AGENT-S-01~05 的断言基准。"
+            )
+
+    event.listen(async_engine.sync_engine, "before_cursor_execute", _guard)
+    try:
+        yield written
+    finally:
+        event.remove(async_engine.sync_engine, "before_cursor_execute", _guard)
+
+
+# --------------------------------------------------------------------------
+# 护栏三：埋点计数复位
+# --------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def reset_metrics() -> Any:
+    """每个用例前清零埋点。`agent_service` 是进程内单例，不清零则用例互相影响。
+
+    （基础支撑的 `_reset_global_singletons` 清的是 `app/core/metrics.py` 那套
+    中间件指标，与本夹具不是同一份计数，两者都要。）
+    """
+    from app.services import agent_service
+
+    agent_service.reset()
+    yield
+    agent_service.reset()
+
+
+# --------------------------------------------------------------------------
+# 假 LLM
+# --------------------------------------------------------------------------
+class ScriptedChatModel(BaseChatModel):
+    """按顺序消费预设响应的假模型。
+
+    - `bind_tools` 返回 `self`：`create_agent` 必需，基类默认实现直接抛
+      `NotImplementedError`（这是本夹具存在的唯一理由，见 `tests/smoke_fake_llm.py`）
+    - `_cursor` 用 `PrivateAttr` 而非普通字段，否则会被 pydantic 当成模型字段参与校验
+    - 响应耗尽后**重复最后一条**，避免用例因为少写一条响应而拿到 IndexError
+    - `delay` 用于 `AGENT-E-02`（超时）：不 sleep 就测不出 `wait_for` 分支
+
+    与上面的 `agent_fake_llm` / `StubChatModel` 的关系：契约相同（都支持
+    `bind_tools`），`ScriptedChatModel` 多一个 `delay` 且**异步**实现
+    `_agenerate`（`StubChatModel` 只实现同步 `_generate`）。模块 4 的用例按名字
+    取 `scripted`；基础支撑的用例取 `agent_fake_llm`。两者不合并，
+    因为阶段 7 的用例是按 `scripted` 写的，改名会牵动 28 处调用。
+    """
+
+    responses: list[AIMessage] = Field(default_factory=list)
+    delay: float = 0.0
+    _cursor: int = PrivateAttr(default=0)
+
+    @property
+    def _llm_type(self) -> str:
+        return "scripted-chat-model"
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:  # noqa: ANN401 - 对齐父类签名
+        return self
+
+    def _next(self) -> ChatResult:
+        idx = min(self._cursor, len(self.responses) - 1)
+        self._cursor += 1
+        return ChatResult(generations=[ChatGeneration(message=self.responses[idx])])
+
+    def _generate(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any) -> ChatResult:  # noqa: ANN401
+        return self._next()
+
+    async def _agenerate(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any) -> ChatResult:  # noqa: ANN401
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        return self._next()
+
+
+@pytest.fixture
+def scripted() -> Any:
+    """`scripted([...])` → 一个 `ScriptedChatModel`。
+
+    写成工厂而不是直接给实例：用例需要按场景现编响应序列，
+    一个固定内容的夹具会让所有用例被同一串 tool_call 绑死。
+    """
+    def _make(responses: list[AIMessage], delay: float = 0.0) -> ScriptedChatModel:
+        return ScriptedChatModel(responses=responses, delay=delay)
+
+    return _make
+
+
+# --------------------------------------------------------------------------
+# 开发库夹具（模块 4 阶段 7 用例专用，见本段开头的说明）
+# --------------------------------------------------------------------------
+@pytest.fixture
+def token() -> str:
+    """`sys_user.id=1`（zhangsan，6.9 种子数据）的 accessToken。
+
+    2026-09-28 合并后改用基础支撑的 `create_token`：模块 4 阶段的
+    `create_access_token` / `create_refresh_token` 在正式版里已收敛成一个
+    `create_token(user_id, role, token_type, expires_delta, version=0)`，
+    返回 `(token, payload)` 二元组，因此这里取 `[0]`。
+    正式版的 `get_current_user` 不查白名单（只有 refreshToken 才进 Redis），
+    所以直接签发即可，不必先登录。
+    """
+    from datetime import timedelta
+
+    from app.core.security import TokenType, create_token
+
+    issued, _payload = create_token(
+        user_id=1,
+        role="user",
+        token_type=TokenType.ACCESS,
+        expires_delta=timedelta(minutes=30),
+    )
+    return issued
+
+
+@pytest.fixture
+def auth(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+async def dev_client() -> Any:
+    """指向**全局应用**的 ASGI 客户端：请求打到开发库。
+
+    与上面的 `client` 的差别只有一处、但很关键：这里**不覆盖 `get_db`**。
+    上面的 `client` 走 `application`，把 `get_db` 覆盖成 SQLite 会话，
+    连的是空库；模块 4 的用例断言的是 6.9 种子数据的真实 id 与状态，
+    必须打到开发库（只读，写入由 `_db_readonly_guard` 拦下）。
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as c:
+        yield c
+
+
+@pytest.fixture
+async def dev_db_session() -> Any:
+    """开发库只读会话，**只用于查证据**。
+
+    ⚠️ **本夹具没有满足阶段 7 §3.2 的原文**（「连接 `smart_scheduler_test`，用例结束后回滚」）：
+
+    | 要求 | 实际 | 原因 |
+    | --- | --- | --- |
+    | 连测试库 | 连的是 `smart_scheduler_dev` | `smart_scheduler_test` 报 1044 无权访问，属集成组 |
+    | 用例后回滚 | 无需回滚 | 写入被 `_db_readonly_guard` 前置拒绝，不存在需要回滚的数据 |
+
+    「回滚」这一步在连开发库的前提下本来就是错的安全手段：它保护的是「用例自己的写」，
+    而用例压根不许写。真正的保护是拦截。这条偏差记在
+    `docs/spec/done/stage-07-completion.md` 里，**未取得测试库权限前不得声称已合规**。
+    """
+    from app.core.database import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as session:
+        yield session
+
+
+@pytest.fixture
+def seed() -> dict[str, Any]:
+    """种子数据事实（6.9 实测值）。断言基准集中在 `SEED` 一处，便于种子变更时同步。"""
+    return SEED
+
+
+@pytest.fixture
+def slots() -> dict[str, tuple[str, str]]:
+    """被占用 / 空闲的两个时段。"""
+    return {"occupied": OCCUPIED_SLOT, "free": FREE_SLOT}
