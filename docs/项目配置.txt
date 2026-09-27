@@ -1,0 +1,15 @@
+服务器 IP：59.110.7.222
+MySQL 容器名：mysql
+宿主机映射端口：3307
+容器内部端口：3306
+Docker 网络名：smart_scheduler_net
+
+开发库：
+DB_NAME=smart_scheduler_dev
+DB_USER=smart_dev
+DB_PASSWORD=开发强密码
+
+生产库：
+DB_NAME=smart_scheduler_prod
+DB_USER=smart_prod
+DB_PASSWORD=生产强密码

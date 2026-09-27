@@ -1,0 +1,55 @@
+# ============================================================================
+# 后端依赖清单
+# ============================================================================
+# 规范 §3.1：所有依赖严格锁定版本，禁止使用 ^ 或 ~ 范围版本号。
+# 全量锁文件 requirements.lock 通过 `pip freeze` 生成并提交至仓库，
+# 部署与 CI 使用 `pip install -r requirements.lock` 复现环境。
+#
+# 安装：
+#     pip install -r requirements.txt
+# ============================================================================
+
+# ============ Web 框架 ============
+fastapi==0.115.0
+uvicorn==0.30.6
+python-multipart==0.0.12
+
+# ============ 数据校验与配置 ============
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-dotenv==1.0.1
+
+# ============ 数据库（异步） ============
+sqlalchemy==2.0.35
+asyncmy==0.2.10
+# 注意：PyMySQL 仅用于 Alembic 迁移的同步引擎（见 app/core/database.py 的 sync_engine），
+# 业务代码严禁使用同步驱动（§3.4），连接串固定 mysql+asyncmy://
+pymysql==1.1.1
+
+# ============ 数据库迁移 ============
+alembic==1.13.3
+
+# ============ 缓存 ============
+redis==5.0.8
+
+# ============ 认证授权 ============
+PyJWT==2.9.0
+# 关键说明（§3.6）：passlib 与 bcrypt 必须配套使用。
+# bcrypt 5.0.0 移除了 __about__.__version__ 属性，会导致 passlib 后端探测失败并抛 ValueError。
+# 严禁升级 bcrypt 到 5.x
+passlib==1.7.4
+bcrypt==4.0.1
+
+# ============ AI 编排（LangChain 1.x） ============
+langchain==1.3.11
+langchain-openai==1.5.0
+langchain-classic==1.0.0
+
+# ============ HTTP 客户端与文件 ============
+httpx==0.27.2
+aiofiles==24.1.0
+
+# ============ 测试（仅开发环境） ============
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
