@@ -105,6 +105,19 @@ async def lock_resources(
         )
 
     # ---- 2. 参数校验（服务层还会再校验一次，这里先挡一道，省一次往返）----
+    # ⚠️ `device_ids` 的类型**必须在本层挡住**，不能只靠 `args_schema`。
+    # 原因具体：`list(device_ids or [])` 对字符串是**逐字符迭代**的——
+    # `device_ids="1"` 会静默变成 `["1"]`，再被 `create_order` 的整数容错转成 `[1]`，
+    # 于是一次传错类型的调用变成了一次**成功且正确**的预约（错得无声无息）。
+    # `order_service` 专门为这个形状写了拒绝分支，本层若先 `list()` 一遍就等于把它拆掉。
+    if device_ids is not None and not isinstance(device_ids, (list, tuple)):
+        return fail(
+            f"device_ids 必须是数组，收到 {type(device_ids).__name__}（{device_ids!r}）。"
+            "传字符串会被逐字符迭代成错误的 ID 列表，例如 \"12\" → [1, 2]。",
+            conflictType="invalid_param", retryable=False,
+            actionHint=_ACTION_HINT["invalid_param"],
+        )
+
     start_dt = parse_time(start_time)
     end_dt = parse_time(end_time)
     if start_dt is None or end_dt is None:
