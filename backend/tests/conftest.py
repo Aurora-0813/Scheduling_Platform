@@ -1,5 +1,5 @@
 """
-测试公共夹具（摄像头空间感知模块）
+测试公共夹具（模块 2 摄像头空间感知 · 模块 4 核心调度 Agent）
 ====================================================================
 
 规范依据 §10.2：
@@ -7,17 +7,35 @@
       保证离线可跑；真实 API 只做一次冒烟验证。」
 
 本文件提供的夹具：
-    fake_jpeg / fake_png      —— 构造合法图片字节（含正确魔数）
-    make_upload_file          —— 把字节包装成 FastAPI 的 UploadFile
-    fake_llm                  —— 按剧本回复的假模型（不支持结构化输出）
-    structured_llm            —— 支持 with_structured_output 的假模型
-    failing_llm               —— 一调用就抛异常的假模型（模拟超时/网络故障）
-    temp_upload_dir           —— 把图片落盘目录重定向到临时目录，避免污染仓库
+
+    模块 2 摄像头空间感知
+        fake_jpeg / fake_png      —— 构造合法图片字节（含正确魔数）
+        make_upload_file          —— 把字节包装成 FastAPI 的 UploadFile
+        fake_llm                  —— 按剧本回复的假模型（**不支持** bind_tools）
+        structured_llm            —— 支持 with_structured_output 的假模型
+        failing_llm               —— 一调用就抛异常的假模型（模拟超时/网络故障）
+        temp_upload_dir           —— 把图片落盘目录重定向到临时目录，避免污染仓库
+
+    模块 4 核心调度 Agent
+        agent_fake_llm            —— 实现 bind_tools 的 StubChatModel，供 create_agent 用
+        db_session                —— 测试库会话（连 smart_scheduler_test，用例后回滚）
+
+⚠️ 两个假 LLM 夹具的名字必须区分开，它们的契约正好相反：
+
+    fake_llm        故意**不**支持 bind_tools。image_service 据此走「策略 B 降级」
+                    分支（普通 ainvoke + 手工 JSON 解析），换成支持 bind_tools 的
+                    模型会让 test_image_service 里那批用例失去意义。
+
+    agent_fake_llm  必须支持 bind_tools。create_agent 组装时会调
+                    model.bind_tools(tools)，而实测 langchain-core 1.6.4 下
+                    FakeMessagesListChatModel 与 GenericFakeChatModel 都没实现它，
+                    直接抛 NotImplementedError。验证脚本见 tests/smoke_fake_llm.py。
 
 设计原则：
     **所有单元测试都不连数据库、不联网。**
     数据库查询通过 monkeypatch 替换成固定数据，模型调用通过假模型替换。
-    真正的数据库联调放在接口级测试里，使用独立测试库 smart_scheduler_test。
+    真正的数据库联调放在接口级测试里，使用独立测试库 smart_scheduler_test
+    （只有 db_session 这一个夹具会真的连库，且用例结束后回滚）。
 """
 import io
 import json
@@ -25,11 +43,14 @@ import struct
 import zlib
 
 import pytest
+from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from pydantic import PrivateAttr
 
 # ===========================================================================
-# 图片字节构造
+# 图片字节构造（模块 2）
 # ===========================================================================
 
 
@@ -129,7 +150,7 @@ def make_upload_file():
 
 
 # ===========================================================================
-# 假模型
+# 假模型（模块 2 摄像头空间感知）
 # ===========================================================================
 
 
@@ -154,6 +175,9 @@ def fake_llm():
 
         这恰好也验证了一个重要事实：**假模型天然无法覆盖策略 A**。
         策略 A 的行为由下面的 structured_llm 夹具单独覆盖。
+
+        （模块 4 的 Agent 侧需要的是「支持 bind_tools」的假模型，
+          那是 agent_fake_llm，不要和这个混用。）
     """
 
     def _make(responses: list) -> FakeMessagesListChatModel:
@@ -237,7 +261,7 @@ def failing_llm():
 
 
 # ===========================================================================
-# 目录与环境
+# 目录与环境（模块 2）
 # ===========================================================================
 
 
@@ -259,3 +283,136 @@ def temp_upload_dir(tmp_path, monkeypatch):
 
     monkeypatch.setattr(settings, "IMAGE_UPLOAD_DIR", str(tmp_path))
     return tmp_path
+
+
+# ===========================================================================
+# 假模型（模块 4 核心调度 Agent）
+# ===========================================================================
+
+
+class StubChatModel(BaseChatModel):
+    """
+    自实现 bind_tools 的假聊天模型，供 create_agent 组装使用。
+
+    为什么不用现成的 FakeMessagesListChatModel / GenericFakeChatModel：
+        create_agent 组装时会调 model.bind_tools(tools)，
+        而实测 langchain-core 1.6.4 下这两个现成夹具都没有实现 bind_tools，
+        直接抛 NotImplementedError，后面所有用例都会变成「假绿」。
+        冒烟验证见 tests/smoke_fake_llm.py。
+
+    用法：
+        StubChatModel(responses=[tool_call_message, AIMessage(content="已找到方案")])
+    """
+
+    responses: list[AIMessage] = []
+    _cursor: int = PrivateAttr(default=0)
+
+    @property
+    def _llm_type(self) -> str:
+        return "stub-chat-model"
+
+    def bind_tools(self, tools, **kwargs):  # noqa: ANN001, ANN003 - 对齐父类签名
+        """create_agent 必需。基类默认实现直接抛 NotImplementedError。"""
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # noqa: ANN001
+        # 每次调用往下走一条剧本；越界后停在最后一条（便于观察是否被重复调用）
+        idx = min(self._cursor, len(self.responses) - 1)
+        self._cursor += 1
+        return ChatResult(generations=[ChatGeneration(message=self.responses[idx])])
+
+
+@pytest.fixture
+def agent_fake_llm():
+    """
+    构造供 create_agent 使用的假模型（**支持** bind_tools）。
+
+    用法：
+        model = agent_fake_llm([tool_call_msg, AIMessage(content="已找到方案")])
+        agent = create_agent(model, tools=[query_spaces], system_prompt="你是调度助手")
+
+    参数：
+        responses : list  按顺序返回的消息；传 str 会自动包成 AIMessage
+
+    说明：
+        典型剧本是「第一条带 tool_calls，第二条给最终答复」，
+        对应 create_agent 的「调工具 → 再总结」两轮。
+        需要覆盖模型直接给答复、不调工具的场景时，只传一条即可。
+    """
+
+    def _make(responses: list) -> StubChatModel:
+        return StubChatModel(
+            responses=[
+                AIMessage(content=r) if isinstance(r, str) else r for r in responses
+            ]
+        )
+
+    return _make
+
+
+# ===========================================================================
+# 数据库（模块 4 核心调度 Agent）
+# ===========================================================================
+
+TEST_DB_NAME = "smart_scheduler_test"
+
+
+@pytest.fixture
+async def db_session():
+    """
+    测试库会话夹具：连测试库，用例结束后回滚，不留痕。
+
+    做法：
+        1. 把 settings.database_url 里的库名换成 TEST_DB_NAME；
+        2. 单开一个 poolclass=NullPool 的引擎（用完即断，不跨用例复用连接）；
+        3. 在外层事务里开 Session，并设 join_transaction_mode="create_savepoint" ——
+           用例里 session.commit() 只是打一个 SAVEPOINT，不会真的提交；
+        4. 用例结束后回滚外层事务，所有写入一并消失。
+
+    为什么不用项目里的 async_engine：
+        那个引擎连的是开发库 smart_scheduler_dev，且绑定关系在模块导入时就固化了。
+        测试必须连独立测试库，否则一次 commit 就把开发库写脏了。
+
+    用法：
+        async def test_create_reservation(db_session):
+            db_session.add(Reservation(...))
+            await db_session.commit()   # 只是 SAVEPOINT，不会落到真实库里
+            ...
+
+    前置条件：
+        测试库 smart_scheduler_test 已存在且表结构已建好（见 docs/database.md），
+        且 SSH 隧道已起。连不上时这里直接 skip 而不是 fail ——
+        让纯离线用例照常跑，不被环境问题拖累。
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from app.core.config import settings
+
+    url = settings.database_url.replace(f"/{settings.DB_NAME}", f"/{TEST_DB_NAME}")
+    engine = create_async_engine(url, poolclass=NullPool)
+    try:
+        try:
+            conn = await engine.connect()
+        except (SQLAlchemyError, OSError) as exc:
+            pytest.skip(f"连不上测试库 {TEST_DB_NAME}（多半是 SSH 隧道没起）：{exc}")
+
+        try:
+            trans = await conn.begin()
+            try:
+                session = AsyncSession(
+                    bind=conn,
+                    expire_on_commit=False,
+                    join_transaction_mode="create_savepoint",
+                )
+                try:
+                    yield session
+                finally:
+                    await session.close()
+            finally:
+                await trans.rollback()
+        finally:
+            await conn.close()
+    finally:
+        await engine.dispose()

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+.DS_Store
+.vscode/
+
+# 注意：package-lock.json 必须提交，禁止忽略（《项目文档.md》8.6）

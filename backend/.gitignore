@@ -1,0 +1,18 @@
+# 凭证：只提交 .env.example，真实 .env 永不入库
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 本机数据库文件（项目禁止使用本地数据库，此处为兜底）
+*.sqlite3
+*.db
