@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends
 
 from app.agent.chains.builder import AgentUnavailableError, run_schedule
 from app.core.response import ApiError, ok
-from app.core.security import CurrentUser, get_current_user
+from app.api.deps import CurrentUser, get_current_user
 from app.schemas.agent import ScheduleRequest
 from app.services.agent_service import persist_agent_trace, record_call
 
@@ -60,7 +60,7 @@ async def schedule(
     try:
         outcome = await run_schedule(
             text=req.text,
-            user_id=user.id,
+            user_id=user.user_id,
             image_context=req.imageContext,
         )
     except AgentUnavailableError as exc:
@@ -71,7 +71,7 @@ async def schedule(
     # 埋点**必须**在返回之前，且不能因为埋点失败而改变响应。
     record_call(outcome)
 
-    await _persist_trace(req.text, user.id, outcome)
+    await _persist_trace(req.text, user.user_id, outcome)
 
     return ok(outcome.data.model_dump(), message=outcome.message)
 
