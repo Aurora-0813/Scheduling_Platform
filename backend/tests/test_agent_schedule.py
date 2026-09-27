@@ -603,8 +603,17 @@ async def test_i02_missing_authorization_is_401(dev_client) -> None:  # noqa: AN
     assert set(body) == {"code", "message", "data"}, "401 也必须是统一响应体"
 
 
-async def test_i03_empty_text_is_422_without_calling_the_model(dev_client, auth, monkeypatch) -> None:  # noqa: ANN001
-    """`AGENT-I-03` `text` 为空串：422，**且不空跑模型**（`min_length=1` 生效）。"""
+async def test_i03_empty_text_is_rejected_without_calling_the_model(dev_client, auth, monkeypatch) -> None:  # noqa: ANN001
+    """`AGENT-I-03` `text` 为空串：被参数校验挡下，**且不空跑模型**（`min_length=1` 生效）。
+
+    ⚠️ 口径是 **HTTP 200 + `code=400`**，不是 422。
+
+    全局 `RequestValidationError` 处理器（`core/exceptions.py`）把框架默认的
+    「422 + 字段级报错」统一收敛成 `code=400` + 一句人话，与模块 1/2 的用例口径一致
+    （它们断言 `body["code"] == 400`）。两套口径不可兼得，模块 4 让出 422：
+    `docs/api.md` 原先写的 422 已按此改正。**契约冻结后因跨模块统一响应体改口径**，
+    记在 stage-02 完成文档的偏离表。
+    """
     called = False
 
     async def _spy(**kwargs):  # noqa: ANN003, ANN202
@@ -616,8 +625,8 @@ async def test_i03_empty_text_is_422_without_calling_the_model(dev_client, auth,
 
     resp = await dev_client.post("/api/v1/agent/schedule", json={"text": ""}, headers=auth)
 
-    assert resp.status_code == 422
-    assert resp.json()["code"] == 422
+    assert resp.status_code == 200, "统一响应体的约定是 HTTP 恒 200，错误码只放 body.code"
+    assert resp.json()["code"] == 400
     assert not called, "空文本仍然跑了一遍模型"
 
 
@@ -643,7 +652,7 @@ async def test_i04_identity_comes_only_from_jwt(payload, dev_client, auth, monke
 
     resp = await dev_client.post("/api/v1/agent/schedule", json=payload, headers=auth)
 
-    assert resp.status_code == 200, "夹带 userId 应当是「被忽略」，不是 422 也不是 500"
+    assert resp.status_code == 200, "夹带 userId 应当是「被忽略」，不是校验失败也不是 500"
     assert seen["user_id"] == 1, f"身份不是从 JWT 取的：{seen.get('user_id')}"
     assert "userId" not in seen["text"] and "user_id" not in seen["text"], "请求体的身份字段混进了需求原文"
 
