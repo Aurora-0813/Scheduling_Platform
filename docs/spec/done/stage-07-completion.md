@@ -242,6 +242,29 @@ Required test coverage of 80% reached. Total coverage: 92.29%
 | 5 | `conflictDetail` 的四种形状（contract-alignment 第 4、6 条） | 蔡玉礼 | 前端屏 3 冲突渲染；`device_conflict` 的 reason 区分已按两条落地，另两条未到手 |
 | 6 | 未决 #6：`延期致歉` 无对应 INT 值 | 黄嵩 + 集成组 | `generate_notification` 该类型**失败并说明原因**（不擅自映射），用例钉住了这个行为 |
 | 7 | `order_status` 默认 1 与主文档 5.5 第 3 步的校验口径 | 蔡玉礼 | 已暂按更严的 `status IN (1,2)` 实现，标记为与 5.5 字面不一致 |
+| 8 | **模块 1/2 的接口用例在本环境恒红（9 例）** | 模块 1（郑宇豪）/ 模块 2 | 见下方说明。**非本模块引入，本模块也不修** |
+
+### 第 8 条：image/voice 用例继承红（2026-09-27 定性）
+
+`tests/test_image_api.py`（5 例）与 `tests/test_voice_api.py`（4 例）在本环境**恒红**，
+断言处一律是 `assert 401 == 200` / `assert 401 == 400`，即响应体 `code=401`。
+
+**根因**：`image.py` 与 `voice.py` 的两个接口都挂 `Depends(get_current_user)`
+（`app/api/deps.py`，真 JWT 校验），而 `AUTH_BYPASS` 在 `config.py:36` 与 `origin/main`
+上**都是 `False`**、`.env` 也没开。用例不带 `Authorization` 头 → 走 `AuthError` →
+`code=401`。
+
+**定性依据（两条独立证据，均已实跑）**：
+
+1. 临时 `AUTH_BYPASS=true` 复跑这 9 例 → **14 passed**（含另 5 例）——证明根因就是鉴权闸门；
+2. 拉一个**纯净 `origin/main`（`6f6f6ff`）worktree** 复跑 `test_image_api.py`
+   + `test_voice_api.py` → **同样这 9 例红，逐条同名**——证明是模块 1/2 的继承问题，
+   与本模块的 rebase 无关。
+
+**结论**：属模块 1/2 自身的用例与环境问题，**模块 4 不修**——修它要动别人的
+路由依赖或改 `AUTH_BYPASS` 默认值，两者都越界（`AUTH_BYPASS=false` 是安全默认值，
+为让用例变绿而改默认值是拿部署安全换 CI 绿灯）。留待模块 1/2 与集成组处置。
+在**本模块**的验收口径里，这 9 例不计入分子分母。
 
 ## 9. 建议
 
