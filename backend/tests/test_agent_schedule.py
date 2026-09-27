@@ -603,6 +603,102 @@ async def test_i02_missing_authorization_is_401(dev_client) -> None:  # noqa: AN
     assert set(body) == {"code", "message", "data"}, "401 也必须是统一响应体"
 
 
+async def test_i02b_refresh_token_cannot_be_used_as_access(dev_client) -> None:  # noqa: ANN001
+    """refreshToken 不能当 accessToken 用：401。
+
+    `AGENT-I-02` 只验了「没带头」，验不出「带错了头」。两种 Token 用**同一个密钥**签发，
+    `jwt.decode` 对两者都验签通过——不单独校验 `type`，refreshToken 就是一把万能钥匙，
+    而它的有效期是 accessToken 的 7 倍。本条把这个口子钉住。
+
+    注意本条走的是路由链上的依赖：agent 路由当前用 `core/security.py` 的实现，
+    那个实现**本来就有** `type` 校验。真正缺校验的是 `api/deps.py` 那份
+    （模块 2 的 image/voice 在用），单独由
+    `test_api_deps_rejects_refresh_token` 直接钉住。
+    """
+    from app.core.security import create_refresh_token
+
+    refresh = create_refresh_token(1, username="zhangsan", role="user")
+
+    resp = await dev_client.post(
+        "/api/v1/agent/schedule",
+        json={"text": "排一下"},
+        headers={"Authorization": f"Bearer {refresh}"},
+    )
+
+    assert resp.status_code == 401, "refreshToken 竟然能调业务端点"
+    assert set(resp.json()) == {"code", "message", "data"}, "401 也必须是统一响应体"
+
+
+async def test_api_deps_rejects_refresh_token(monkeypatch) -> None:  # noqa: ANN001
+    """`api/deps.py::get_current_user` 自己必须把 refreshToken 拦下。
+
+    为什么单测这个依赖、而不只靠上面那条接口用例：
+
+    · 模块 4 的 agent / mock / monitor 路由走的是 `core/security.py` 那份实现，
+      它**本来就有** `type` 校验 —— 只测 agent 路由，验的是另一份依赖；
+    · 而 `app/api/deps.py` 这份原先没有，模块 2 的 image / voice 路由正直接
+      `Depends(get_current_user)` 指向它。也就是说：**接口用例绿着，洞还敞着**。
+
+    实测确认过（把 `_TOKEN_TYPE_REFRESH` 临时拨成别的值）：不校验时 refreshToken
+    能一路穿过认证直达业务代码——在 `format_spoken_text` 里才开始建 LLM 客户端。
+    """
+    from app.core.config import settings
+    from app.core.exceptions import AuthError
+    from app.core.security import create_access_token, create_refresh_token
+
+    monkeypatch.setattr(settings, "AUTH_BYPASS", False)  # .env 若开了放行模式，本用例就没意义了
+
+    from app.api.deps import get_current_user
+
+    # 对照：accessToken 正常放行
+    user = await get_current_user(authorization=f"Bearer {create_access_token(1)}")
+    assert user.user_id == 1
+
+    # 待验：refreshToken 被拒
+    refresh = create_refresh_token(1, username="zhangsan", role="user")
+    with pytest.raises(AuthError):
+        await get_current_user(authorization=f"Bearer {refresh}")
+
+
+async def test_api_deps_tolerates_token_without_type_claim(monkeypatch) -> None:  # noqa: ANN001
+    """`api/deps.py` **只拒明确标了 `refresh` 的**，`type` 缺失则放行。
+
+    这条**刻意钉住一个选择**，免得将来有人「顺手收紧」而不知道代价：
+
+    · 收紧到「缺 type 一律拒」换不来额外安全——攻击者没有密钥，签不出任何能验签的 token；
+      能签出不带 `type` 的人，同样能签出带 `type=access` 的。真正的闸门是签名，不是这个字段。
+    · 代价却是实的：模块 2 的鉴权用例按主文档 5.1 的 `userId` 命名自签 token、不带 `type`
+      （`tests/test_image_api.py::test_valid_token_is_accepted`），一律拒会把他们的绿灯打红。
+      本文件是 5.1 与 9.1 两套命名之间的兼容层，兼容正是它的职责。
+
+    将来若真要收紧，应当是一次有意识的修改，并同步模块 2 的用例。
+    """
+    import datetime as dt
+
+    import jwt as _jwt
+
+    from app.core.config import settings
+    from app.api.deps import get_current_user
+
+    monkeypatch.setattr(settings, "AUTH_BYPASS", False)
+
+    # 模块 2 那种形状：userId 命名、没有 type
+    legacy = _jwt.encode(
+        {
+            "userId": 1,
+            "username": "user01",
+            "role": "user",
+            "exp": dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5),
+        },
+        settings.JWT_SECRET_KEY,
+        algorithm=settings.JWT_ALGORITHM,
+    )
+
+    user = await get_current_user(authorization=f"Bearer {legacy}")
+    assert user.user_id == 1
+    assert user.username == "user01"
+
+
 async def test_i03_empty_text_is_rejected_without_calling_the_model(dev_client, auth, monkeypatch) -> None:  # noqa: ANN001
     """`AGENT-I-03` `text` 为空串：被参数校验挡下，**且不空跑模型**（`min_length=1` 生效）。
 
