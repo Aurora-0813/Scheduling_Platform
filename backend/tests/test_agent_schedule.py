@@ -584,7 +584,7 @@ async def test_i01_normal_call_returns_full_unified_body(use_model, scripted, sl
     assert body["message"] == "操作成功"
 
     data = body["data"]
-    assert set(data) == {"plan", "backupPlan", "trace", "needConfirm"}
+    assert set(data) == {"plan", "backupPlan", "orderId", "trace", "needConfirm"}
     assert data["trace"], "trace 为空——屏 3 没有东西可回放"
     for step in data["trace"]:
         assert set(step) == {"step", "result", "timestamp", "thought", "action",

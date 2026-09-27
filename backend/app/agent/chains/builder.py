@@ -368,15 +368,24 @@ async def run_schedule(
     def _degrade(message: str, reason: str) -> AgentOutcome:
         trace = build_trace(stamped)
         messages = [m for m, _ in stamped]
+        # 降级也照样报订单号：方案可能没交出来，但库已经锁了。
+        # 不报的话这单就成了孤儿——落库了却没人补 agent_trace，也没人告诉用户「已锁但没方案」。
+        # 同一个值同时进 data.orderId 与 outcome.locked_order_id：前者给前端看，
+        # 后者给 API 层决定要不要补写 agent_trace。两处口径必须一致，所以取自同一个变量。
+        locked_order_id = extract_locked_order_id(messages)
         return AgentOutcome(
-            data=ScheduleData(plan=None, backupPlan=None, trace=trace, needConfirm=True),
+            data=ScheduleData(
+                plan=None,
+                backupPlan=None,
+                trace=trace,
+                needConfirm=True,
+                orderId=locked_order_id,
+            ),
             message=message,
             success=False,
             degraded=True,
             latency_ms=_elapsed_ms(),
-            # 降级也照样报订单号：方案可能没交出来，但库已经锁了。
-            # 不报的话这单就成了孤儿——落库了却没人补 agent_trace，也没人告诉用户「已锁但没方案」。
-            locked_order_id=extract_locked_order_id(messages),
+            locked_order_id=locked_order_id,
             degraded_reason=reason,
             steps=len(trace),
         )
@@ -423,18 +432,20 @@ async def run_schedule(
         return _degrade(_plan_missing_message(messages), "plan_without_space")
 
     trace = build_trace(stamped)
+    locked_order_id = extract_locked_order_id(messages)
     return AgentOutcome(
         data=ScheduleData(
             plan=plan,
             backupPlan=_to_plan(captured.get("backupPlan")),
             trace=trace,
             needConfirm=True,
+            orderId=locked_order_id,
         ),
         message="操作成功",
         success=True,
         degraded=False,
         latency_ms=_elapsed_ms(),
-        locked_order_id=extract_locked_order_id(messages),
+        locked_order_id=locked_order_id,
         steps=len(trace),
     )
 

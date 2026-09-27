@@ -63,8 +63,16 @@
 | --- | --- | --- |
 | `plan` | object \| null | 主方案；无可行方案时为 `null` |
 | `backupPlan` | object \| null | 备选方案 |
+| `orderId` | int \| null | 本轮成功锁定的预约单 ID，取自最后一次成功的 `lock_resources`；未落库时为 `null` |
 | `trace` | array | 思考链，前端按 `timestamp` 时间轴回放 |
 | `needConfirm` | boolean | 是否需要人工确认 |
+
+`orderId` 是**确认流程的入口**：`needConfirm=true` 时前端拿它调
+`PUT /api/v1/orders/{orderId}/confirm` 完成 `status` 1→2 的流转。
+⚠️ **它的取值与 `plan` 是否为空无关**——模型可能已锁单再在交方案前超时降级，
+此时 `plan` 为 `null` 但 `orderId` 仍有值。判断「有没有方案」看 `plan`，
+判断「有没有建单」看 `orderId`，不要用其中一个去推另一个。
+为 `null` 的含义是**确实没建单**，不是「没有方案」。
 
 **`plan` / `backupPlan` 结构**
 
@@ -107,6 +115,7 @@
       "reason": "预算内保留场地，投影由双台降级为单台"
     },
     "backupPlan": null,
+    "orderId": 101,
     "trace": [
       {
         "step": 1,
@@ -134,7 +143,8 @@
 
 **降级响应（契约内，HTTP 仍为 200）**
 
-三种情形 `plan` 均为 `null`、`needConfirm` 均为 `true`，区别只在 `message`：
+三种情形 `plan` 均为 `null`、`needConfirm` 均为 `true`，区别只在 `message`。
+**`orderId` 不参与这三条判定**——若模型已锁单再降级，它仍是非空值（见上方 `orderId` 说明）：
 
 | 情形 | `message` 内容 |
 | --- | --- |
