@@ -62,6 +62,19 @@ class Settings(BaseSettings):
     IMAGE_STORAGE_BASE_URL: str = "/uploads"         # 对外可访问的 URL 前缀
     IMAGE_ENABLE_AVAILABLE_SLOTS: bool = True        # 是否计算场地空档时段
 
+    # ---------- 语音识别 ASR（模块 1 语音输入，百度短语音标准版）----------
+    BAIDU_APP_ID: str = ""                           # 百度智能云 AppID
+    BAIDU_API_KEY: str = ""                          # API Key，真实值放 .env
+    BAIDU_SECRET_KEY: str = ""                       # Secret Key，真实值放 .env
+    ASR_MODEL_PID: int = 1537                        # 1537 普通话(含英文/数字，实测最稳)；1737 纯中文
+    ASR_RATE: int = 16000                            # 采样率，与小程序录音参数对齐
+    ASR_MAX_DURATION_S: int = 60                     # 识别音频最长秒数
+
+    # ---------- 口语格式化（模块 1，DeepSeek 纯文本模型）----------
+    DEEPSEEK_API_KEY: str = ""                       # 真实值放 .env
+    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
+    DEEPSEEK_MODEL: str = "deepseek-flash"           # 口语清洗所用模型
+
     # 指定 .env 文件位置和编码
     model_config = SettingsConfigDict(
         env_file=".env",

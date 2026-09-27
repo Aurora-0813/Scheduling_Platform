@@ -30,6 +30,7 @@ from app.core.response import success
 # ===========================================================================
 # 每接入一个新模块，在这里 import 它的 router 并 include_router
 from app.api.v1.image import router as image_router            # 模块 2 摄像头空间感知
+from app.api.v1.voice import router as voice_router            # 模块 1 语音输入
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -106,6 +107,7 @@ app.mount(
 # 路由挂载
 # ===========================================================================
 app.include_router(image_router)     # 模块 2 摄像头空间感知
+app.include_router(voice_router)     # 模块 1 语音输入
 
 
 # ===========================================================================
