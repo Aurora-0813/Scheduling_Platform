@@ -220,6 +220,14 @@ create_order —— 9 条路径（★ 为 §5.5 口径争议的关键证据）
 
 **第 1、2、5 条为阻塞项，已同步项目群。** 第 3、4 条为需蔡玉礼拍板的口径问题（见 `order_service.py` docstring「待蔡玉礼确认」4 条）。
 
+> **补充（2026-09-27）**：上表第 3、4、5 条已与蔡玉礼拍板关闭，**五项契约对齐结果见
+> [`contract-alignment.md`](../contract-alignment.md)**——含 `update_agent_trace` 补签名、
+> `OCCUPYING_STATUS = (1, 2)`、`conflictType` 四个 snake_case 取值、`conflictDetail` 类型、
+> `available_count` 只读不写。
+> 其中 **`conflictType` 枚举与 `conflictDetail` 形状待 §7 全文补全**（蔡玉礼的
+> `docs/api.md` §7 尚未入库，两边仓库无共同祖先，只能以文本并进团队版）。
+> **本表第 5 条的行文（`update_agent_trace(order_id, trace)`）已过时**，实际签名含 `user_id`。
+
 ## 7. 未决事项进展
 
 > 对照 `00-overview.md` §4 的 6 项，只填与本阶段相关的。

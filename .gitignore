@@ -90,8 +90,12 @@ backend/uploads/
 # ⚠️ 必须写 `docs/spec/*` 而**不能**写 `docs/spec/`：若整个目录被排除，git 不会进入
 #    该目录，`!` 白名单直接失效（git 规定「父目录已被排除时无法重新包含其中的文件」）。
 #    已实测：改成 `docs/spec/` + `!docs/spec/done/` 后，`git check-ignore` 仍报被忽略。
+# ⚠️ 契约对齐记录（docs/spec/contract-alignment.md）同样**例外，必须入库**——
+#    它是桩替换与阶段 4 Tool 对接的唯一口径依据，蔡玉礼 / 杨睿坤 / 黄嵩都要照着改。
+#    只放行这一个具名文件，计划书 / 任务书 / 模板继续忽略，不放行任何类别。
 docs/spec/*
 !docs/spec/done/
+!docs/spec/contract-alignment.md
 
 # ============================================================================
 # 必须提交、禁止忽略（§8.6）：
