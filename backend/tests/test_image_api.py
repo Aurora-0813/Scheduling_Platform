@@ -256,15 +256,32 @@ def auth_client(monkeypatch):
 
 
 def test_missing_token_returns_401(auth_client, fake_jpeg):
-    """T18：无 Authorization 请求头 → HTTP 401 / 业务码 40101（TokenMissingError）"""
+    """T18：无 Authorization 请求头 → HTTP 401 / 业务码 40101（TokenMissingError）
+
+    ⚠️ **2026-09-28 改口径**：认证失败保留 HTTP 状态行，不再是 200 + `code=401`。
+    主文档 5.2 的「统一响应体」说的是 `{code, message, data}` 这个**结构**，
+    与状态码正交——401 仍走统一响应体，只是状态行写真值；前端 axios 拦截器靠状态行
+    跳登录。与本模块「参数校验失败 → 200 + code=400」性质不同：那是请求已到业务层、
+    前端留在原页改输入，认证失败是整类请求都不该发出去。
+
+    实现处：`core/exceptions.py` 的 `ErrorCode` 401xx → HTTP 401 映射
+    （`_BUSINESS_ERROR_HTTP_STATUS`）。
+    """
     resp = auth_client.post(
         "/api/v1/image/analyze",
         files={"file": ("site.jpg", fake_jpeg, "image/jpeg")},
     )
 
+<<<<<<< HEAD
     assert resp.status_code == 401
     body = resp.json()
     assert body["code"] == 40101
+=======
+    assert resp.status_code == 401, "认证失败必须保留 HTTP 401"
+    body = resp.json()
+    assert set(body) == {"code", "message", "data"}, "401 也必须是统一响应体结构"
+    assert body["code"] == 401
+>>>>>>> 1c77283 (fix(api): 认证失败保留 HTTP 401，AuthError 单列处理器)
     assert "登录" in body["message"] or "认证" in body["message"]
 
 
