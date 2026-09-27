@@ -112,7 +112,7 @@
 | # | 计划 | 实际 | 原因 | 影响 | 是否需要同步团队 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | 埋点存储方式**先与集成组确认**（入口条件） | 未确认即实现，当前为**进程内计数** | 该确认未到位，而阶段 6 的完成判定要求「埋点有真实数据」且「事后补埋要重跑联调」，拖延代价更高 | 两个已知边界：①进程重启即清零 ②`uvicorn --workers 4` 时四个进程各报一份。两者都只影响**上线形态**，不影响单进程演示。替换点收敛在 `agent_service.py` 一个文件（`record_call` / `snapshot` / `reset` 三个函数） | 是 |
-| 2 | 本模块只依赖集成组的 `core/` | 自行补出 `core/response.py` 与 `core/security.py` | `backend/app/core/` 当时只有 `config.py` 与 `database.py`；没有统一响应体就写不出「异常不穿透」，没有 `get_current_user` 就写不出 `AGENT-I-02` | 两份文件均标 `TODO(申云飞)`，接口收窄到 3 个名字（`ok` / `ApiError` / `register_exception_handlers`）与 2 个名字（`CurrentUser` / `get_current_user`），集成组正式版落地后**直接替换文件**，模块 4 代码不动 | 是 |
+| 2 | 本模块只依赖集成组的 `core/` | 自行补出 `core/response.py` 与 `core/security.py` | `backend/app/core/` 当时只有 `config.py` 与 `database.py`；没有统一响应体就写不出「异常不穿透」，没有 `get_current_user` 就写不出 `AGENT-I-02` | 两份文件均标 `TODO(申云飞)`，接口收窄到 3 个名字（`ok` / `ApiError` / `register_exception_handlers`）与 2 个名字（`CurrentUser` / `get_current_user`），集成组正式版落地后**直接替换文件**，模块 4 代码不动。**（2026-09-28 补记：`security.py` 那 2 个名字已删**——全应用身份依赖统一到 `api/deps.py`，含 agent/mock/monitor 三处迁移，见 `cfb75f0` / `dcc89e7` 与 `core/security.py` 文件头。**替换清单相应缩小为 1 个名字（`get_current_user`，在 `api/deps.py`）。**） | 是 |
 | 3 | 本模块只依赖集成组的应用入口 | 自行补出 `app/main.py` | 没有入口就起不了服务，「六次请求」这条验收无从执行 | 已在模块 docstring 写明「其余模块接入时在 `router.py` 加一行 `include_router`，**不要各自新建 FastAPI 实例**」 | 是 |
 | 4 | 认证失败的 HTTP 状态码未规定（本阶段只笼统写了「401 与参数校验失败也走统一响应体」） | **2026-09-28 裁定：认证失败保留 HTTP 401**；`AuthError` 单列处理器（`core/exceptions.py::_handle_auth_error`），不再走 `BusinessError` 的 200 | 两条认证实现分歧：`core/security.py` 抛 `ApiError`（HTTP 401）、`api/deps.py` 抛 `AuthError`（原为 200 + `code=401`）。分歧不消掉，第 3 项那条「收窄到 2 个名字、集成组替换文件」就做不到——同一个 401 在两条路径上表现不同 | ①`docs/api.md` 模块 4 的错误码表**本来就写 401**，本次改完反而与它一致；②模块 2 的 `tests/test_image_api.py::test_missing_token_returns_401` 原断言 `status_code == 200`，随裁定改为 401；③「参数校验失败 → 200 + `code=400`」**不受影响**，两者性质不同（前者前端跳登录，后者留在原页改输入） | 是（模块 2 已同步） |
 
@@ -158,10 +158,16 @@
    虽然它就是 Pydantic v2 的默认值——因为它离「被改成 `extra="forbid"`」只有一步之遥，
    而那会让「忽略 `userId`」变成「422 拒绝」，用例红得莫名其妙。
 
-3. **`register_exception_handlers` 要覆盖三类：`ApiError`、`RequestValidationError`、
-   `StarletteHTTPException`，外加一个 `Exception` 兜底。**
+3. **`register_exception_handlers` 要覆盖六类：`BusinessError`、`AuthError`（单列，
+   HTTP 401）、`ApiError`、`RequestValidationError`、`StarletteHTTPException`，
+   外加一个 `Exception` 兜底。**
    少了 `RequestValidationError` 那一层，422 会返回 FastAPI 自己的 `{"detail": [...]}`，
-   前端就得写两套解析逻辑；少了 `Exception` 兜底，工具里的意外异常就是 500。
+   前端就得写两套解析逻辑；少了 `Exception` 兜底，工具里的意外异常就是 500；
+   少了 `AuthError` 那一层，它会落到父类 `BusinessError` 上、被接成 HTTP 200，
+   前端拦截器不再跳登录（2026-09-28 裁定，见 §5 偏离 #4）。
+   **（2026-09-28 更正**：本行原写「三类：`ApiError` / `RequestValidationError` /
+   `StarletteHTTPException`」——那是当时的实际集合，漏了 `BusinessError`，也没有
+   `AuthError`。现状见 `core/exceptions.py` 的六行处理器表。**）**
 
 4. **埋点「成功」的口径要写进文档：`plan` 非空且未降级。**
    不取「HTTP 200 就算成功」——三条降级路径全是 200，算进去成功率接近 100%，
