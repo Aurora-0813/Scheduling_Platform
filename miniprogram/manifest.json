@@ -1,0 +1,30 @@
+{
+  "name": "AI 智能空间调度",
+  "appid": "",
+  "description": "AI 全感知·智能空间与设备综合调度平台 — 微信小程序端",
+  "versionName": "0.1.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "vueVersion": "3",
+  "uniStatistics": {
+    "enable": false
+  },
+  "mp-weixin": {
+    "appid": "",
+    "setting": {
+      "urlCheck": false,
+      "es6": true,
+      "postcss": true,
+      "minified": true
+    },
+    "usingComponents": true,
+    "permission": {
+      "scope.record": {
+        "desc": "用于语音预约，把你说的话识别成文字"
+      }
+    }
+  },
+  "h5": {
+    "title": "AI 智能空间调度"
+  }
+}

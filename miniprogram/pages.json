@@ -1,0 +1,59 @@
+{
+  "pages": [
+    {
+      "path": "pages/index/index",
+      "style": { "navigationBarTitleText": "首页" }
+    },
+    {
+      "path": "pages/order/list",
+      "style": { "navigationBarTitleText": "我的预约" }
+    },
+    {
+      "path": "pages/inspect/index",
+      "style": { "navigationBarTitleText": "智能巡检" }
+    },
+    {
+      "path": "pages/message/list",
+      "style": { "navigationBarTitleText": "消息通知" }
+    },
+    {
+      "path": "pages/mine/index",
+      "style": { "navigationBarTitleText": "我的" }
+    },
+    {
+      "path": "pages/login/index",
+      "style": { "navigationBarTitleText": "登录" }
+    },
+    {
+      "path": "pages/voice/record",
+      "style": { "navigationBarTitleText": "语音预约" }
+    },
+    {
+      "path": "pages/agent/thinking",
+      "style": { "navigationBarTitleText": "AI 正在思考" }
+    },
+    {
+      "path": "pages/agent/plan",
+      "style": { "navigationBarTitleText": "方案确认" }
+    },
+    {
+      "path": "pages/space/recognize",
+      "style": { "navigationBarTitleText": "拍照识场" }
+    },
+    {
+      "path": "pages/inspect/capture",
+      "style": { "navigationBarTitleText": "拍照巡检" }
+    },
+    {
+      "path": "pages/order/detail",
+      "style": { "navigationBarTitleText": "预约详情" }
+    }
+  ],
+  "globalStyle": {
+    "navigationStyle": "custom",
+    "backgroundColor": "#F5F7FA",
+    "backgroundColorTop": "#F5F7FA",
+    "backgroundColorBottom": "#F5F7FA",
+    "backgroundTextStyle": "dark"
+  }
+}

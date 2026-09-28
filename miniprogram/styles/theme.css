@@ -1,0 +1,976 @@
+/* ============================================================
+ * AI 全感知·智能空间与设备综合调度平台 — 小程序端主题
+ * 设计基准：示例样式.html（390px 宽），按 1px = 2rpx 换算
+ *
+ * 平台适配说明（勿改回去）：
+ *  1. 小程序 WXSS 不支持 `*` 通配选择器，故用 page{} + 元素选择器显式重置
+ *  2. 不支持 :root，主题变量挂在 page 上（自定义属性会沿 DOM 树继承，
+ *     因此自定义组件内部同样能取到 var(--primary) 等）
+ *  3. 低版本 webview 不认 `inset` 简写，一律展开为 top/right/bottom/left
+ *  4. 原型里的 h4 / p / b / i 等标签不是小程序组件，选择器一律改写成 class
+ *     （如 .ai-hero h4 → .ai-hero .tt），否则样式不会命中
+ * ============================================================ */
+
+page {
+  /* 主色 */
+  --primary: #409eff;
+  --primary-d: #2a7fd4;
+
+  /* AI 专属渐变 */
+  --ai-a: #409eff;
+  --ai-b: #7c5cff;
+  --ai-soft: #eef4ff;
+  --ai-line: #d6e4ff;
+
+  /* 语义色 */
+  --success: #67c23a;
+  --warning: #e6a23c;
+  --danger: #f56c6c;
+
+  /* 文字层级 */
+  --t1: #303133;
+  --t2: #606266;
+  --t3: #909399;
+
+  /* 边框与背景 */
+  --bd: #dcdfe6;
+  --bd-l: #ebeef5;
+  --bg: #f5f7fa;
+
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--t1);
+  font-size: 28rpx;
+  font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+view,
+text,
+image,
+scroll-view,
+navigator,
+input,
+textarea,
+button {
+  box-sizing: border-box;
+}
+
+/* ================= 动效 ================= */
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes scanY {
+  0% {
+    top: -12%;
+  }
+  100% {
+    top: 112%;
+  }
+}
+
+@keyframes scanX {
+  0% {
+    left: -40%;
+  }
+  100% {
+    left: 124%;
+  }
+}
+
+@keyframes stepIn {
+  from {
+    opacity: 0;
+    transform: translateY(18rpx);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes gradientMove {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 200% 50%;
+  }
+}
+
+@keyframes wv {
+  0%,
+  100% {
+    transform: scaleY(0.26);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes ring {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.85;
+  }
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+@keyframes spinSlow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ================= 原子 ================= */
+
+/* 呼吸圆点：表示「在线 / 运行中」 */
+.live {
+  width: 14rpx;
+  height: 14rpx;
+  border-radius: 50%;
+  background: var(--success);
+  display: inline-block;
+  flex: none;
+  animation: breathe 1.8s ease-in-out infinite;
+}
+
+.live.b {
+  background: var(--primary);
+}
+
+/* 打字机光标 */
+.caret::after {
+  content: '▌';
+  color: var(--primary);
+  animation: blink 1s step-end infinite;
+  margin-left: 2rpx;
+}
+
+/* ================= 布局骨架 ================= */
+.app-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* 页面主体。自定义导航栏的高度由 mp-nav-bar 的占位块负责 */
+.app-body {
+  flex: 1;
+  padding: 26rpx;
+  min-height: 0;
+}
+
+/* 有底部固定 CTA 时给内容留出空间（高度见下方 .app-cta） */
+.app-body.has-cta {
+  padding-bottom: 200rpx;
+}
+
+/* 底部固定操作区（原型 .mb-cta）。
+   env(safe-area-inset-bottom) 让全面屏的 Home 指示条不压住按钮 */
+.app-cta {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 90;
+  padding: 24rpx 28rpx 44rpx;
+  padding-bottom: calc(44rpx + constant(safe-area-inset-bottom));
+  padding-bottom: calc(44rpx + env(safe-area-inset-bottom));
+  background: #fff;
+  border-top: 1px solid var(--bd-l);
+}
+
+.app-cta-row {
+  display: flex;
+  gap: 20rpx;
+}
+
+/* 主按钮占更大宽度（原型 flex:1.8） */
+.app-cta-row .grow {
+  flex: 1.8;
+}
+
+/* ================= 标签 ================= */
+.tag {
+  display: inline-block;
+  padding: 4rpx 16rpx;
+  border-radius: 20rpx;
+  font-size: 22rpx;
+  line-height: 32rpx;
+}
+
+.tag.blue {
+  background: #ecf5ff;
+  color: #409eff;
+}
+
+.tag.purple {
+  background: #f2eefc;
+  color: #7c5cff;
+}
+
+.tag.green {
+  background: #f0f9eb;
+  color: #67c23a;
+}
+
+.tag.orange {
+  background: #fdf6ec;
+  color: #e6a23c;
+}
+
+.tag.red {
+  background: #fef0f0;
+  color: #f56c6c;
+}
+
+.tag.gray {
+  background: #f4f4f5;
+  color: #909399;
+}
+
+/* ================= 按钮 ================= */
+.btn {
+  border: none;
+  border-radius: 12rpx;
+  padding: 16rpx 28rpx;
+  font-size: 25rpx;
+  font-family: inherit;
+  color: #fff;
+  background: var(--primary);
+  text-align: center;
+}
+
+.btn.ghost {
+  background: #fff;
+  border: 1px solid var(--bd);
+  color: var(--t2);
+}
+
+.btn.ai {
+  background: linear-gradient(135deg, var(--ai-a), var(--ai-b));
+  box-shadow: 0 6rpx 24rpx rgba(64, 158, 255, 0.32);
+}
+
+.btn.block {
+  display: block;
+  width: 100%;
+  padding: 22rpx;
+  font-size: 27rpx;
+  border-radius: 16rpx;
+}
+
+/* 高危动作：生成工单 / 确认占用类 */
+.btn.warn {
+  background: linear-gradient(135deg, #e6a23c, #f56c6c);
+}
+
+/* 按压反馈：配合 hover-class="btn-on" 使用 */
+.btn-on {
+  opacity: 0.82;
+}
+
+.btn.disabled {
+  opacity: 0.5;
+}
+
+/* ================= 卡片 ================= */
+.mcard {
+  background: #fff;
+  border-radius: 24rpx;
+  padding: 28rpx;
+  margin-bottom: 22rpx;
+  border: 1px solid #f0f3f8;
+}
+
+.mtitle {
+  font-size: 27rpx;
+  font-weight: 600;
+  color: var(--t1);
+  margin-bottom: 22rpx;
+  display: flex;
+  align-items: center;
+  gap: 14rpx;
+}
+
+.mtitle .more {
+  margin-left: auto;
+  font-size: 23rpx;
+  color: var(--t3);
+  font-weight: 400;
+}
+
+/* 卡片内正文 */
+.mtext {
+  font-size: 25rpx;
+  color: var(--t2);
+  line-height: 1.85;
+}
+
+/* ================= 键值行 ================= */
+.mbrow {
+  display: flex;
+  align-items: center;
+  font-size: 25rpx;
+  color: var(--t2);
+  padding: 18rpx 0;
+  border-bottom: 1px solid #f5f7fa;
+}
+
+.mbrow:last-child {
+  border-bottom: none;
+}
+
+.mbrow .k {
+  color: var(--t3);
+  width: 132rpx;
+  flex: none;
+  font-size: 24rpx;
+}
+
+.mbrow .v {
+  flex: 1;
+  min-width: 0;
+}
+
+.mbrow .v.warn {
+  color: #e6a23c;
+}
+
+/* ================= 首页快捷入口（原型 .grid4） ================= */
+.grid4 {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.grid4 .cell {
+  width: 25%;
+  text-align: center;
+  font-size: 23rpx;
+  color: var(--t2);
+  padding: 12rpx 0 4rpx;
+}
+
+.grid4 .cell .ic {
+  display: flex;
+  width: 92rpx;
+  height: 92rpx;
+  margin: 0 auto 16rpx;
+  border-radius: 30rpx;
+  align-items: center;
+  justify-content: center;
+  font-size: 42rpx;
+  background: #ecf5ff;
+}
+
+.grid4 .cell .ic.g2 {
+  background: #eef7ff;
+}
+
+.grid4 .cell .ic.g3 {
+  background: #f3efff;
+}
+
+.grid4 .cell .ic.g4 {
+  background: #fff3e8;
+}
+
+/* ================= 代码/工具调用回显 ================= */
+.code {
+  background: #f7f9fc;
+  border: 1px solid #e9eef6;
+  border-radius: 12rpx;
+  padding: 14rpx 20rpx;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 23rpx;
+  color: #4a6a92;
+  margin-top: 12rpx;
+  line-height: 1.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ================= 告警/提示条 ================= */
+.witem {
+  border-left: 6rpx solid var(--warning);
+  background: #fffaf1;
+  border-radius: 0 14rpx 14rpx 0;
+  padding: 20rpx 24rpx;
+  margin-bottom: 20rpx;
+  font-size: 24rpx;
+  color: var(--t2);
+}
+
+.witem .wt {
+  display: block;
+  font-size: 25rpx;
+  color: var(--t1);
+  margin-bottom: 10rpx;
+  font-weight: 600;
+}
+
+.witem .wp {
+  font-size: 23rpx;
+  color: var(--t3);
+  line-height: 1.55;
+  margin-bottom: 14rpx;
+  display: block;
+}
+
+.witem.red {
+  border-left-color: var(--danger);
+  background: #fef6f6;
+}
+
+.witem.blue {
+  border-left-color: var(--primary);
+  background: #f2f8ff;
+}
+
+/* ================= AI 提示条 ================= */
+.aibar {
+  display: flex;
+  align-items: center;
+  gap: 22rpx;
+  padding: 22rpx 30rpx;
+  margin-bottom: 28rpx;
+  border-radius: 16rpx;
+  font-size: 25rpx;
+  color: var(--t2);
+  background: linear-gradient(90deg, #eef5ff, #f5f1ff 60%, #fff);
+  border: 1px solid var(--ai-line);
+}
+
+.aibar .ic {
+  width: 48rpx;
+  height: 48rpx;
+  flex: none;
+  border-radius: 14rpx;
+  font-size: 24rpx;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--ai-a), var(--ai-b));
+}
+
+.aibar .tx {
+  flex: 1;
+}
+
+/* ================= AI 主视觉卡（原型 .ai-hero） ================= */
+.ai-hero {
+  border-radius: 28rpx;
+  padding: 30rpx;
+  margin-bottom: 24rpx;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, #eef5ff, #f7f3ff);
+  border: 1px solid var(--ai-line);
+}
+
+.ai-hero::after {
+  content: '';
+  position: absolute;
+  top: -60%;
+  left: -40%;
+  width: 65%;
+  height: 220%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.9), transparent);
+  transform: rotate(20deg);
+  animation: scanX 4.6s ease-in-out infinite;
+}
+
+.ai-hero .tt {
+  font-size: 28rpx;
+  color: var(--t1);
+  margin-bottom: 14rpx;
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 14rpx;
+  font-weight: 600;
+}
+
+.ai-hero .dd {
+  font-size: 24rpx;
+  color: var(--t2);
+  line-height: 1.7;
+  position: relative;
+  z-index: 2;
+  display: block;
+}
+
+/* ================= 方案卡（原型 .plan） ================= */
+.plan {
+  border-radius: 28rpx;
+  padding: 30rpx;
+  margin-bottom: 24rpx;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(140deg, #eef5ff, #f6f1ff);
+  border: 1px solid var(--ai-line);
+}
+
+.plan::after {
+  content: '';
+  position: absolute;
+  top: -60%;
+  left: -40%;
+  width: 65%;
+  height: 220%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.9), transparent);
+  transform: rotate(20deg);
+  animation: scanX 4s ease-in-out infinite;
+}
+
+.plan .tt {
+  font-size: 29rpx;
+  color: var(--t1);
+  margin-bottom: 18rpx;
+  position: relative;
+  z-index: 2;
+  font-weight: 600;
+  display: block;
+}
+
+.plan .dd {
+  font-size: 24rpx;
+  line-height: 1.9;
+  color: var(--t2);
+  position: relative;
+  z-index: 2;
+  display: block;
+}
+
+.plan .price {
+  font-size: 44rpx;
+  font-weight: 700;
+  margin-top: 18rpx;
+  position: relative;
+  z-index: 2;
+  display: inline-block;
+  background: linear-gradient(90deg, #2a7fd4, #7c5cff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ================= 思考链步骤 ================= */
+.mbstep {
+  display: flex;
+  gap: 20rpx;
+  padding-bottom: 28rpx;
+  position: relative;
+  animation: stepIn 0.5s ease both;
+}
+
+.mbstep::before {
+  content: '';
+  position: absolute;
+  left: 20rpx;
+  top: 46rpx;
+  bottom: 0;
+  width: 3rpx;
+  background: linear-gradient(180deg, #bfd9ff, #e4ecfa);
+}
+
+.mbstep:last-child::before {
+  display: none;
+}
+
+.mbstep .txt {
+  flex: 1;
+  min-width: 0;
+  font-size: 25rpx;
+  line-height: 1.7;
+  color: var(--t2);
+}
+
+.mbstep .txt .ss {
+  display: block;
+  font-size: 26rpx;
+  color: var(--t1);
+  margin-bottom: 8rpx;
+  font-weight: 600;
+}
+
+.tnum {
+  width: 44rpx;
+  height: 44rpx;
+  flex: none;
+  border-radius: 50%;
+  font-size: 20rpx;
+  font-weight: 700;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+  background: linear-gradient(135deg, var(--ai-a), var(--ai-b));
+  box-shadow: 0 0 0 6rpx #eaf2ff;
+}
+
+.tnum.g {
+  background: linear-gradient(135deg, #67c23a, #3d9a34);
+  box-shadow: 0 0 0 6rpx #eaf7e6;
+}
+
+.tnum.o {
+  background: linear-gradient(135deg, #e6a23c, #d18a1f);
+  box-shadow: 0 0 0 6rpx #fdf3e4;
+}
+
+/* ================= 语音录入（原型 .rec / .wave） ================= */
+.rec {
+  width: 212rpx;
+  height: 212rpx;
+  border-radius: 50%;
+  margin: 32rpx auto 28rpx;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 72rpx;
+  color: #fff;
+  background: linear-gradient(150deg, var(--ai-a), var(--ai-b));
+  box-shadow: 0 16rpx 52rpx rgba(64, 158, 255, 0.4);
+}
+
+.rec::before,
+.rec::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 50%;
+  border: 3rpx solid rgba(64, 158, 255, 0.55);
+  animation: ring 2.4s ease-out infinite;
+}
+
+.rec::after {
+  animation-delay: 1.2s;
+}
+
+/* 录音中：波纹更快、更亮，视觉上「在收音」 */
+.rec.on {
+  box-shadow: 0 16rpx 52rpx rgba(124, 92, 255, 0.55);
+}
+
+.wave {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8rpx;
+  height: 80rpx;
+}
+
+.wave .bar {
+  width: 8rpx;
+  height: 68rpx;
+  border-radius: 6rpx;
+  background: linear-gradient(180deg, var(--ai-a), var(--ai-b));
+  animation: wv 1s ease-in-out infinite;
+  transform-origin: center;
+}
+
+/* 静态时停止律动，避免「没在录音却在动」的误导 */
+.wave.off .bar {
+  animation: none;
+  transform: scaleY(0.26);
+  opacity: 0.4;
+}
+
+.wave .bar:nth-child(2) {
+  animation-delay: 0.08s;
+}
+.wave .bar:nth-child(3) {
+  animation-delay: 0.16s;
+}
+.wave .bar:nth-child(4) {
+  animation-delay: 0.24s;
+}
+.wave .bar:nth-child(5) {
+  animation-delay: 0.32s;
+}
+.wave .bar:nth-child(6) {
+  animation-delay: 0.4s;
+}
+.wave .bar:nth-child(7) {
+  animation-delay: 0.48s;
+}
+.wave .bar:nth-child(8) {
+  animation-delay: 0.56s;
+}
+.wave .bar:nth-child(9) {
+  animation-delay: 0.64s;
+}
+.wave .bar:nth-child(10) {
+  animation-delay: 0.72s;
+}
+.wave .bar:nth-child(11) {
+  animation-delay: 0.8s;
+}
+.wave .bar:nth-child(12) {
+  animation-delay: 0.88s;
+}
+
+/* ================= ASR 文本 + 语义高亮（原型 .asr / .ent） ================= */
+.asr {
+  background: #fff;
+  border: 1px solid #f0f3f8;
+  border-radius: 24rpx;
+  padding: 26rpx;
+  font-size: 27rpx;
+  line-height: 2;
+  color: var(--t1);
+}
+
+.ent {
+  padding: 2rpx 10rpx;
+  border-radius: 8rpx;
+  font-weight: 600;
+}
+
+.ent.t {
+  background: #e2f1ff;
+  color: #2a7fd4;
+}
+
+.ent.n {
+  background: #e6f8ec;
+  color: #3d9a34;
+}
+
+.ent.d {
+  background: #fdf0dd;
+  color: #c47b16;
+}
+
+.ent.b {
+  background: #f7e9f8;
+  color: #a44fc0;
+}
+
+/* 约束 chip（原型 .chips / .chip） */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14rpx;
+  margin-top: 22rpx;
+}
+
+.chip {
+  font-size: 23rpx;
+  padding: 10rpx 22rpx;
+  border-radius: 28rpx;
+  background: #eef5ff;
+  border: 1px solid var(--ai-line);
+  color: #2a7fd4;
+}
+
+/* ================= 拍照取景框（原型 .imgbox-mb / .bbox） ================= */
+.imgbox {
+  height: 360rpx;
+  border-radius: 24rpx;
+  margin-bottom: 22rpx;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(140deg, #eef2f8, #e3eaf4);
+  border: 1px solid var(--bd-l);
+}
+
+.imgbox .cam {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18rpx;
+  font-size: 25rpx;
+  color: #a8b6c9;
+}
+
+.imgbox .cam .big {
+  font-size: 72rpx;
+  opacity: 0.5;
+}
+
+.imgbox .scanline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 4rpx;
+  background: linear-gradient(90deg, transparent, #409eff, transparent);
+  box-shadow: 0 0 28rpx rgba(64, 158, 255, 0.8);
+  animation: scanY 2.6s linear infinite;
+}
+
+/* 识别框 */
+.bbox {
+  position: absolute;
+  left: 22%;
+  top: 26%;
+  width: 56%;
+  height: 48%;
+  border: 4rpx solid var(--success);
+  border-radius: 12rpx;
+  box-shadow: 0 0 0 8rpx rgba(103, 194, 58, 0.14);
+}
+
+/* 识别框上方的标签条 */
+.bbox .lbl {
+  position: absolute;
+  top: -44rpx;
+  left: -4rpx;
+  font-size: 21rpx;
+  background: var(--success);
+  color: #fff;
+  padding: 4rpx 18rpx;
+  border-radius: 10rpx;
+  white-space: nowrap;
+}
+
+/* 四角标记 */
+.bbox .cn {
+  position: absolute;
+  width: 18rpx;
+  height: 18rpx;
+  border: 4rpx solid var(--success);
+}
+
+.bbox .cn:nth-child(1) {
+  left: -10rpx;
+  top: -10rpx;
+  border-right: 0;
+  border-bottom: 0;
+}
+
+.bbox .cn:nth-child(2) {
+  right: -10rpx;
+  top: -10rpx;
+  border-left: 0;
+  border-bottom: 0;
+}
+
+.bbox .cn:nth-child(3) {
+  left: -10rpx;
+  bottom: -10rpx;
+  border-right: 0;
+  border-top: 0;
+}
+
+.bbox .cn:nth-child(4) {
+  right: -10rpx;
+  bottom: -10rpx;
+  border-left: 0;
+  border-top: 0;
+}
+
+/* 识别框出现在已选照片上时，四角标记用白色更清楚 */
+.bbox.on-photo {
+  border-color: #fff;
+  box-shadow: 0 0 0 8rpx rgba(255, 255, 255, 0.2);
+}
+
+/* ================= 消息卡（原型 .msg） ================= */
+.msg {
+  background: #fff;
+  border-radius: 24rpx;
+  padding: 26rpx 28rpx;
+  margin-bottom: 20rpx;
+  border: 1px solid #f0f3f8;
+  position: relative;
+  overflow: hidden;
+}
+
+.msg.unread {
+  border-color: var(--ai-line);
+}
+
+.msg.unread::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 26rpx;
+  bottom: 26rpx;
+  width: 6rpx;
+  background: linear-gradient(180deg, var(--ai-a), var(--ai-b));
+}
+
+.msg .h {
+  display: flex;
+  align-items: center;
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--t1);
+  margin-bottom: 12rpx;
+  gap: 14rpx;
+}
+
+.msg .h .t {
+  margin-left: auto;
+  font-size: 22rpx;
+  color: var(--t3);
+  font-weight: 400;
+  flex: none;
+}
+
+.msg .txt {
+  font-size: 24rpx;
+  color: var(--t3);
+  line-height: 1.7;
+  display: block;
+}
+
+/* ================= 空状态 ================= */
+.empty {
+  padding: 120rpx 40rpx;
+  text-align: center;
+}
+
+.empty .icon {
+  font-size: 90rpx;
+  opacity: 0.35;
+  display: block;
+  margin-bottom: 24rpx;
+}
+
+.empty .txt {
+  font-size: 26rpx;
+  color: var(--t3);
+  line-height: 1.7;
+  display: block;
+  margin-bottom: 28rpx;
+}
