@@ -61,6 +61,7 @@
 
 | **12** | ~~`generate_notification` 归属分叉：黄嵩侧另给过一份 `(order_id, notify_type, reason) -> str` 的冲突签名，且"交付 Tool 还是 service"未澄清（阶段 3 的 E2）~~ → **已裁定：选 A（唯一与主文档一致）（2026-09-28 黄嵩核对主文档后确认），本项闭环** | **裁定内容**：**Tool 层归模块 4**（按主文档 5.3 的**冻结签名**，`app/agent/tools/generate_notification.py` 留在本模块）；**模块 7 的 service 层保留**（`app/services/notify_service.py` 的桩由黄嵩真实实现替换，**只换函数体、签名不动**）；黄嵩的 `notify_tools.py` **不挂进 `AGENT_TOOLS`**。<br>**本模块零代码变更**（2026-09-28 实测）：`AGENT_TOOLS` 仍是 **5 个**（`query_spaces` / `query_devices` / `lock_resources` / `generate_notification` / `submit_plan`），`app/agent/tools/` 下无 `notify_tools.py`，`generate_notification(order_info: OrderInfo) -> dict` 签名未动。<br>**为什么选 A**：5.3 已冻结 Tool 签名，且模块 3 / 5 / 7 走的是同一个形状——「模块 4 定 Tool 签名、对方实现 service」；改由模块 7 提供通知 Tool 会让工具清单与 5.3 分叉，**「谁在何时把通知落库」出现两套**。通知 Tool 的入参是 `OrderInfo`（含 `orderId`），其触发时机是 Agent 决策链的一环，留在本模块才谈得上「一轮内锁单 → 通知」这个顺序。<br>**注意**：裁定是**口径**层面的，黄嵩的**书面回执仍缺**（阶段 8 交接清单第 3 项）<br>**2026-09-28 黄嵩复核后的两条补充（全文见 `docs/spec/contract-alignment.md` §8.1）**：① **选 A 是唯一与主文档一致的方案** —— 他核对了主文档 5.3 模块 4 的原文，`docs/开发流程.md:391` 写的就是 `generate_notification(order_info)`（`-` 之后的那一条），与 Tool 层冻结签名**逐字相同**；B 方案的 `(order_id, notify_type, reason) -> str` 在主文档里**没有任何出处**。② **更正他上一轮「模块 7 单方面冻结」的说法** —— 那条结论来自一次**漏检**：`git grep` 在 `core.quotepath` 默认 `true` 时会把中文路径**转义**成八进制串（`"docs/\345\274\200\345\217\221\346\265\201\347\250\213.md"`），扫结果时认不出是哪个文件，`开发流程.md` 于是被当成「没提过这件事」；复现见 §8.1 | 黄嵩（确认，**已完成**）+ 徐川（登记） |
 | **13** | **`notify_type` 映射：「延期致歉」在 6.3 的 INT 字典（1 预约提醒 / 2 变更致歉 / 3 故障告警）内无对应值（未决 #6）** | **已裁定：不扩字典（2026-09-28，黄嵩）**，`延期致歉` 映射到既有值 **2（变更致歉）**。模块 7 已按此实现（`notify_templates.py` 的 `ToneSpec(key="延期致歉", notify_type=2)`）并有落库断言 `notify_type == 2`。<br>**本分支的状态**：`app/services/notify_service.py` **仍是桩**，该类型仍返回 `ok=False` + 原因说明——**这是预期状态**，桩就是按「字典外取值一律失败并说明原因」设计的；**改它没有意义**（service 未替换，改成映射 2 是与未落地实现对齐）。等模块 7 落 `main`、service 层映射生效后**自然消解**。<br>**待办（模块 4 侧）**：届时把 `backend/tests/test_agent_tools.py` 里 `test_generate_notification_unmapped_type_fails_closed` 的 `assert result["ok"] is False` 改为断言 **Tool 返回值** `result["notifyType"] == 2`（键名是**驼峰 `notifyType`**，不是 DB 列名 `notify_type`），用例名与 docstring 一并改<br>⚠️ **同时要核一个契约点**：本模块 Tool 用 `result.get("notifyType")` 从 service 返回值取值（`backend/app/agent/tools/generate_notification.py:71`）。若模块 7 的真实 service 返回 `notify_type`（与其 DB 列同名），这里会**静默拿到 `None`** —— `ok=True` 但 `title`/`content` 为 `None`，不报错，模型只看到空文案。模块 7 落 `main` 时需连同键名一并核<br>**2026-09-28 黄嵩确认补充（全文见 `contract-alignment.md` §8.2）**：主文档 5.3 模块 7 的端点原文是 `POST /api/v1/notify/generate`：`{ "type": "延期致歉", "orderInfo": {} }` → `{ "title": "...", "content": "..." }`（`docs/开发流程.md:409`）——**入参用中文枚举、响应体不含 `notify_type`**，故「延期致歉 → 2」的 INT 取值是**模块 7 的纯内部存储**，不对外构成契约，两端无需在此对齐字段 | 黄嵩（裁定 + 实现，**已完成**）+ 集成组（落 `main`，待）+ 徐川（用例期望值同步，待） |
+| **14** | **主文档 4.4「模块 5：资源与设备管理」第 3 条「标签用于 Agent 检索时过滤」无实现落点** —— `space_resource` / `device_resource` **无 `tags` 列**，模块 4 的 `query_spaces` / `query_devices` **无按标签过滤的入参** | **已裁定（2026-09-28）：A 补列不做、B 文档降级已执行。**<br>**A（补 `tags` 列）不做**：DDL 变更须经集成组，本轮不排；且「标签」在 4.4 里只是模块 5 的 AI 触点说明，不是任何验收项的判据。<br>**B（文档降级）已执行**：`docs/开发流程.md:296` 原为 `- 标签用于 Agent 检索时过滤`，已改为带 ⚠️ 的**三行降级说明**（本条已降级 / 本轮不落库、不参与检索 / 补列后再恢复该语义）。<br>**实测依据（文件 + 库两侧，2026-09-28）**：① `grep -rn tags backend/app/models/ backend/alembic/versions/` **0 命中**（全仓唯一 `tag` 命中是 alembic 模板自带的 `branch_labels`）；② 经 3308 隧道直连开发库，全库 **10 张表**（`alembic_version` / `device_resource` / `inspect_record` / `notify_message` / `repair_ticket` / `reserve_order` / `space_resource` / `sys_permission` / `sys_role` / `sys_user`）的 `information_schema.COLUMNS` 里 **`COLUMN_NAME LIKE '%tag%'` 命中 0 条**。<br>⚠️ **同一段落在 `backend/开发流程.md:295-297` 另有一份副本**（1122 行、LF，最后一次改动是集成组 `9f30d3a`），与主文档 `docs/开发流程.md`（1146 行、CRLF）**已分叉**；本次**只改主文档，副本未动** —— 团队若以副本为准需另行同步 | 徐川（**已完成**：B 降级 + 登记）；A（补列）如需重启，责任人集成组 |
 
 原「阶段 3 唯一硬卡点」（`backend/app/core/` 为空）**已解除**：`config.py` 与 `database.py` 已就位，阶段 3 据此通过。
 
@@ -156,6 +157,53 @@
 | 2 | `smart_scheduler_test` 1044 无权 → `_db_readonly_guard` 仍拦真库写入；或改走降级路径 | 申云飞 | 全部 8 条 |
 | 3 | 模块 3 的取消入口 `PUT /api/v1/orders/{orderId}/cancel` 未交付（`开发流程.md:381` 的冻结路径，本仓库无此真实路由） | 蔡玉礼 | 仅断言 4/5 |
 | 4 | 断言 4/5 的「取消」只能走上面的真实入口，**不得改成直接改库**（测试禁写正式表，主文档 6.8） | 徐川（守线） | 仅断言 4/5 |
+
+### 2026-09-28 ruff 清理结果与残留归属
+
+**范围裁定：只清本模块（模块 4）的告警，别人文件只报不动。** 工具版本用 `ruff==0.16.9`
+（即 `backend/.github/workflows/ci.yml:66` 钉的版本；`PATH` 上另有一个 0.16.0，**不要用**）。
+
+**本模块：112 → 0**
+
+| 项 | 数 |
+| --- | --- |
+| 清理前 | 112（`E501` 58 / `RUF100` 47 / `UP035` 2 / `UP041` 1 / `F821` 1 / `I001` 1 / `UP017` 1 / `F401` 1） |
+| `--fix` 自动修 | 54 |
+| `ruff format` 重排 | 18 个文件 |
+| 手工改 | 12 条 `E501`（含 1 条 `F821`） |
+| 清理后 | **0**（`All checks passed!`；`ruff format --check`：22 files already formatted） |
+
+覆盖文件集：`app/agent/**`、`app/schemas/agent.py`、`app/api/v1/agent.py`、
+`app/services/agent_service.py`、`tests/test_agent_{schedule,trace,concurrency,tools}.py`。
+
+**⚠️ 顺带修掉一个真缺陷（是 ruff `F821` 报出来的）**：`tests/test_agent_concurrency.py` 的
+`test_assert_5_after_cancel_third_order_succeeds_capacity_is_derived` 签名里**漏了 `auth` 夹具**，
+而它挂着 `xfail(strict=True)` —— `NameError` 也算「如期失败」，**看板一直是绿的、真实断言从未跑到**；
+等模块 3 落地本该转通过时它仍会 `NameError`。已补夹具，并在 docstring 写明缘由。
+
+**⚠️ 零语义变更的证据**：`app/agent/prompts/scheduler.py` 的 `SCHEDULER_PROMPT` 与
+`app/agent/prompts/image_prompt.py` 的两个模板，**exec 后取值与 `HEAD` 逐字相同**
+（`build_scheduler_prompt(2026-09-28)` 的渲染结果亦然）——折行用的是**反引号代码段之外的续行符**，
+字符串值未变。
+
+**残留 49 条（未动）——「按文件划界」与「按行归属」不一致**
+
+| 文件 | 条数 | 逐条 `git blame` 归属 |
+| --- | --- | --- |
+| `backend/scripts/seed.py` | 15 | 贾世杰 15 |
+| `backend/tests/conftest.py` | 8 | 贾世杰 2（645/649）· **徐川 6**（819/881/889/892） |
+| `backend/app/services/format_service.py` | 5 | 正好 5 |
+| `backend/tests/smoke_fake_llm.py` | 5 | **徐川 5** |
+| `backend/tests/test_image_service.py` | 4 | 贾世杰 4 |
+| `backend/tests/smoke_real_llm.py` | 4 | **徐川 4** |
+| `backend/tests/test_image_smoke.py` | 3 | 贾世杰 3 |
+| `backend/app/core/llm.py` | 2 | 贾世杰 2 |
+| `backend/app/core/config.py` | 2 | **徐川 2**（180/181，`LLM_*` 配置段） |
+| `backend/app/services/image_service.py` | 1 | 贾世杰 1 |
+| **合计** | **49** | 贾世杰 27 · **徐川 17** · 正好 5 |
+
+**注意这 17 条**：它们**不在本次划定的本模块文件集内**（`conftest.py` / `config.py` 是他人主责的
+共享文件，`smoke_*.py` 是两个真冒烟脚本），故**按裁定未动**；**是否补清，待裁定**。
 
 ### LLM 配置 baseline（模块 4 公布 · 2026-09-27）
 
