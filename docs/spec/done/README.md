@@ -98,6 +98,23 @@
 用时推导天然不会产生两份真值，也天然与「过期订单不再占用」一致。这与模块 3 在
 `docs/待集成组确认清单.md` P2 节里的**建议 (b)** 是同一件事，口径一致。
 
+**〔2026-09-28 裁定〕`release_occupancy` 删。**
+理由：口径既然是「用时推导、不扣减」，**从不扣减就没有回补需求**；而这个名字暗示的
+「释放占用」在新口径下**没有任何语义**，留着只会误导读代码的人（看起来在做资源释放，实际是空操作）。
+**查证（`origin/integrate/module3` @ `1919428`）**：
+
+| 项 | 事实 |
+| --- | --- |
+| 定义 | `backend/app/state_machine.py:57-63`，函数体**就是 `pass`**（`# TODO: 通知资源模块释放场地/设备占用` + `# pragma: no cover`） |
+| 实际行为 | **既不回补 `available_count`、也不改状态、也不释放任何锁**——空 hook，`_BUSY` 与它无关 |
+| 调用点 | 唯一一处：`backend/app/api/orders.py:251`，取消「**已确认**」单时（`was_confirmed` 分支）；import 在同文件 `:38` |
+| 测试 | `backend/tests/module3/test_orders.py:185/199` 把它 monkeypatch 掉，只为断言「TC-11 调到了 / TC-10 不该调到」 |
+| 他的文档 | `docs/available_count口径判据.md` §6「仍未解决的一项」、`docs/待集成组确认清单.md` P2 节末「仍需集成组定的是 `release_occupancy`」 |
+
+**删除范围 = 函数定义 + 调用点 + import + 上面那两处 hook 断言**（全在模块 3 的文件里，
+**由蔡玉礼执行**；模块 4 不碰他的文件）。这条也是他 P2 节「待集成组定」的最后一项，
+裁定后该节可以收尾。
+
 **对判据与用例的影响**：
 
 - `AGENT-C-02` 的原判据「锁定后 `available_count` 正确递减、回滚时不减」**整条作废**——
@@ -132,10 +149,19 @@
   **能过、不挂 xfail** 的契约用例 `test_resource_conflict_maps_to_40901_with_http_409`
   单独把关（`code==40901`、`http_status==409`），服务层用例只断言「拒绝」这件事本身。
   **不能拿「反正 40901 存在」当作断言 3 通过。**
-- **断言 4/5 多一道卡**：取消要调模块 3 的 `PUT /api/v1/orders/{orderId}/cancel`
-  （路径见 `docs/开发流程.md:381`，与 `Permission.ORDER_CANCEL`、`mock.py:93` 的镜像一致），
-  本仓库**没有这条真实路由**，调用即 404。**不改成直接 `UPDATE reserve_order`**——
-  测试禁写正式表（主文档 6.8），改成改库验的就不是实现了。
+- **〔2026-09-28 更正〕断言 4/5 的「第四道卡」原判不成立。** 取消入口
+  `PUT /api/v1/orders/{orderId}/cancel`（路径见 `docs/开发流程.md:381`，与
+  `Permission.ORDER_CANCEL`、`mock.py:93` 的镜像一致）在 `origin/integrate/module3` 上
+  **存在且可用**（`backend/app/api/orders.py:235`）——本机实测：建单 → 取消 → HTTP 200，
+  库里 `order_status` 由 1 变 3。此前看到的 404 是**本分支**现象：本分支**没有
+  `backend/app/api/orders.py` 这个文件**（`git show feature/agent-xuchuan:./backend/app/api/orders.py`
+  → not in branch），打到不存在的路由上得的是**框架层 404，业务码 `40400`**。
+  **两种 404 的 HTTP 状态码相同，只能看业务码区分**：`40400`「接口或资源不存在」= 路由没注册；
+  `40404`「预约不存在」= 路由在、业务层查不到单（越权也走这条）。**路由没注册的话业务码不会是
+  `40404`。** 另一条实测：`orderId` 传 `None`（桩期「orderId 恒 None」的形状）不是 404，
+  而是 **HTTP 400 + `40001`「参数校验未通过」**（路径参数是 `int`）；`40404` 只由**格式合法但
+  不存在的 orderId** 产生。**仍不改成直接 `UPDATE reserve_order`**——测试禁写正式表
+  （主文档 6.8），改成改库验的就不是实现了。
 
 **已核实：`40901` 与 409 映射都在正式版里**
 
@@ -155,8 +181,16 @@
 | --- | --- | --- | --- |
 | 1 | `order_service.py` 的 `_device_conflicts` 要按「时段重叠」推导剩余量（现在是 `available_count > 0` 的静态校验），并把只读桩换成真实现 | 蔡玉礼 | 全部 8 条 |
 | 2 | `smart_scheduler_test` 1044 无权 → `_db_readonly_guard` 仍拦真库写入；或改走降级路径 | 申云飞 | 全部 8 条 |
-| 3 | 模块 3 的取消入口 `PUT /api/v1/orders/{orderId}/cancel` 未交付（`开发流程.md:381` 的冻结路径，本仓库无此真实路由） | 蔡玉礼 | 仅断言 4/5 |
+| 3 | **〔2026-09-28 更正〕取消入口本身已交付且可用**：`integrate/module3` 的 `backend/app/api/orders.py:235`，实测建单→取消 HTTP 200、状态 1→3。卡的是**模块 3 的 API 未合入本分支**——本分支没有 `backend/app/api/orders.py`，调它得框架层 `40400`（**不是** `40404`） | 模块 3 合入本分支 | 仅断言 4/5 |
 | 4 | 断言 4/5 的「取消」只能走上面的真实入口，**不得改成直接改库**（测试禁写正式表，主文档 6.8） | 徐川（守线） | 仅断言 4/5 |
+
+**〔2026-09-28 临时分支实测〕** 在 `origin/integrate/module3` 上（临时分支 `tmp-verify-c01-02`，
+已删、未推）把这 8 条用例跑在蔡玉礼的**真实现**上：**7 条通过**，仅
+`test_assert_3b_three_concurrent_orders_on_a_cap_two_device_exactly_two_win` 红（3 单全成）。
+即上表第 1 条（真实现）与第 3 条（路由）在**他那边**已具备，第 2 条则由他自带的夹具绕开
+（临时 SQLite，不碰开发库）——但这些**都还没合回本分支**，故上表在本分支上仍逐条成立。
+3b 的红因、以及「判据 2/5/7 必须落在不同场地」这条约束的复验记录，见
+`docs/spec/stage-07-testing.md`。
 
 ### 2026-09-28 ruff 清理结果与残留归属
 

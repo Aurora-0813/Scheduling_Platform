@@ -301,3 +301,56 @@ B 方案那份签名 `(order_id, notify_type, reason) -> str` 在主文档里**�
 本模块 Tool 用 `result.get("notifyType")` 从 service 返回值里取（`generate_notification.py:71`），
 若模块 7 的实现返回 `notify_type`，这里会**静默拿到 `None`**（`ok=True` 但 `title`/`content` 为空）
 —— 不报错、接口 200，只有模型看到空文案。故落 `main` 时要连键名一起核。
+## 9. 两条跨模块事实更正（2026-09-28，模块 4 侧实测）
+
+### 9.1 404 的**业务码**才能证明「路由在不在」——`40400` vs `40404`
+
+模块 4 曾把「`PUT /api/v1/orders/{orderId}/cancel` 未交付」记成硬卡点，**该判断有误**：
+该路由在 `integrate/module3` 上**存在且可用**（`backend/app/api/orders.py:235`；本机实测
+建单 → 取消 HTTP 200，库里 `order_status` 由 1 变 3）。当时看到的 404 来自
+**「本分支没有 `backend/app/api/orders.py` 这个文件」**（模块 3 的 API 未合入）。
+
+两种 404 的 **HTTP 状态码相同**，只能看业务码区分：
+
+| 业务码 | 含义 | 什么情况 |
+| --- | --- | --- |
+| `40400` | 接口或资源不存在 | 路由**未注册**（框架层） |
+| `40404` | 预约不存在 | 路由在，业务层 `_get_owned_order` 查不到单（越权同码，不泄露存在性） |
+
+**路由没注册的话，业务码不会是 `40404`。** 判「路由到底在不在」用**业务码**，不要用 HTTP 状态码。
+另两条同批实测口径：`orderId` 传 `None` 得到的是 **HTTP 400 + `40001`「参数校验未通过」**
+（路径参数声明为 `int`），**不是 404**；`40404` 只由**格式合法但不存在的 orderId** 产生。
+
+### 9.2 「同一设备多单」必须落在**不同场地**（判据 2/5/7 的隐含前提）
+
+`create_order` 的 §5.5 **第 2 步先查场地时段重叠**，第 3 步才查设备余量。因此「同设备同时段
+建第 2/3 单应成功」这一类判据，**两单必须落在不同场地**——同场地同时段会先撞场地冲突
+（`CONFLICT_TIME`），那时验到的是场地规则，**不是设备容量**（已在 `integrate/module3` 的
+真实现上复验）。模块 4 侧已把该约束写进 `backend/tests/test_agent_concurrency.py`
+断言 2/5/7 的 docstring 与模块 docstring。
+
+## 10. `release_occupancy` 裁定：删（2026-09-28）
+
+**裁定：删。** 口径已定为「**用时推导，不扣减**」（§5 与 `docs/spec/done/README.md` 的附录）——
+**从不扣减就没有回补需求**；而 `release_occupancy` 这个名字暗示的「释放占用」在新口径下
+**没有任何语义**，留着会误导读代码的人：调用点看起来在做资源释放，实际是空操作。
+
+**查证（`origin/integrate/module3` @ `1919428`）**：
+
+| 项 | 事实 |
+| --- | --- |
+| 定义 | `backend/app/state_machine.py:57-63`，函数体**就是 `pass`**（`# TODO: 通知资源模块释放场地/设备占用`，带 `# pragma: no cover`） |
+| 实际行为 | **既不回补 `available_count`、也不改状态、也不释放任何锁**——空 hook。取消单的状态流转由 `transition()` 完成，与它无关 |
+| 调用点 | 唯一一处：`backend/app/api/orders.py:251`，取消「**已确认**」单时（`was_confirmed` 分支）；`import` 在同文件 `:38` |
+| 测试 | `backend/tests/module3/test_orders.py:185/199` 把它 monkeypatch 掉，只断言「TC-11 调到了 / TC-10 不该调到」 |
+| 他的文档 | `docs/available_count口径判据.md` §6「仍未解决的一项」、`docs/待集成组确认清单.md` P2 节末「仍需集成组定的是 `release_occupancy`」 |
+
+**删除范围**：函数定义 + 调用点 + `import` + 上述两处 hook 断言。
+**执行人：蔡玉礼**（全在模块 3 的文件里；模块 4 不碰他的文件）。
+
+**边界说明**：本裁定**不**影响「取消后名额自动回来」——那是推导的自然结果（订单不再是重叠订单），
+本来就不依赖任何回补代码；删掉它**不会**导致库存永久少算。
+
+> 模块 4 侧的对应记录：`docs/spec/done/README.md` 附录《`available_count` 口径》、
+> `docs/spec/done/stage-07-completion.md` §5.4。
+
