@@ -57,6 +57,7 @@
 | 8 | **本机 `smart_dev` 环境缺 `requirements.txt` 已声明的测试依赖（`aiosqlite==0.22.1` / `alembic==1.20.0`）** | 合并前只有模块 4 的用例跑得动（连真库、不用 SQLite），正式版重写的 `conftest` 与 image / voice / auth 用例全部依赖 `aiosqlite`，缺失时**整个套件在收集阶段就 ERROR**，红数无从谈起（此前记的「image/voice 用例继承红」根因即此）。**本次已在本机补装这两项**（`pip install --no-deps aiosqlite==0.22.1 alembic==1.20.0 Mako MarkupSafe`，未动其他依赖）。<br>⚠️ **2026-09-28 更正——原先「`backend/alembic/` 遮蔽同名包」的结论是错的，申云飞复现不到并给出三条反证，我复核后确认他对我错**：`import alembic` 解析到 `site-packages\alembic\__init__.py`；`python -m alembic --version` 在仓库根与 `backend/` 下**都是 1.20.0、退出码 0**；`alembic.__main__` 确实存在于 site-packages。原因是 `backend/alembic/` 无 `__init__.py`、只能算**命名空间包**，而命名空间包在整条 `sys.path` 扫完之前**只是候选**，命中 site-packages 的**常规包**即让位——**不构成遮蔽**。当时报 `No module named 'alembic.autogenerate'` 的真实原因就是 `alembic` **没装**。**补装后 `tests/integration/test_migrations.py` 收集 8 例、8 passed，无需任何仓库结构改动。本项闭环。** | 徐川（本机补装，**已完成**） |
 | 9 | ~~模块 4 的 mock / 监控两处契约，被 `origin/main` 的正式版实现推翻~~ → **mock 数据源已统一，本项闭环（`25b3ee3`，2026-09-28）** | **（2026-09-28 合并后登记，同日闭环）** 合并时 `api/v1/mock.py` / `mock_data.py` / `api/v1/monitor.py` 均取正式版（模块 4 的分支版只有本模块一段，覆盖会删掉模块 5/6/7/8/10 的 mock 路由）。<br>①**mock 响应体**（原「4 步 vs 7 步」不一致）——**集成组已在 `25b3ee3` 修掉**：`mock_data.AGENT_SCHEDULE` 改为**读 `docs/mock/agent_schedule.json` 的 `data` 段**，json 成为唯一真源，响应体随之从 4 步变 **7 步**。路径解析兼容两种检出布局（仓库根 `docs/mock/` 优先，`backend/` 独立检出退回 `backend/docs/mock/`），都读不到则打 ERROR 日志并返回空 `data`（不让演示数据缺失把应用启动带崩，交给用例暴露）。**本分支 rebase 到 `25b3ee3` 时该 json 已由对方并入，本模块那个创建 json 的提交被 git 判定为 `already upstream` 自动丢弃，无冲突。** 核对结果：`api/v1/mock.py` 两边**零差异**；唯一差异是 json 多一行 `"orderId": 101`（本分支 `27d9156` 加的，属冻结契约字段），是**超集**不是冲突。新增的 `tests/api/test_agent_schedule_mock.py`（7 例）**已跑过，全绿**。<br>②**监控口径四处不同**（不鉴权 / `avgLatency` 单位秒 / `successRate` 按 HTTP 状态码 / Redis 存储）——**已按正式版改写 `docs/api.md` 模块 10 整节**，并有回归用例兜底。这一半不是缺陷，是模块 4 的文档原本落后于正式版实现，改文档即闭环。<br>**遗留（另立）**：模块 4 的 `agent_service.record_call` 已无读端（`agent.py` 仍在调），属待清理项 | 申云飞（mock 唯一真源，**已完成**）+ 徐川（文档已改完；`record_call` 清理待裁定） |
 | **10** | ~~`agent_service.record_call` / `snapshot` / `reset` 已无读端，是模块 4 阶段 6 自建埋点的残留~~ → **裁定：保留，已加注释（2026-09-28）** | **低优先、非阻塞。** 监控正式口径已由集成组实现（`middlewares/agent_metrics.py` → `core/metrics.py` 的 `MetricStore`（Redis）→ `services/monitor_service.py` → `GET /api/v1/monitor/agent`），模块 4 的进程内计数**在线上没有任何读端**，`agent.py` 仍调 `record_call`、`conftest` 仍用 `reset` 清夹具。**裁定：保留**——直调 Agent 时用它快速看一眼「跑了几次、成功几次」很顺手，删掉反而少个本地排障抓手。<br>**已落地**：`app/services/agent_service.py::record_call` 的 docstring 已写明「**本地调试用，正式埋点走 `app/middlewares/agent_metrics.py`**」，并列出两侧口径差异（判成功依据 / `avgLatency` 单位 / 降级是否单列）与两个已知边界（进程重启清零、多 worker 各报一份），**明确「不要拿它当监控数据源」**。<br>⚠️ **未动** `app/api/v1/agent.py`（仍在调 `record_call`）与 `tests/conftest.py`（`reset_metrics` 夹具仍用 `reset`）——按裁定只加注释，不改代码路径 | 徐川（**已完成**，无需他人） |
+| **11** | **`AGENT_TIMEOUT` 默认 30 秒，真冒烟实测余量不足（2026-09-28 登记）** | **低优先、非阻塞（演示前处理）。** 本模块 `app/core/config.py:189` 默认 `AGENT_TIMEOUT: float = 30.0`，`.env.example:216` 亦为 `30`；**本地 `.env` 未设该键**，所以本次真冒烟跑的就是这个 30 秒默认值——场景 A 实测 `latency_ms=29845`，**余量仅 155 ms**。<br>**为什么危险**：真实耗时几乎全在网络与模型排队，超时后走的是**降级路径**（`builder.py:398` 的 `asyncio.wait_for` → `_degrade(..., "timeout")`），返回 `200` + 友好提示并保留已收集的 trace。接口层**看不出异常**，现场只会发现「方案没出来」，而成功率/告警都不响。<br>**建议**：演示环境 `AGENT_TIMEOUT=60`。**改哪几处待裁定**：① `config.py` 默认值（本模块自有文件）② `backend/.env.example:216`（本模块的「Agent 运行参数」段，该文件最近两次修改均为本模块 `xuchuan`）③ 本地 `.env`（不入库，需演示机各自加）。<br>**⚠️ 改之前要知道的两件事**：<br>① 这个值**同时**喂两处——`ChatOpenAI(timeout=)` 的**单次请求**超时（`builder.py:96`）与 `run_schedule` 的**整体**超时（`builder.py:398`），`config.py:184-189` 的注释写明「整体超时必须不小于单次，否则模型还在正常生成、外层先把协程掐了」。30→60 是两者同抬，方向安全；但 `LLM_MAX_RETRIES=1` 之下，「单次 60 / 整体 60」意味着**一次慢请求就能吃满全部预算**、模型没第二次机会。若要更稳，组合应是「整体 90 / 单次 60」，那需要把这一个键**拆成两个**（本模块可做，但属接口变更，待裁定）。<br>② **「30 是否正式版默认」的核查结论：目前不成立。** `origin/main` 上模块 4 的实现**尚未并入**（只有 `app/agent/` 的空骨架：`__init__.py` × 3 + `prompts/image_prompt.py`），`git grep AGENT_TIMEOUT origin/main` 只命中 `docs/api.md:134` 一句文档描述，`config.py` 与 `.env.example` 里都没有这个键。**并入 `main` 之后，本处的 30.0 才会成为正式版默认**——按这个口径记为本条卡点。 | 徐川（待裁定改哪几处） |
 
 原「阶段 3 唯一硬卡点」（`backend/app/core/` 为空）**已解除**：`config.py` 与 `database.py` 已就位，阶段 3 据此通过。
 
@@ -151,6 +152,19 @@
 | `LLM_API_KEY` | 各自申请（DashScope） | 真实值只在本地 `.env`；仓库与文档一律占位 |
 | `LLM_TEMPERATURE` | `0.0`（`settings` 默认） | 调度决策要可复现；调高会让同一需求两次给出不同方案 |
 | `LLM_MAX_RETRIES` | `1`（`settings` 默认） | 外层已有 `AGENT_TIMEOUT` 兜底，重试不宜多 |
+| `AGENT_TIMEOUT` | **`60`（演示环境建议值）**；`settings` 默认仍是 `30.0` | ⚠️ 见下方专段，30 秒余量实测只剩 155 ms |
+
+> ### ⚠️ `AGENT_TIMEOUT` 演示环境建议 60 秒
+>
+> **30 秒下场景 A 实测余量仅 155ms（29.845 / 30.0 秒），超时走降级返回 200，现场看不出异常。**
+>
+> 依据：2026-09-28 真冒烟（`qwen-plus`，场景 A），原始输出见
+> [stage-05](stage-05-completion.md) §3.3。超时后的行为是契约内的**正常返回**——
+> `200` + 友好提示 + 保留已收集的 trace（`builder.py:398` → `_degrade(..., "timeout")`），
+> 所以成功率不跌、接口不报错，**只有方案没出来**。
+>
+> 该值同时是单次请求超时与整轮超时（见硬卡点 #11 的①），**改哪几处待裁定**：
+> `config.py` 默认值 / `.env.example` / 本地 `.env`。
 
 变量名三项已与模块 8 对齐。注意 `backend/.env` 由 `pydantic-settings` 读入，
 **不是**导出到进程环境变量——直接用 `os.getenv("LLM_MODEL_NAME")` 会拿到 `None`。
