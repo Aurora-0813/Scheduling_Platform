@@ -1,9 +1,13 @@
 // WebSocket 封装：断线重连、心跳保活、消息分发
-import { BASE_URL, USER_ID } from './request'
+import { BASE_URL } from './request'
+import { clearToken, ensureToken } from './auth'
 import { useNotifyStore } from '@/store/notify'
 
 const WS_BASE = BASE_URL.replace(/^http/, 'ws')
 const MAX_ATTEMPTS = 10
+
+//: 服务端在握手鉴权失败时按「策略违规」关闭（见 backend/app/main.py）。
+const WS_POLICY_VIOLATION = 1008
 
 let socketTask = null
 let heartbeatTimer = null
@@ -11,10 +15,23 @@ let reconnectTimer = null
 let manualClose = false
 let reconnectAttempts = 0
 
-export function connectWS() {
+export async function connectWS() {
   manualClose = false
+
+  // 身份走**令牌**，不是 user_id（§5.1）。
+  // 浏览器与小程序都不允许给 WebSocket 自定义请求头，凭据只能放进 URL；
+  // 但传的必须是令牌 —— 早先的 `?user_id=${USER_ID}` 谁都能改成别人，
+  // 一连上就实时收别人的预约通知。
+  let token
+  try {
+    token = await ensureToken()
+  } catch (e) {
+    scheduleReconnect()
+    return
+  }
+
   socketTask = uni.connectSocket({
-    url: `${WS_BASE}/ws/notify?user_id=${USER_ID}`,
+    url: `${WS_BASE}/ws/notify?token=${encodeURIComponent(token)}`,
     success: () => {},
     fail: () => scheduleReconnect(),
   })
@@ -30,8 +47,11 @@ export function connectWS() {
     } catch (e) {}
   })
 
-  socketTask.onClose(() => {
+  socketTask.onClose((res) => {
     stopHeartbeat()
+    // 1008 = 服务端按策略违规拒绝握手：本地令牌已不可用（多半是过期）。
+    // 丢掉它，重连时 ensureToken() 会自动重登，否则会拿着废令牌一直重试。
+    if (res && res.code === WS_POLICY_VIOLATION) clearToken()
     if (!manualClose) scheduleReconnect()
   })
 

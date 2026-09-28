@@ -8,7 +8,7 @@ export const getResources = async () => {
   return { spaces, devices }
 }
 
-// 预约订单（§5.3 模块3：GET /orders/my，身份经 X-User-Id 头传入，不再走 /user/{id}）
+// 预约订单（§5.3 模块3：GET /orders/my，身份由 utils/request.js 统一注入 JWT，不走 /user/{id}）
 export const getOrders = (status) =>
   request({ url: '/api/v1/orders/my', data: status ? { status } : {} })
 export const getOrder = (id) => request({ url: `/api/v1/orders/${id}` })
