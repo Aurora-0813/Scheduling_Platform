@@ -35,21 +35,12 @@
 `backend/.env.example`（**已提交，仅占位符**）；真实值写进 `backend/.env`（**严禁提交**，用 `.env.example` 作模板）：
 
 ```env
-DB_HOST=127.0.0.1
-DB_PORT=3308
+DB_HOST=<云服务器IP>
+DB_PORT=3307
 DB_USER=<数据库用户名>
 DB_PASSWORD=<数据库密码>
 DB_NAME=smart_scheduler_dev
-
-APP_NAME=SmartScheduler
-APP_ENV=dev
-DEBUG=true
-
-JWT_SECRET_KEY=<JWT密钥>
-JWT_ALGORITHM=HS256
-JWT_EXPIRE_MINUTES=1440
-
-AGENT_URL=
+DATABASE_URL=mysql+asyncmy://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?charset=utf8mb4
 ```
 
 **注意：不要在这里写 `DATABASE_URL`。** 连接串由 `app/core/config.py` 从上面五项拼出，分两条：

@@ -3,6 +3,7 @@
 测试库的隔离（把 `DATABASE_URL` 指向临时 SQLite）在**顶层** `tests/conftest.py` 完成 ——
 那段必须先于任何 `app` 导入执行。这里只负责建表、灌种子与提供客户端。
 """
+
 from datetime import time
 
 import httpx
@@ -26,12 +27,24 @@ def _seed_spaces() -> list[SpaceResource]:
     """
     return [
         SpaceResource(
-            id=1, space_name="会议室A", space_type=1, capacity=10, location="3F",
-            open_start_time=time(8, 0), open_end_time=time(22, 0), status=1,
+            id=1,
+            space_name="会议室A",
+            space_type=1,
+            capacity=10,
+            location="3F",
+            open_start_time=time(8, 0),
+            open_end_time=time(22, 0),
+            status=1,
         ),
         SpaceResource(
-            id=2, space_name="展厅B", space_type=2, capacity=40, location="1F",
-            open_start_time=time(8, 0), open_end_time=time(22, 0), status=1,
+            id=2,
+            space_name="展厅B",
+            space_type=2,
+            capacity=40,
+            location="1F",
+            open_start_time=time(8, 0),
+            open_end_time=time(22, 0),
+            status=1,
         ),
     ]
 
@@ -40,12 +53,20 @@ def _seed_devices() -> list[DeviceResource]:
     """种子设备：2 台。"""
     return [
         DeviceResource(
-            id=1, device_name="投影仪", device_type="投影", device_status=1,
-            total_count=1, available_count=1,
+            id=1,
+            device_name="投影仪",
+            device_type="投影",
+            device_status=1,
+            total_count=1,
+            available_count=1,
         ),
         DeviceResource(
-            id=2, device_name="音响系统", device_type="音频", device_status=1,
-            total_count=1, available_count=1,
+            id=2,
+            device_name="音响系统",
+            device_type="音频",
+            device_status=1,
+            total_count=1,
+            available_count=1,
         ),
     ]
 
@@ -77,10 +98,8 @@ def _seed_users():
 
     password = "$2b$12$WPAzHZb7EolabiZR5BLNMeZs1iYXMklXA9S0GRF4B4soj3Jmh45N."
     return [
-        SysUser(id=MOCK_USER_ID, username="zhangsan", password=password,
-                role_id=ROLE_ID, status=1),
-        SysUser(id=OTHER_USER_ID, username="lisi", password=password,
-                role_id=ROLE_ID, status=1),
+        SysUser(id=MOCK_USER_ID, username="zhangsan", password=password, role_id=ROLE_ID, status=1),
+        SysUser(id=OTHER_USER_ID, username="lisi", password=password, role_id=ROLE_ID, status=1),
     ]
 
 

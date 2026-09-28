@@ -1,4 +1,5 @@
 """造演示数据：场地 / 设备 / 示例预约（字段对齐 §6.3）。"""
+
 import asyncio
 from datetime import datetime, time, timedelta
 from decimal import Decimal

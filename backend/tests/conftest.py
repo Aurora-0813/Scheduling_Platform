@@ -79,9 +79,9 @@ import tempfile
 #
 # 本文件自己的 `engine` / `db_session` 夹具走 `db_path(tmp_path)`，每个用例一个
 # 独立文件库，**不受**这一行影响；受影响的是「直接用模块级引擎」的那部分用例。
-_MODULE3_TEST_DB = os.path.join(
-    tempfile.gettempdir(), "smart_scheduler_module3_test.db"
-).replace("\\", "/")
+_MODULE3_TEST_DB = os.path.join(tempfile.gettempdir(), "smart_scheduler_module3_test.db").replace(
+    "\\", "/"
+)
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_MODULE3_TEST_DB}"
 
 # 关掉 Redis：默认走内存实现，且 /ready 探针不会去连 127.0.0.1:6380 白等超时
@@ -96,28 +96,38 @@ os.environ["AI_RISK_ENABLED"] = "false"
 # SQL 回显关闭：否则每条用例都会往日志里打带 bcrypt 哈希的 INSERT
 os.environ["SQL_ECHO"] = "false"
 
-from collections.abc import AsyncGenerator, Callable, Iterator
-from pathlib import Path
-from typing import Any
-from datetime import datetime
+# 下面这一整段都带 noqa: E402（前缀 `#` 这里略去，免得被当成真的指令去解析）：
+# **含义是「这个顺序是刻意的」，不是「可以随便挪」**。
+# 为什么非加不可：ruff 的 E402 只豁免「`os.environ[...] = "字面量"` 之后的 import」，
+# 而上面那条 `DATABASE_URL` 的值是 f-string，豁免条件不成立，于是从这一行起全部报
+# E402。既不能靠重排消掉（重排就会破坏「环境变量先于 import app」这条功能约束），
+# 也不能只给第一行加（E402 逐行报），所以整段显式标注。
+from collections.abc import AsyncGenerator, Callable, Iterator  # noqa: E402
+from datetime import datetime  # noqa: E402
+from pathlib import Path  # noqa: E402
+from typing import Any  # noqa: E402
 
-import httpx
-import pytest
-from sqlalchemy.dialects.sqlite.base import SQLiteTypeCompiler
-from sqlalchemy.ext.asyncio import (
+import httpx  # noqa: E402
+import pytest  # noqa: E402
+from sqlalchemy.dialects.sqlite.base import SQLiteTypeCompiler  # noqa: E402
+from sqlalchemy.ext.asyncio import (  # noqa: E402
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import NullPool  # noqa: E402
 
-import app.models  # noqa: F401  —— 导入以注册全部 ORM 模型
-from app.api.deps import get_token_store, reset_token_store
-from app.core.config import settings
-from app.core.database import Base, get_db
-from app.core.metrics import InMemoryMetricStore, configure_metric_store, reset_metric_store
-from app.services.rules.base import (
+import app.models  # noqa: E402, F401  —— 导入以注册全部 ORM 模型
+from app.api.deps import get_token_store, reset_token_store  # noqa: E402
+from app.core.config import settings  # noqa: E402
+from app.core.database import Base, get_db  # noqa: E402
+from app.core.metrics import (  # noqa: E402
+    InMemoryMetricStore,
+    configure_metric_store,
+    reset_metric_store,
+)
+from app.services.rules.base import (  # noqa: E402
     ConflictRuleConfig,
     DeviceView,
     OrderView,
@@ -129,7 +139,8 @@ from app.services.rules.base import (
 # 上面那段的顺序是**功能性**的，不是排版问题，所以在这里把它变成会失败的自检 ——
 # 只用注释约束的话，下一个人把 import 挪到 os.environ 之前（IDE 的「优化导入」
 # 就会这么干）不会有任何提示，只会得到「测试莫名变慢、偶发连不上 Redis」。
-# lint 帮不了这一条：ruff 的 E402 对 sys.path / os.environ 之后的导入不报错。
+# lint 帮不了这一条：E402 只**记录**了顺序不对，它不知道哪一边才是对的 ——
+# 那串 noqa: E402 的作用是让「顺序刻意如此」一眼可见，不是消音。
 assert settings.REDIS_ENABLED is False, (
     "REDIS_ENABLED 不是 false：app.core.config 在本文件的 os.environ 赋值之前就被导入了，"
     "环境变量没生效。请把 import app.* 放回 os.environ[...] 之后（见模块 docstring）。"

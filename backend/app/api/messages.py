@@ -2,6 +2,7 @@
 
 - GET /api/v1/messages/unread 为契约接口；其余为模块内补充（通知接收）。
 """
+
 from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession

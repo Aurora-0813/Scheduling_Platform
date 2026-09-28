@@ -3,20 +3,14 @@
 > 各模块负责人在本文件对应小节补充，接口变更时同步更新（《项目文档.md》11.1 / 11.2）。
 > 通用规范见主文档 5.1（通用约定）、5.2（统一响应体）；传输字段一律 camelCase（6.2）。
 
-## 通用规范
+## 统一响应体
 
-- 所有接口统一前缀 `/api/v1/`。
-- 请求头：`Content-Type: application/json`；认证头：`Authorization: Bearer {token}`（演示阶段用 `X-User-Id: 1` 模拟）。
-- 身份一律从 JWT（演示为 `X-User-Id`）解析，请求体/FormData 禁止携带 `userId` 等身份标识（§5.1）。
-- 时间格式统一：`YYYY-MM-DD HH:mm:ss`。
-- 布尔值统一：`true` / `false`（数据库 `is_read` 为 INT，接口层转为布尔）。
-- 统一响应体：
+所有接口返回：
 
 ```json
-{ "code": 200, "message": "操作成功", "data": {} }
+{ "code": 200, "message": "操作成功", "data": { } }
 ```
 
-- 成功 `code=200`；错误 `code` 为对应 HTTP 状态码（400/404/409/422/500），`data=null`。
 - 成功 `code=200`。
 - **失败时 `code` 是业务错误码**（见 `app/core/error_codes.py`），**HTTP 状态码另算**：
   例如参数校验失败是 HTTP 400 + `code=40001`，账号禁用是 HTTP 403 + `code=40108`。
@@ -26,11 +20,11 @@
 
 | 字段 | 说明 |
 | --- | --- |
-| `code` | 业务码。业务失败一律 **HTTP 200 + 非 200 的 `code`**，前端统一读 `code` 判断成败 |
+| `code` | 业务码。成功恒为 `200`；失败为非 200 的业务码，**HTTP 状态码由异常类携带、与业务码解耦**（见 `app/core/exceptions.py`） |
 | `message` | 提示信息，可直接展示给用户 |
 | `data` | 业务数据，失败时为 `null` |
 
-> **HTTP 状态码的少数例外**：鉴权失败返回真实 `401`，参数校验失败返回真实 `422`（FastAPI 默认行为）。除此之外一切业务结果都是 HTTP 200，由 `code` 表达。
+> **HTTP 状态码与业务码是两套编号。** HTTP 按语义返回真实状态（未登录 `401`、无权限 `403`、不存在 `404`、冲突 `409`、参数校验失败 `400`、依赖不可用 `503`）；业务码另有一套分段编号（`40001` / `40101` / `40901` / `41003` …）。前端判成败读 `code === 200`；要区分「该跳登录页」还是「该改输入」时，再看 HTTP 状态或具体业务码。
 
 ### 通用约定
 
@@ -50,31 +44,31 @@ Authorization: Bearer <token>
 
 > 模块责任人：蔡玉礼。统一遵守《开发流程》第五章接口规范。
 
-### 1.1 创建预约（契约）
+负责人：徐川　｜　状态：契约已冻结（阶段 2）
 
-`POST /api/v1/orders/create`
+### POST /api/v1/agent/schedule
 
-请求参数（JSON）：
+根据自然语言需求生成场地与设备调度方案。
 
-| 字段         | 类型         | 必填 | 说明                     |
-| ------------ | ------------ | ---- | ------------------------ |
-| spaceId      | int          | 是   | 空间ID                   |
-| deviceIds    | int[]        | 否   | 设备ID列表               |
-| startTime    | string       | 是   | 开始时间 `YYYY-MM-DD HH:mm:ss` |
-| endTime      | string       | 是   | 结束时间                 |
-| agentRequest | string       | 否   | 用户原始需求（Agent 创建时填入） |
-| agentTrace   | array        | 否   | AI 思考过程追踪          |
+**认证**：必须携带 `Authorization: Bearer <JWT>`。用户身份从 JWT 解析。
 
-> 预约人 `userId` 从 JWT（演示 `X-User-Id`）解析，不再作为请求体字段（§5.1）。
+**请求体**
 
-响应 `data`：
+| 字段 | 类型 | 必填 | 约束 | 说明 |
+| --- | --- | --- | --- | --- |
+| `text` | string | 是 | 长度 1~1024 | 用户原始自然语言需求 |
+| `imageContext` | object | 否 | 默认 `{}` | 模块 2 传入的图像解析上下文 |
+
+**注意：请求体没有 `userId` 字段。** 身份一律从 JWT 解析（主文档 5.1、9.1）；请求体若夹带 `userId` 会被忽略。若从请求体取用户 ID，任何人都能替别人预约。
+
+`text` 为空字符串时返回 422，不会让 Agent 空跑一次大模型。
+
+**请求示例**
 
 ```json
 {
-  "orderId": 12, "userId": 1, "spaceId": 1, "deviceIds": [1],
-  "startTime": "2026-09-25 09:00:00", "endTime": "2026-09-25 10:00:00",
-  "orderStatus": 1, "agentRequest": "", "agentTrace": [],
-  "createTime": "2026-09-24 10:00:00", "updateTime": "2026-09-24 10:00:00"
+  "text": "下周三下午两点，40 人的产品评审会，预算 800 元，需要投影",
+  "imageContext": {}
 }
 ```
 
@@ -582,83 +576,127 @@ Tool 拿不到 `AsyncSession`（`§7.4` 禁止），让它传 `db` 就等于逼�
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `ok` | bool | 是否创建成功 |
-| `orderId` | int \| null | 成功时为新订单 ID |
-| `reason` | string | 面向用户的中文原因，可直接写入 trace / 前端提示 |
-| `conflictType` | string \| null | `invalid_param` / `not_found` / `time_conflict` / `device_conflict` |
-| `conflictDetail` | object \| null | 结构化冲突详情，供屏 3 展示 |
+| `plan` | object \| null | 主方案；无可行方案时为 `null` |
+| `backupPlan` | object \| null | 备选方案 |
+| `trace` | array | 思考链，前端按 `timestamp` 时间轴回放 |
+| `needConfirm` | boolean | 是否需要人工确认 |
 
-`conflictDetail` 形状：
+**`plan` / `backupPlan` 结构**
 
-```jsonc
-{ "target": "space" | "user" | "device", ...对应 ID }                       // not_found
-{ "conflicts": [ { "orderId": 3, "startTime": "...", "endTime": "..." } ] }  // time_conflict
-{ "conflicts": [ { "orderId": 3, "deviceIds": [1], "startTime": "...", "endTime": "..." } ] }
-{ "conflicts": [ { "deviceId": 1, "reason": "status" | "exhausted" } ] }      // device_conflict
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `spaceId` | int | 场地 ID |
+| `spaceName` | string | 场地名称 |
+| `deviceIds` | int[] | 设备 ID 列表 |
+| `startTime` | string | 开始时间 |
+| `endTime` | string | 结束时间 |
+| `reason` | string | 方案说明，含降级/替代理由 |
+
+**`trace` 元素结构**（前端按此逐字段渲染，字段不可中途变更）
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `step` | int | 是 | 步骤序号，从 1 递增 |
+| `result` | string | 是 | 本步骤的中文结论 |
+| `timestamp` | string | 是 | 该步骤发生时刻，`YYYY-MM-DD HH:mm:ss` |
+| `thought` | string \| null | 否 | Thought：模型本步的推理文本 |
+| `action` | string \| null | 否 | Action：被调用的 Tool 名 |
+| `actionInput` | object \| null | 否 | Action 的入参 |
+| `observation` | object \| null | 否 | Observation：Tool 的返回 |
+
+各步 `timestamp` **互不相同且递增**，可直接用于时间轴回放。
+
+**响应示例（正常）**
+
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "plan": {
+      "spaceId": 3,
+      "spaceName": "A栋3楼展厅",
+      "deviceIds": [1],
+      "startTime": "2026-09-30 14:00:00",
+      "endTime": "2026-09-30 16:00:00",
+      "reason": "预算内保留场地，投影由双台降级为单台"
+    },
+    "backupPlan": null,
+    "trace": [
+      {
+        "step": 1,
+        "result": "解析需求：40 人、预算 800 元、需要投影",
+        "timestamp": "2026-09-30 13:59:12",
+        "thought": "先确认人数与预算约束",
+        "action": null,
+        "actionInput": null,
+        "observation": null
+      },
+      {
+        "step": 2,
+        "result": "查询可用场地",
+        "timestamp": "2026-09-30 13:59:19",
+        "thought": "按 40 人容量与展厅类型检索",
+        "action": "query_spaces",
+        "actionInput": { "capacity": 40, "space_type": 2, "start_time": "2026-09-30 14:00:00", "end_time": "2026-09-30 16:00:00" },
+        "observation": { "spaces": [] }
+      }
+    ],
+    "needConfirm": true
+  }
+}
 ```
 
-入参容忍模型输出：`"space_id": "101"` 这类数字字符串会被转成整数（`§9.3` 要求对模型输出做
-业务边界校验，能转就转、转不了才报 `invalid_param`）。但 `device_ids` 必须是数组——
-传字符串 `"1"` 会被当作逐字符迭代，静默变成 `[1]` 这种事必须挡住。
+**降级响应（契约内，HTTP 仍为 200）**
 
-**业务性失败一律不抛异常**（`§5.5`「ROLLBACK 并返回友好提示」）：`ok=false` + 结构化原因。
-只有基础设施故障（连不上库等）才抛出，由统一异常处理器兜成 500 —— 那是故障、不是
-「方案不可行」，伪装成 `ok=false` 会让 Agent 把连不上库讲成业务建议。
+三种情形 `plan` 均为 `null`、`needConfirm` 均为 `true`，区别只在 `message`：
 
-### 7.3 Tool 与服务的参数对应
-
-| Tool（`§5.3` 模块4） | 服务层 |
+| 情形 | `message` 内容 |
 | --- | --- |
-| `lock_resources(space_id, device_ids, start_time, end_time)` | `create_order(user_id=…, space_id=…, device_ids=…, start_time=…, end_time=…)` |
+| 无可行方案 | 人工可读的原因 + 修改建议（建议不少于 3 条） |
+| 需求自相矛盾 | 指出矛盾点 + 修改建议，不编造方案 |
+| 大模型输出格式错乱 | 模型返回的自然语言原文 |
 
-差一个 `user_id`：身份一律从 JWT 解析（`§5.1`），由 Agent 运行上下文补入。
-Agent 侧若漏传，服务层会明确返回 `invalid_param`「缺少 user_id」而不是落 NULL 或抛异常。
+**超时降级**：模型调用超时时，已收集到的 `trace` 一并返回，前端可展示"思考到哪一步中断了"。超时时间由服务端 `.env` 的 `AGENT_TIMEOUT` 配置。
 
-### 7.4 两条已知边界（**不要在冻结口径之外依赖**）
+**错误码**
 
-1. **`available_count` 只读不写。** `§5.5` 六步里既没有扣减、也没有取消时回补，
-   `§6.3` 表5 却有该字段。单方面扣会造出第二份真值。当前只做 `available_count > 0`
-   的校验；"扣减还是派生"的口径已作为文档缺口上报集成组。
-2. **设备时段冲突是尽力而为。** `§6.3` 没有「设备占用」表，设备的时间维度占用只存在
-   `reserve_order.device_ids`（JSON 列），只能捞重叠时段订单后按 Python 求交集，
-   且 `§6.6` 的 `idx_*` 云库尚未建 —— 正确性可用，**不做性能承诺**。正式口径待集成组给出。
+| code | HTTP | 场景 |
+| --- | --- | --- |
+| 200 | 200 | 正常，或上述任一降级路径 |
+| — | 401 | 缺少或无效的 `Authorization` |
+| — | 422 | `text` 为空或超长 |
 
-### 7.5 自动化护栏
+**禁止事项**
 
-`backend/tests/module3/test_order_service.py` 把这套契约钉住了，改签名会直接红：
+- 不存在 `/api/v1/tools/*` 路由：Tool 是给模型调用的内部函数，不对外暴露（主文档 5.3、9.3）
+- 请求体不接受 `userId`
 
-- 参数名、顺序、keyword-only 限定、`db` 不得进签名 —— 逐项断言
-- 成功与失败返回**字段集完全相同**
-- `time_conflict` / `device_conflict` / `not_found` / `invalid_param` 四条分支各有用例
-- §5.5 第 2 步的 `FOR UPDATE` 在 MySQL 方言下必须出现（SQLite 方言会编译掉它，
-  单测跑在 SQLite 上，所以只能靠编译比对来防止锁被静默删掉）
-- `update_agent_trace`（§7.6）的签名同规格锁死，另有「越权与不存在同为 `not_found`」、
-  「重复补写同一份 trace 仍返回 `ok`」两条行为护栏
+---
 
-### 7.6 `update_agent_trace` —— 补缺，不是改冻结口径
+## 模块 10：监控
 
-Agent 的思考链路是**跑完之后**才有的，落单那一刻还拿不到。所以链路只能分两步写：
-`create_order` 先落 `agent_trace=None`（语义是「尚未生成」，**不是**「生成了一半」——
-残缺 trace 在库里与完整 trace 无法区分，前端会当成完整链路渲染，而 TC-26 / TC-30
-验收的恰恰是「溯源完整」），Agent 跑完再补一次 UPDATE。
+### GET /api/v1/monitor/agent
 
-```python
-from app.services.order_service import update_agent_trace
+Agent 调用埋点（主线二与模块 10 展示用）。
 
-async def update_agent_trace(
-    *,
-    order_id: int,          # 要补写的订单
-    user_id: int,           # 归属校验；由调用方从 JWT 解出后传入（§5.1）
-    agent_trace: list,      # TraceStep 对象数组，**整体覆盖**该列
-) -> dict:                  # {ok, orderId, reason, conflictType, conflictDetail}
-```
+**响应 data 结构**
 
-与 `create_order` 同规格：keyword-only、签名不含 `db`、业务失败返回 `ok=false` 不抛异常，
-且**返回字段集完全相同** —— 调用方一处取值逻辑两处通用。
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `totalCalls` | int | 累计调用次数 |
+| `successRate` | number | 成功率 |
+| `avgLatency` | number | 平均耗时（毫秒） |
 
-三条口径，改桩时别绕开：
+> 成功率口径：`plan` 非空且未触发降级才计入成功。若把降级也计入，展示数据会虚高。
 
-| 情形 | 返回 |
+---
+
+## 待补充模块
+
+以下模块的接口由各自负责人在本文件补充：
+
+| 模块 | 负责人 |
 | --- | --- |
 | 订单不存在，**或**不属于传入的 `user_id` | `ok=false` / `not_found` / `reason="预约不存在"` |
 | `agent_trace` 为空数组，或不是数组 | `ok=false` / `invalid_param` |

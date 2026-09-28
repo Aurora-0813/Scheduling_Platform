@@ -1,4 +1,5 @@
 """资源查询（§5.3 模块5）：场地/设备，供表单下拉与日期联动。"""
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession

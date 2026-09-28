@@ -11,6 +11,7 @@ accessToken，放进 `Authorization: Bearer`。签出来的令牌由团队的
 `app.api.deps.get_current_user` 真解析、真查库，因此「令牌无效 / 用户不存在 /
 账号被禁用 / 未分配角色」这些分支在测试里也真实存在，不是被 mock 掉的。
 """
+
 from datetime import datetime, timedelta
 
 from app.core.security import TokenType, create_token

@@ -3,6 +3,7 @@
 本模块的配置必须与团队公用 `backend/` 保持一致（团队连同一个云库）。
 这里把「对齐」固化为断言：端口、驱动、主键类型一被改动就会失败。
 """
+
 import pathlib
 
 import pytest
@@ -26,7 +27,7 @@ def test_config_defaults_align_with_public_backend():
     fields = Settings.model_fields
 
     assert fields["DB_HOST"].default == "127.0.0.1"
-    assert fields["DB_PORT"].default == 3308      # SSH 隧道本地端口（-> 服务器 3307）
+    assert fields["DB_PORT"].default == 3308  # SSH 隧道本地端口（-> 服务器 3307）
     assert fields["DB_NAME"].default == "smart_scheduler_dev"
     assert fields["DB_USER"].default == "smart_dev"
 
@@ -47,8 +48,12 @@ def test_connection_string_is_async_only():
     那是 §3.4 明令禁止的同步驱动。
     """
     s = Settings(
-        DATABASE_URL="", DB_HOST="h", DB_PORT=3308,
-        DB_USER="u", DB_PASSWORD="p", DB_NAME="d",
+        DATABASE_URL="",
+        DB_HOST="h",
+        DB_PORT=3308,
+        DB_USER="u",
+        DB_PASSWORD="p",
+        DB_NAME="d",
     )
     assert s.database_url == "mysql+asyncmy://u:p@h:3308/d?charset=utf8mb4"
     assert not hasattr(s, "sync_database_url")
@@ -101,9 +106,7 @@ def test_foreign_keys_align_with_spec():
     assert {c.name for c in order.columns if c.foreign_keys} == {"space_id", "user_id"}
 
     message = Base.metadata.tables["notify_message"]
-    assert {c.name for c in message.columns if c.foreign_keys} == {
-        "receiver_id", "order_id"
-    }
+    assert {c.name for c in message.columns if c.foreign_keys} == {"receiver_id", "order_id"}
 
 
 #: §6.6 索引规范 → 该索引应声明在哪张表上。
@@ -122,9 +125,22 @@ _SPEC_6_6_INDEXES: dict[str, str] = {
     "idx_receiver_read": "notify_message",
 }
 
+#: §6.6 **之外**、经集成组确认补建的索引。**每条都要写明依据** ——
+#: 这是「模型声明 == 规范」这条断言唯一的出口，往里加东西等于放宽规范，
+#: 不写清楚就会被下一个人当成随手加的。
+_EXTRA_INDEXES: dict[str, str] = {
+    # main `98c54ea`（2026-09-28 集成组补）：§6.6 的索引在**设备维度**的时段统计上
+    # 全部失效 —— 设备是全局资源，`device_resource` 没有 `space_id`，
+    # `idx_space_time` 的最左前缀用不上；`device_ids` 又是 JSON 列，建不了普通索引。
+    # 模块 3 `_device_conflicts` 的谓词是
+    #     order_status IN (活跃) AND end_time > :start AND start_time < :end
+    # 补这条后等值与范围都能走索引。迁移见 `b7f1c4a92e35` 的说明。
+    "idx_status_start": "reserve_order",
+}
+
 
 def test_index_names_align_with_spec_6_6():
-    """§6.6 的 10 个 `idx_*` 必须一个不少、一个不多、且挂在正确的表上。
+    """§6.6 的 10 个 `idx_*` 一个不少、且挂在正确的表上；规范之外的一律要登记。
 
     **方向已翻转。** 本用例此前断言的是「模型不声明 `idx_*`」—— 那是当时的事实：
     直查云库 `smart_scheduler_dev` 的 `information_schema.STATISTICS`，`idx_*`
@@ -132,25 +148,27 @@ def test_index_names_align_with_spec_6_6():
     团队模型开始声明 `idx_*`，并配了幂等迁移
     `alembic/versions/b7f1c4a92e35_add_doc66_indexes_idempotent.py`。
 
+    「不多」这一侧**不是死板的 10 个**：集成组可以补，但要登记进
+    `_EXTRA_INDEXES` 并写明依据（`idx_status_start` 就是这么来的）。
+
     ⚠️ **本用例只验证「模型声明 == §6.6 规范」，不验证云库已建。**
-    云库上这 10 个索引是否真的存在，取决于上述迁移有没有在云库跑过 ——
-    本轮重组**未复验**（需要 SSH 隧道 + 直查 `information_schema`）。
+    云库上这些索引是否真的存在，取决于上述迁移有没有在云库跑过 ——
+    本轮**未复验**（需要 SSH 隧道 + 直查 `information_schema`）。
     在复验之前，不要把这行绿当成「云库已有索引」的证据。
     """
     declared = {
-        i.name: table.name
-        for table in Base.metadata.tables.values()
-        for i in table.indexes
+        i.name: table.name for table in Base.metadata.tables.values() for i in table.indexes
     }
-    # 不多：模型里不该出现 §6.6 之外的 idx_*（多出来的索引没人负责维护，
+    allowed = {**_SPEC_6_6_INDEXES, **_EXTRA_INDEXES}
+    # 不多：规范之外、又没登记的 idx_* 一律拒绝（多出来的索引没人负责维护，
     # 而它会实打实占写入开销）
-    assert set(declared) == set(_SPEC_6_6_INDEXES), (
-        f"模型声明的 idx_* 与 §6.6 不一致：\n"
-        f"  多了：{sorted(set(declared) - set(_SPEC_6_6_INDEXES))}\n"
-        f"  少了：{sorted(set(_SPEC_6_6_INDEXES) - set(declared))}"
+    assert set(declared) == set(allowed), (
+        f"模型声明的 idx_* 与 §6.6（+ 已登记的补充索引）不一致：\n"
+        f"  多了：{sorted(set(declared) - set(allowed))}\n"
+        f"  少了：{sorted(set(allowed) - set(declared))}"
     )
-    # 不少、且位置正确
-    for name, table_name in _SPEC_6_6_INDEXES.items():
+    # 不少、且位置正确（规范内的与补充的都要挂对表）
+    for name, table_name in allowed.items():
         assert declared[name] == table_name, (
             f"{name} 应声明在 {table_name} 上，实际在 {declared[name]}"
         )
@@ -159,9 +177,7 @@ def test_index_names_align_with_spec_6_6():
 def test_username_unique_constraint_aligns_with_spec_6_6():
     """§6.6 的 `uk_username` 由列级 UNIQUE 约束表达（登录查询靠它）。"""
     sys_user = Base.metadata.tables["sys_user"]
-    unique_cols = {
-        c.name for c in sys_user.columns if c.unique
-    } | {
+    unique_cols = {c.name for c in sys_user.columns if c.unique} | {
         tuple(sorted(c.name for c in con.columns))
         for con in sys_user.constraints
         if con.__class__.__name__ == "UniqueConstraint"
