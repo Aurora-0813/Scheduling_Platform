@@ -1,0 +1,11 @@
+# HBuilderX 编译产物
+unpackage/
+.hbuilderx/
+
+# 依赖（本项目零 npm 依赖，留作兜底）
+node_modules/
+
+# 日志与系统文件
+*.log
+.DS_Store
+Thumbs.db
