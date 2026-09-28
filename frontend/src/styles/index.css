@@ -1,0 +1,142 @@
+/* ============================================================
+   全局样式与主题（配色与汇报 PPT 统一：深青绿）
+   ============================================================ */
+
+:root {
+  /* 覆盖 Element Plus 主色为深青绿 */
+  --el-color-primary: #1e6b5c;
+  --el-color-primary-light-3: #4f9185;
+  --el-color-primary-light-5: #7aaca2;
+  --el-color-primary-light-7: #a8c8c1;
+  --el-color-primary-light-8: #c2d8d3;
+  --el-color-primary-light-9: #e3eeeb;
+  --el-color-primary-dark-2: #165246;
+  --el-border-radius-base: 6px;
+
+  /* 项目自定义色 */
+  --sp-sidebar-bg: #0d2825;
+  --sp-sidebar-active: #143d36;
+  --sp-accent: #5fb89f;
+  --sp-bg: #f4f6f5;
+  --sp-warning: #b7791f;
+  --sp-danger: #c0392b;
+  --sp-text: #1f2d2b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family:
+    'Inter',
+    'PingFang SC',
+    'Microsoft YaHei',
+    'Helvetica Neue',
+    Arial,
+    sans-serif;
+  color: var(--sp-text);
+  background-color: var(--sp-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 通用工具类 */
+.sp-page-title {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.sp-page-sub {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: #7a8a87;
+}
+
+.sp-card {
+  background: #fff;
+  border: 1px solid #e6ebe9;
+  border-radius: 10px;
+  padding: 18px 20px;
+}
+
+.sp-section-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sp-section-title::before {
+  content: '';
+  width: 4px;
+  height: 15px;
+  border-radius: 2px;
+  background: var(--el-color-primary);
+}
+
+.sp-muted {
+  color: #8a9794;
+  font-size: 13px;
+}
+
+/* Element 微调 */
+.el-card {
+  border-color: #e6ebe9;
+}
+
+.el-table th.el-table__cell {
+  background-color: #f6f9f8 !important;
+  color: #334844;
+  font-weight: 600;
+}
+
+/* 思考链时间线 */
+.sp-trace-step {
+  position: relative;
+  padding: 0 0 22px 26px;
+  border-left: 2px solid #d7e2df;
+  margin-left: 8px;
+}
+
+.sp-trace-step:last-child {
+  border-left-color: transparent;
+  padding-bottom: 0;
+}
+
+.sp-trace-dot {
+  position: absolute;
+  left: -9px;
+  top: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--el-color-primary);
+}
+
+.sp-trace-step.is-result .sp-trace-dot {
+  background: var(--el-color-primary);
+}
+
+.sp-trace-code {
+  background: #f2f6f5;
+  border: 1px solid #e1e9e6;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin-top: 6px;
+}
