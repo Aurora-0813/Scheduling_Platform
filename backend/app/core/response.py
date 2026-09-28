@@ -21,7 +21,7 @@ HTTP 状态码约定（**待集成组确认**）：
     只写一处 `if (res.data.code !== 200)` 的拦截逻辑，心智负担最低。
     401 / 41001 等语义码一律放在 body.code 里，不放 HTTP 状态行。
 """
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -103,3 +103,46 @@ def fail(code: int, message: str, data=None) -> dict:
         return fail(code=41003, message="图像识别服务暂时不可用")
     """
     return {"code": code, "message": message, "data": _serialize(data)}
+
+
+# ===========================================================================
+# 兼容层：模块 7 的旧调用点（ok(...) / ApiError(...)）
+# 模块 7 有约 25 处 ok( / ApiError( 调用。为把改动面锁在本文件内、
+# 不动那 25 处，这里提供签名等价的别名。
+# ⚠️ 本文件【不 import】app.core.exceptions —— 见下方 ApiError 的说明。
+# ===========================================================================
+
+
+def ok(data: T | None = None, message: str = "操作成功") -> ApiResponse[T]:
+    """模块 7 旧名 → main 的 success()。
+
+    位置参数顺序 (data, message) 与 success(data, message) 完全一致，
+    因此是纯改名，语义零漂移。
+    """
+    return ApiResponse(code=200, message=message, data=data)
+
+
+class ApiError(Exception):
+    """模块 7 旧名：业务异常。收敛到主干异常栈。
+
+    ⚠️ 刻意【不】继承 BusinessError。
+       main 的 exceptions.py 第 28 行就 `from app.core.response import fail`，
+       第 34 行才定义 BusinessError。若这里反向 import BusinessError 会形成
+       环，且当 exceptions 先被导入时（main.py 正是这个顺序）直接 ImportError。
+       改为独立基类后本文件对 exceptions.py 零依赖，环消失；
+       由 exceptions.py 侧单独注册 handler（见下）。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: int = 400,
+        http_status: int = 200,      # noqa: ARG002  ⚠️ 保留以兼容调用点，但不透出（属 R3）
+        data: Any = None,            # noqa: ARG002  ⚠️ 保留以兼容调用点，但不透出（属 R4）
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.http_status = http_status
+        self.data = data

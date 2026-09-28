@@ -25,7 +25,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from starlette.responses import JSONResponse
 
-from app.core.response import fail
+from app.core.response import ApiError, fail
 
 # 模块级 logger，异常堆栈只写进服务端日志，不进 HTTP 响应
 logger = logging.getLogger("app.exceptions")
@@ -91,6 +91,18 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=200,
             content=fail(code=exc.code, message=exc.message),
         )
+
+    # ---- 新增：模块 7 的 ApiError，响应体与 BusinessError 同形 ----
+    @app.exception_handler(ApiError)
+    async def _handle_api_error(request: Request, exc: ApiError) -> JSONResponse:
+        """模块 7 的 ApiError → 统一响应体。
+
+        ⚠️ 刻意忽略 exc.http_status 与 exc.data：
+           http_status 属 R3（前端按 HTTP 状态码还是 body.code 判错）未决；
+           data       属 R4（ApiError(data=...) 是否被前端依赖）未决。
+           两项均【不在本次范围】，故此处只透出 code + message。
+        """
+        return JSONResponse(status_code=200, content=fail(code=exc.code, message=exc.message))
 
     @app.exception_handler(RequestValidationError)
     async def _handle_validation_error(
