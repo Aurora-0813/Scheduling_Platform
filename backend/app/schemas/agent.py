@@ -9,7 +9,7 @@
 snake_case，前端取值拿到 None 却不报错，排查成本极高。直接命名没有这个风险。
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = ["ScheduleRequest", "TraceStep", "Plan", "ScheduleData"]
 
@@ -20,6 +20,16 @@ class ScheduleRequest(BaseModel):
     注意：**没有 userId 字段**。调用者身份一律从 JWT 解析（主文档 5.1、9.1），
     请求体夹带 userId 会被忽略——若从请求体取，任何人都能替别人预约。
     """
+
+    # `extra="ignore"` 是**显式**写出来的，虽然它就是 Pydantic v2 的默认值。
+    # 理由：`AGENT-I-04`（请求体夹带 `userId` 时被忽略）依赖这个行为，
+    # 而它离「默认值」只有一步之遥——将来若有人为了「及早发现前端传错字段」
+    # 改成 `extra="forbid"`，夹带 `userId` 会变成参数校验失败（HTTP 200 + code=400），
+    # 越权防线从「忽略」变成「拒绝」，
+    # 用例红得莫名其妙。写在这里，改的人至少会看到这行注释。
+    # 注意：**忽略**不等于安全——真正不越权是因为身份只从 JWT 解析（见 api/deps.py），
+    # 而不是因为这里丢掉了一个字段。
+    model_config = ConfigDict(extra="ignore")
 
     text: str = Field(
         ...,
@@ -72,11 +82,11 @@ class ScheduleData(BaseModel):
 
     三条降级口径，均返回 HTTP 200，**不是异常**：
 
-    | 情形                 | plan   | needConfirm | message              |
-    |----------------------|--------|-------------|----------------------|
-    | 正常                 | 方案   | True        | "操作成功"           |
-    | 无可行方案           | None   | True        | 人工可读原因+修改建议 |
-    | 大模型输出格式错乱   | None   | True        | 模型返回的自然语言文本 |
+    | 情形 | plan | orderId | needConfirm | message |
+    | --- | --- | --- | --- | --- |
+    | 正常 | 方案 | 订单 ID，未落库时 None | True | "操作成功" |
+    | 无可行方案 | None | **同上**（已锁单就照报） | True | 人工可读原因+修改建议 |
+    | 大模型输出格式错乱 | None | **同上**（已锁单就照报） | True | 模型返回的自然语言文本 |
 
     第三种是主文档 10.2 要求必须测的契约内降级路径——当成异常抛 500 会让
     前端不知道该展示什么。
@@ -84,6 +94,18 @@ class ScheduleData(BaseModel):
 
     plan: Plan | None = Field(None, description="主方案；无可行方案时为 None")
     backupPlan: Plan | None = Field(None, description="备选方案")
+
+    # 前端拿它去调 `PUT /api/v1/orders/{orderId}/confirm` 完成 1→2 的确认流转。
+    # 不透出的话，`needConfirm=true` 在前端就是个死胡同：知道要确认，却没有单号可传。
+    #
+    # ⚠️ **降级路径不能一刀切成 None**。`plan` 为 None 与「没落库」是两件事：
+    #    模型完全可能先调 `lock_resources` 锁上了单，再在交方案前超时。
+    #    此时库里有单、响应里却没有单号，那单就成了孤儿——锁着、没人确认、也没人知道。
+    #    取值一律用 `AgentOutcome.locked_order_id`（它已经把「桩期没落库」「失败调用」滤干净），
+    #    不要在这里另做判断。None 的含义是**确实没建单**，不是「没方案」。
+    orderId: int | None = Field(
+        None, description="本轮成功锁定的预约单 ID；未落库时为 None（与 plan 是否为空无关）"
+    )
     trace: list[TraceStep] = Field(
         default_factory=list, description="思考链，前端按 timestamp 时间轴回放"
     )

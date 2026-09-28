@@ -22,12 +22,34 @@ class Base(DeclarativeBase):
     """所有 ORM 模型的基类。Alembic 依靠 Base.metadata 识别全部模型。"""
 
 
+# ⚠️ 异步引擎**故意不设 `pool_pre_ping`**，不是漏写。TODO(集成组)：方言缺陷修好后加回来。
+#
+#    SQLAlchemy 2.0.35 的 `MySQLDialect_asyncmy` 基类是 `MySQLDialect_pymysql`
+#    （MRO 实测：MySQLDialect_asyncmy → MySQLDialect_pymysql → MySQLDialect_mysqldb → …），
+#    而它**没有覆盖** `do_ping`（实测 `MySQLDialect_asyncmy.do_ping.__qualname__`
+#    仍是 `MySQLDialect_pymysql.do_ping`），于是走的是 pymysql 那一份：
+#        conn.ping(False) if self._send_false_to_ping else conn.ping()
+#    pymysql 自己的 `Connection.ping(self, reconnect=False)` 有默认值，所以无事；
+#    而 asyncmy 的 DBAPI 适配层是 `AsyncAdapt_asyncmy_connection.ping(self, reconnect)`
+#    （`sqlalchemy/dialects/mysql/asyncmy.py:198`，**无默认值**，体内 `assert not reconnect`），
+#    因此上面那句无参调用必抛：
+#        TypeError: AsyncAdapt_asyncmy_connection.ping()
+#                   missing 1 required positional argument: 'reconnect'
+#
+#    实测（2026-09-27，隧道通、库有数据）是**确定性**的，不是偶发：连续发查询，
+#    **奇数次成功、偶数次必炸**，一次不多一次不少。影响面是**全后端**，不只 Agent 模块——
+#    任何第二次复用连接的请求都会 500。两边 `requirements.txt` 都钉
+#    `sqlalchemy==2.0.35` / `asyncmy==0.2.10`，说明本缺陷与依赖版本无关地存在。
+#
+#    2026-09-28 合并 `origin/main`（`9f30d3a`）时，正式版本文件仍是 `pool_pre_ping=True`，
+#    故此处**未随「整份取正式版」一起替换**，保留本模块已验证的修复（见提交 f4d1a07）。
+#    集成组修好方言缺陷后，删掉本段并打开下面这行即可。
 async_engine = create_async_engine(
     settings.database_url,
     echo=settings.SQL_ECHO,
     pool_size=5,
     max_overflow=10,
-    pool_pre_ping=True,
+    # pool_pre_ping=True,          # ← 见上方说明：方言缺陷修好前不要打开
     pool_recycle=3600,
     # 建连超时。不设时隧道未启动 / 云库不可达要等操作系统的 TCP 超时，
     # 表现为进程启动卡住、`GET /ready` 长时间无响应。

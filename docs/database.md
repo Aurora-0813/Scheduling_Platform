@@ -46,6 +46,30 @@ DATABASE_URL=mysql+asyncmy://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${D
 > 🔴 **`backend/.env` 必须被 `.gitignore` 忽略，`.env.example` 必须提交。**
 > 提交前 `git status` 看不到 `.env` 才算安全。凭据一旦进入 git 历史，改密码也不足以清除。
 
+> ⚠️ **2026-09-27 补记（这条红线此前是被破的）**：`backend/.env` 自首次提交
+> `589c5ea` 起就在版本控制里，`DB_PASSWORD` 与 `JWT_SECRET_KEY` 均已推到 `origin`。
+> 它先于 `backend/.gitignore` 的 `.env` 规则存在——**ignore 规则对已跟踪文件无效**，
+> 所以 Rule 一直显示"安全"却实际没生效。已在 `2843b71` 执行 `git rm --cached`（不动历史）。
+>
+> 两点后果：
+> 1. **新加入的成员 clone 后不再自带 `.env`**，需 `cp backend/.env.example backend/.env`
+>    再按上面第 25~31 行问集成组要连接信息。已有的本地副本不受影响。
+> 2. **凭据需轮换**（库密码 + `JWT_SECRET_KEY`）。不轮换的话，历史里那份仍然可用。
+>    轮换由集成组决定并执行。
+>
+> **2026-09-28 补记（轮换与否的裁定）**：**负责人决定：不轮换**。风险现状照录——
+> `git rm --cached` 只摘掉索引，**历史里那份凭据仍然可用**；且 `pre-commit` 的
+> `no-secrets-file` 钩子当前**两道防线都不生效**（① `.git/hooks/` 下只有 `*.sample`，
+> 钩子从未安装；② 其 `files` 正则 `^\.env(\.|$)|…` 的 `^` 锚定匹配不上
+> `backend/.env`，实测 `backend/.env` 不匹配、`.env` 匹配）。因此：
+> **`pre-commit` 修好之前，`backend/.env` 下次可能又被提交**——
+> `.gitignore` 的 `.env` 规则只对**未跟踪**文件有效，一个 `git add -f`
+> 或文件重回索引就绕过去了。修 `files` 正则归集成组（见
+> `docs/spec/done/README.md` 的《2026-09-28 裁定通知》#4）。
+>
+> 教训：判断"安全"要看 `git ls-files` 而不是 `git check-ignore`——
+> 后者对已跟踪文件**不报忽略**，两者结论相反时以 `git ls-files` 为准。
+
 Navicat / DBeaver 仅作可视化查询用，连接信息从 `.env` 读取，**不写入任何文档**。
 
 ---
@@ -207,7 +231,44 @@ Navicat / DBeaver 仅作可视化查询用，连接信息从 `.env` 读取，**�
 
 > ⚠️ **以下 `ALTER TABLE` 由基础支撑与集成组统一执行，任何人不得自行在库上执行。**
 > 执行前需知会业务中台组（涉及 `inspect_record`、`repair_ticket`）。
-> 已全部执行完毕，此处仅作留档与变更溯源。
+>
+> **⚠️ 2026-09-27 更正**：本节此前声称整份 DDL 与索引均已执行完毕、仅作留档与变更溯源，
+> 该表述与库上实测矛盾，**已删除**。
+> §6.7 的 9 条 `CREATE INDEX` 中，**7 条尚未执行，2 条由 MySQL 外键自动覆盖**。
+> 详见下方实测对照表。
+>
+> 表结构变更按主文档 §6.5 归集成组执行。**本模块不得自建索引、不得改表结构**——
+> 下表只作状态记录，不含任何处置动作。
+
+### 索引实测对照表（2026-09-27）
+
+口径：以 `docs/database.md` §5 的 11 条规范索引为准，逐条比对 `smart_scheduler_dev`
+的 `information_schema.STATISTICS`（只读查询，未做任何变更）。
+
+| # | 规范索引（§5） | 表 | 规范字段 | 库上实测 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `uk_username` | `sys_user` | `username` UNIQUE | `username` 存在，UNIQUE | ⚠️ 功能等价，索引名不符 |
+| 2 | `idx_space_type` | `space_resource` | `space_type` | — | ⛔ **缺失** |
+| 3 | `idx_capacity` | `space_resource` | `capacity` | — | ⛔ **缺失** |
+| 4 | `idx_device_type` | `device_resource` | `device_type` | — | ⛔ **缺失** |
+| 5 | `idx_user_id` | `reserve_order` | `user_id` | `user_id` 存在（外键自动生成） | ⚠️ 功能等价，索引名不符 |
+| 6 | `idx_space_time` | `reserve_order` | `space_id, start_time, end_time` | 仅有 `space_id` 单列（外键自动生成） | ⛔ **缺失（关键）** |
+| 7 | `idx_status` | `reserve_order` | `order_status` | — | ⛔ **缺失** |
+| 8 | `idx_space_id` | `inspect_record` | `space_id` | `space_id` 存在（外键自动生成） | ⚠️ 功能等价，索引名不符 |
+| 9 | `idx_device_id` | `repair_ticket` | `device_id` | `device_id` 存在（外键自动生成） | ⚠️ 功能等价，索引名不符 |
+| 10 | `idx_ticket_status` | `repair_ticket` | `ticket_status` | — | ⛔ **缺失** |
+| 11 | `idx_receiver_read` | `notify_message` | `receiver_id, is_read` | 仅有 `receiver_id` 单列（外键自动生成） | ⛔ **缺失** |
+
+**结论**：11 条规范索引中，**7 条缺失**、4 条由外键自动索引在功能上覆盖（索引名与规范不符）。
+
+§5 的 11 条比 §6.7 的 9 条多出第 1、5 行（`uk_username`、`idx_user_id`）——
+这两条不在 `CREATE INDEX` 清单内，库上都已在功能上存在。
+§6.7 的 9 条 `CREATE INDEX` 对应本表第 2、3、4、6、7、8、9、10、11 行，
+其中 **7 条未执行**（第 2、3、4、6、7、10、11 行），2 条（第 8、9 行）外键已覆盖。
+
+**第 6 行 `idx_space_time` 缺失是本表的重点**：没有这个联合索引，
+`SELECT ... FOR UPDATE` 在冲突检测时会退化为全表扫描并放大锁范围（主文档 5.5），
+低并发下测不出问题，演示当天会翻车。§6.1 的自检 SQL 至今应报**空结果**。
 
 ```sql
 -- 1. space_resource 新增字段

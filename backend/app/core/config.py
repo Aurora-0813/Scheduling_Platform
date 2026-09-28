@@ -160,6 +160,43 @@ class Settings(BaseSettings):
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
     DEEPSEEK_MODEL: str = "deepseek-flash"  # 口语清洗所用模型
 
+    # ---------- 大模型配置（Agent 组与模块 8 共用同一套，2026-09-27 定案） ----------
+    # 命名：`LLM_` 前缀 + 全大写，与本文件既有 DB_ / JWT_ / APP_ 风格一致。
+    #
+    # ⚠️ **不要改用 `OPENAI_API_KEY` 这个名字。** `ChatOpenAI` 会**隐式**从环境变量
+    #    拾取 `OPENAI_API_KEY`；沿用该名的话，本机任何同名环境变量都会把请求静默
+    #    路由到别人的额度上，且排查时很难看出。调用处应**显式传参**堵死这条路径：
+    #        ChatOpenAI(model=settings.LLM_MODEL_NAME,
+    #                   api_key=settings.LLM_API_KEY,
+    #                   base_url=settings.LLM_BASE_URL)
+    #
+    # 三个字段**故意给空串默认值，不设必填**。原因很具体：若设为必填，`Settings()`
+    # 会在 import 期就抛异常，**没配 key 的机器上所有测试连 import 都过不去**，
+    # 包括根本不用 LLM 的模块。校验点放在**真实调用入口**——用下面的
+    # `llm_configured` 判断，缺了立刻报「LLM_API_KEY 未配置」，而不是走到 HTTP 401。
+    LLM_MODEL_NAME: str = ""               # 模型名，如 qwen-plus
+    LLM_API_KEY: str = ""                  # 各人各把，真实值只放 .env，不进仓库
+    LLM_BASE_URL: str = ""                 # OpenAI 兼容端点，不写死服务商
+    LLM_TEMPERATURE: float = 0.0           # 调度决策要可复现，取 0；调高会让同一需求两次给出不同方案
+    LLM_MAX_RETRIES: int = 1               # SDK 内部重试次数。外层已有 AGENT_TIMEOUT 兜底，重试不宜多
+
+    # ---------- Agent 运行参数（模块 4 专用，阶段 5/6） ----------
+    # `AGENT_TIMEOUT` 同时用于两处：传给 ChatOpenAI 的单次请求超时，以及
+    # `run_schedule` 里 `asyncio.wait_for` 的整体超时。**整体超时必须不小于单次请求超时**，
+    # 否则模型还在正常生成，外层先把协程掐了，表现为「无端超时」。
+    # 默认 60 秒（2026-09-28 由 30 上调，项目群裁定）：主线一屏 3 要展示约 40 秒的思考过程，
+    # 那 40 秒是**前端按 trace 回放**出来的（阶段 5 §3.5 推荐方案），不是服务端真跑 40 秒——
+    # 但**真冒烟实测**场景 A 耗时 29.845 秒，30 秒下的余量只剩 155 ms；超时走的是降级路径
+    # （返回 200 + 友好提示并保留已收集的 trace），**接口层看不出异常**，现场只会发现
+    # 「方案没出来」。取 60 后与 `LLM_TIMEOUT`（模块 1/2 的单次调用超时）同值。
+    # ⚠️ 本值同时喂单次与整体两处，且 `LLM_MAX_RETRIES=1`：一次慢请求就能吃满整个预算。
+    # 若要更稳，需把这一个键拆成「整体 90 / 单次 60」两个键（详见 done/README.md 硬卡点 #11）。
+    AGENT_TIMEOUT: float = 60.0
+    # LangGraph 递归上限。一次正常调度约 4~8 个节点（模型↔工具往返），
+    # 25 足够覆盖「多轮查询 + 重试 + 生成通知」的长链路；再高只会让跑飞的 Agent 拖满超时。
+    AGENT_RECURSION_LIMIT: int = 25
+
+    # 指定 .env 文件位置和编码
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -216,6 +253,20 @@ class Settings(BaseSettings):
         已随合并遗留项一并修正 —— 统一走本属性。
         """
         return self.IMAGE_MAX_SIZE_MB * 1024 * 1024
+
+    @property
+    def llm_configured(self) -> bool:
+        """
+        上面「大模型配置」那三个字段是否齐备。
+
+        真实调用大模型**之前**先判断它：不齐则走降级路径或明确报错，
+        不要把缺 key 的问题拖到 HTTP 401 才暴露。
+
+        （位置说明：它与类开头的 `LLM_*` 字段同属一组，但合并 `origin/main` 时
+        正式版在这附近新增了几个 `@property`，冲突里把它挪到了本段末尾。
+        先按本文件既有顺序就近安置，避免为了"分组好看"再造一次冲突。）
+        """
+        return bool(self.LLM_MODEL_NAME and self.LLM_API_KEY and self.LLM_BASE_URL)
 
     # ---------- 路径属性（模块 2 引入）----------
 
