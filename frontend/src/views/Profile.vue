@@ -89,7 +89,7 @@ onMounted(async () => {
 }
 
 .big-avatar {
-  background: #1e6b5c;
+  background: linear-gradient(135deg, #409eff, #7c5cff);
   color: #fff;
   font-size: 28px;
 }

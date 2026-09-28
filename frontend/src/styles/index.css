@@ -1,26 +1,35 @@
 /* ============================================================
-   全局样式与主题（配色与汇报 PPT 统一：深青绿）
+   全局样式与主题（浅色企业风：#409EFF + AI 蓝紫渐变）
    ============================================================ */
 
 :root {
-  /* 覆盖 Element Plus 主色为深青绿 */
-  --el-color-primary: #1e6b5c;
-  --el-color-primary-light-3: #4f9185;
-  --el-color-primary-light-5: #7aaca2;
-  --el-color-primary-light-7: #a8c8c1;
-  --el-color-primary-light-8: #c2d8d3;
-  --el-color-primary-light-9: #e3eeeb;
-  --el-color-primary-dark-2: #165246;
+  /* Element Plus 主色（Element 标准蓝） */
+  --el-color-primary: #409eff;
+  --el-color-primary-light-3: #79bbff;
+  --el-color-primary-light-5: #a0cfff;
+  --el-color-primary-light-7: #c6e2ff;
+  --el-color-primary-light-8: #d9ecff;
+  --el-color-primary-light-9: #ecf5ff;
+  --el-color-primary-dark-2: #337ecc;
   --el-border-radius-base: 6px;
 
   /* 项目自定义色 */
-  --sp-sidebar-bg: #0d2825;
-  --sp-sidebar-active: #143d36;
-  --sp-accent: #5fb89f;
-  --sp-bg: #f4f6f5;
-  --sp-warning: #b7791f;
-  --sp-danger: #c0392b;
-  --sp-text: #1f2d2b;
+  --sp-sidebar-bg: #ffffff;
+  --sp-sidebar-active: #eef4ff;
+  --sp-accent: #409eff;
+  --sp-accent-2: #7c5cff;
+  --sp-ai-gradient: linear-gradient(135deg, #409eff, #7c5cff);
+  --sp-ai-soft: #eef4ff;
+  --sp-ai-line: #d6e4ff;
+  --sp-bg: #f5f7fa;
+  --sp-warning: #e6a23c;
+  --sp-danger: #f56c6c;
+  --sp-success: #67c23a;
+  --sp-text: #303133;
+  --sp-t2: #606266;
+  --sp-t3: #909399;
+  --sp-border: #dcdfe6;
+  --sp-border-l: #ebeef5;
 }
 
 * {
@@ -37,11 +46,11 @@ body,
 
 body {
   font-family:
-    'Inter',
     'PingFang SC',
     'Microsoft YaHei',
-    'Helvetica Neue',
-    Arial,
+    system-ui,
+    -apple-system,
+    'Inter',
     sans-serif;
   color: var(--sp-text);
   background-color: var(--sp-bg);
@@ -58,23 +67,24 @@ body {
 .sp-page-sub {
   margin: 6px 0 0;
   font-size: 13px;
-  color: #7a8a87;
+  color: var(--sp-t3);
 }
 
 .sp-card {
   background: #fff;
-  border: 1px solid #e6ebe9;
-  border-radius: 10px;
-  padding: 18px 20px;
+  border: 1px solid var(--sp-border-l);
+  border-radius: 8px;
+  padding: 15px 17px;
 }
 
 .sp-section-title {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
-  margin: 0 0 14px;
+  margin: 0 0 13px;
   display: flex;
   align-items: center;
   gap: 8px;
+  color: var(--sp-text);
 }
 
 .sp-section-title::before {
@@ -82,30 +92,56 @@ body {
   width: 4px;
   height: 15px;
   border-radius: 2px;
-  background: var(--el-color-primary);
+  background: var(--sp-ai-gradient);
 }
 
 .sp-muted {
-  color: #8a9794;
-  font-size: 13px;
+  color: var(--sp-t3);
+  font-size: 12.5px;
+}
+
+/* AI 提示条（蓝紫渐变浅底 + 左侧渐变竖条） */
+.sp-ai-bar {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 15px;
+  margin-bottom: 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--sp-t2);
+  background: linear-gradient(90deg, #eef5ff, #f5f1ff 60%, #fff);
+  border: 1px solid var(--sp-ai-line);
+  position: relative;
+  overflow: hidden;
+}
+
+.sp-ai-bar::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--sp-ai-gradient);
 }
 
 /* Element 微调 */
 .el-card {
-  border-color: #e6ebe9;
+  border-color: var(--sp-border-l);
 }
 
 .el-table th.el-table__cell {
-  background-color: #f6f9f8 !important;
-  color: #334844;
-  font-weight: 600;
+  background-color: #fafafa !important;
+  color: var(--sp-t3);
+  font-weight: 500;
 }
 
-/* 思考链时间线 */
+/* 思考链时间线（浅色版） */
 .sp-trace-step {
   position: relative;
   padding: 0 0 22px 26px;
-  border-left: 2px solid #d7e2df;
+  border-left: 2px solid #e4ecfa;
   margin-left: 8px;
 }
 
@@ -122,20 +158,21 @@ body {
   height: 16px;
   border-radius: 50%;
   background: #fff;
-  border: 3px solid var(--el-color-primary);
+  border: 3px solid var(--sp-accent);
 }
 
 .sp-trace-step.is-result .sp-trace-dot {
-  background: var(--el-color-primary);
+  background: var(--sp-accent);
 }
 
 .sp-trace-code {
-  background: #f2f6f5;
-  border: 1px solid #e1e9e6;
+  background: #f7f9fc;
+  border: 1px solid #e9eef6;
   border-radius: 6px;
   padding: 8px 10px;
-  font-family: 'JetBrains Mono', 'Consolas', monospace;
+  font-family: 'Consolas', ui-monospace, monospace;
   font-size: 12px;
+  color: #4a6a92;
   white-space: pre-wrap;
   word-break: break-all;
   margin-top: 6px;

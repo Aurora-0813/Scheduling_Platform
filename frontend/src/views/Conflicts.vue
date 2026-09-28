@@ -126,7 +126,7 @@ onMounted(loadConflicts)
 }
 
 .conflict-card {
-  border: 1px solid #e6ebe9;
+  border: 1px solid var(--sp-border-l);
   border-radius: 8px;
   padding: 12px 14px;
   margin-bottom: 10px;
@@ -135,9 +135,9 @@ onMounted(loadConflicts)
 }
 
 .conflict-card.active {
-  border-color: #1e6b5c;
-  background: #f2f8f6;
-  box-shadow: 0 0 0 1px #1e6b5c inset;
+  border-color: #409eff;
+  background: #ecf5ff;
+  box-shadow: 0 0 0 1px #409eff inset;
 }
 
 .conflict-head {
@@ -149,13 +149,13 @@ onMounted(loadConflicts)
 
 .order-text {
   font-size: 12px;
-  color: #8a6d3b;
+  color: #b88230;
 }
 
 .suggestion {
   font-size: 13px;
   line-height: 1.7;
-  color: #5a4a2e;
+  color: #8a6d3b;
 }
 
 .notify-card {

@@ -193,19 +193,19 @@ onMounted(loadMetrics)
 
 .kpi-label {
   font-size: 13px;
-  color: #7a8a87;
+  color: #909399;
 }
 
 .kpi-value {
   font-size: 30px;
   font-weight: 800;
-  color: #143d36;
+  color: #303133;
 }
 
 .unit {
   font-size: 13px;
   font-weight: 500;
-  color: #8a9794;
+  color: #909399;
   margin-left: 3px;
 }
 
@@ -226,31 +226,31 @@ onMounted(loadMetrics)
 .step-no {
   font-weight: 700;
   font-size: 13px;
-  color: #143d36;
+  color: #303133;
 }
 
 .step-result {
   font-size: 12.5px;
-  color: #1e6b5c;
+  color: #409eff;
   font-weight: 600;
 }
 
 .step-time {
   margin-left: auto;
   font-size: 11px;
-  color: #9aa6a3;
+  color: #909399;
   font-family: Consolas, monospace;
 }
 
 .step-thought {
   font-size: 12.5px;
   line-height: 1.7;
-  color: #445552;
+  color: #606266;
 }
 
 .step-action {
   font-size: 12.5px;
-  color: #b7791f;
+  color: #c47b16;
   font-weight: 600;
   margin-top: 4px;
 }
@@ -270,13 +270,13 @@ onMounted(loadMetrics)
 }
 
 .main-plan {
-  background: #f2f8f6;
-  border: 1px solid #cfe3dc;
+  background: linear-gradient(140deg, #eef5ff, #f5f0ff);
+  border: 1px solid var(--sp-ai-line);
 }
 
 .backup-plan {
-  background: #f6f8f7;
-  border: 1px dashed #cfd8d5;
+  background: #f7f9fc;
+  border: 1px dashed var(--sp-border);
 }
 
 .plan-name {
@@ -291,11 +291,11 @@ onMounted(loadMetrics)
 :deep(.plan-detail) {
   font-size: 12.5px;
   line-height: 1.9;
-  color: #55615e;
+  color: #606266;
 }
 
 :deep(.plan-reason) {
-  color: #7a8a87;
+  color: #909399;
   margin-top: 4px;
 }
 </style>

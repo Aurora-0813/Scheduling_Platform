@@ -52,8 +52,8 @@ function toEvent(order) {
     title: `${order.spaceName}（${order.orderNo}）`,
     start: order.startTime.replace(' ', 'T'),
     end: order.endTime.replace(' ', 'T'),
-    backgroundColor: '#1e6b5c',
-    borderColor: '#1e6b5c',
+    backgroundColor: '#409eff',
+    borderColor: '#409eff',
     extendedProps: { statusText: order.statusText },
   }
 }
@@ -117,20 +117,28 @@ onMounted(loadData)
 }
 
 :deep(.fc-button-primary) {
-  background-color: #1e6b5c;
-  border-color: #1e6b5c;
+  background-color: #409eff;
+  border-color: #409eff;
 }
 
 :deep(.fc-button-primary:disabled),
 :deep(.fc-button-primary:not(:disabled).fc-button-active),
 :deep(.fc-button-primary:not(:disabled):active) {
-  background-color: #143d36;
-  border-color: #143d36;
+  background-color: #337ecc;
+  border-color: #337ecc;
 }
 
 :deep(.fc-event) {
   cursor: pointer;
   padding: 2px 4px;
+}
+
+:deep(.fc-day-today) {
+  background-color: #ecf5ff !important;
+}
+
+:deep(.fc-col-header-cell.fc-day-today) {
+  background-color: #d9ecff !important;
 }
 
 .conflict-panel {
@@ -158,21 +166,21 @@ onMounted(loadData)
 
 .conflict-orders {
   font-size: 12px;
-  color: #8a6d3b;
+  color: #b88230;
 }
 
 .conflict-suggestion {
   font-size: 12.5px;
   line-height: 1.7;
-  color: #6b5630;
+  color: #8a6d3b;
 }
 
 .panel-tip {
   margin-top: 14px;
   font-size: 11.5px;
-  color: #9aa6a3;
+  color: #909399;
   line-height: 1.7;
-  border-top: 1px dashed #e1e9e6;
+  border-top: 1px dashed var(--sp-border);
   padding-top: 12px;
 }
 </style>

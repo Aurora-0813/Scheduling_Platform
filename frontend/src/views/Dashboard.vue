@@ -91,15 +91,15 @@ function renderPeakChart(peakHours = []) {
     xAxis: {
       type: 'category',
       data: peakHours.map((item) => `${item.hour}:00`),
-      axisLine: { lineStyle: { color: '#c4d0cd' } },
-      axisLabel: { color: '#6b7c79' },
+      axisLine: { lineStyle: { color: '#dcdfe6' } },
+      axisLabel: { color: '#606266' },
     },
     yAxis: {
       type: 'value',
       name: '预约次数',
-      nameTextStyle: { color: '#8a9794' },
-      splitLine: { lineStyle: { color: '#eef2f1' } },
-      axisLabel: { color: '#6b7c79' },
+      nameTextStyle: { color: '#909399' },
+      splitLine: { lineStyle: { color: '#ebeef5' } },
+      axisLabel: { color: '#606266' },
     },
     series: [
       {
@@ -109,8 +109,8 @@ function renderPeakChart(peakHours = []) {
         itemStyle: {
           borderRadius: [5, 5, 0, 0],
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: '#2e8b76' },
-            { offset: 1, color: '#8fc7b8' },
+            { offset: 0, color: '#409eff' },
+            { offset: 1, color: '#a0cfff' },
           ]),
         },
       },
@@ -122,8 +122,8 @@ function renderFaultChart(faultFrequency = []) {
   faultChart = echarts.init(faultChartRef.value)
   faultChart.setOption({
     tooltip: { trigger: 'item', formatter: '{b}：{c} 次（{d}%）' },
-    legend: { bottom: 0, textStyle: { color: '#6b7c79' } },
-    color: ['#1e6b5c', '#5fb89f', '#b7791f', '#8a9794'],
+    legend: { bottom: 0, textStyle: { color: '#606266' } },
+    color: ['#409eff', '#7c5cff', '#e6a23c', '#909399'],
     series: [
       {
         type: 'pie',
@@ -131,7 +131,7 @@ function renderFaultChart(faultFrequency = []) {
         center: ['50%', '44%'],
         avoidLabelOverlap: true,
         itemStyle: { borderColor: '#fff', borderWidth: 2 },
-        label: { formatter: '{b}\n{c} 次', color: '#6b7c79' },
+        label: { formatter: '{b}\n{c} 次', color: '#606266' },
         data: faultFrequency.map((item) => ({ name: item.deviceType, value: item.count })),
       },
     ],
@@ -187,26 +187,26 @@ onBeforeUnmount(() => {
 
 .kpi-label {
   font-size: 13px;
-  color: #7a8a87;
+  color: #909399;
 }
 
 .kpi-value {
   font-size: 34px;
   font-weight: 800;
-  color: #143d36;
+  color: #303133;
   line-height: 1.1;
 }
 
 .kpi-unit {
   font-size: 14px;
   font-weight: 500;
-  color: #8a9794;
+  color: #909399;
   margin-left: 4px;
 }
 
 .kpi-foot {
   font-size: 12px;
-  color: #a0acaa;
+  color: #909399;
 }
 
 .chart-row {
@@ -229,7 +229,7 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 14px;
   padding: 14px 0;
-  border-top: 1px dashed #e1e9e6;
+  border-top: 1px dashed var(--sp-border);
 }
 
 .report-item:first-of-type {
@@ -240,8 +240,8 @@ onBeforeUnmount(() => {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  background: #e3eeeb;
-  color: #1e6b5c;
+  background: #ecf5ff;
+  color: #409eff;
   font-weight: 700;
   display: flex;
   align-items: center;
@@ -256,14 +256,14 @@ onBeforeUnmount(() => {
 
 .report-finding {
   font-weight: 600;
-  color: #2c3e3b;
+  color: #303133;
 }
 
 .report-evidence {
-  color: #7a8a87;
+  color: #606266;
 }
 
 .report-suggestion {
-  color: #1e6b5c;
+  color: #409eff;
 }
 </style>

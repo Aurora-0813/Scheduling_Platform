@@ -14,9 +14,9 @@
         :collapse-transition="false"
         router
         class="side-menu"
-        background-color="transparent"
-        text-color="#b9c9c4"
-        active-text-color="#ffffff"
+        background-color="#ffffff"
+        text-color="#606266"
+        active-text-color="#409EFF"
       >
         <el-menu-item v-for="item in menuItems" :key="item.path" :index="item.path">
           <el-icon><component :is="item.icon" /></el-icon>
@@ -119,7 +119,8 @@ async function onCommand(command) {
 }
 
 .layout-aside {
-  background: var(--sp-sidebar-bg);
+  background: #fff;
+  border-right: 1px solid var(--sp-border-l);
   transition: width 0.2s;
   overflow: hidden;
   display: flex;
@@ -132,13 +133,14 @@ async function onCommand(command) {
   gap: 10px;
   padding: 18px 16px;
   height: 64px;
+  border-bottom: 1px solid var(--sp-border-l);
 }
 
 .logo-mark {
   width: 34px;
   height: 34px;
   border-radius: 8px;
-  background: linear-gradient(135deg, #2e8b76, #5fb89f);
+  background: linear-gradient(135deg, #409eff, #7c5cff);
   color: #fff;
   font-weight: 800;
   font-size: 14px;
@@ -146,17 +148,18 @@ async function onCommand(command) {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  box-shadow: 0 3px 10px rgba(64, 158, 255, 0.35);
 }
 
 .logo-title {
-  color: #f2f7f5;
+  color: var(--sp-text);
   font-size: 14px;
   font-weight: 700;
   white-space: nowrap;
 }
 
 .logo-sub {
-  color: #6f8a82;
+  color: #a8b6c9;
   font-size: 10px;
   letter-spacing: 1px;
 }
@@ -174,15 +177,17 @@ async function onCommand(command) {
 
 .side-menu :deep(.el-menu-item.is-active) {
   background: var(--sp-sidebar-active);
+  box-shadow: inset 3px 0 0 var(--sp-accent);
+  font-weight: 600;
 }
 
 .side-menu :deep(.el-menu-item:hover) {
-  background: rgba(255, 255, 255, 0.06);
+  background: #f5f8ff;
 }
 
 .layout-header {
   background: #fff;
-  border-bottom: 1px solid #e6ebe9;
+  border-bottom: 1px solid var(--sp-border-l);
   display: flex;
   align-items: center;
   gap: 12px;
@@ -214,14 +219,14 @@ async function onCommand(command) {
 }
 
 .user-avatar {
-  background: #1e6b5c;
+  background: linear-gradient(135deg, #409eff, #7c5cff);
   color: #fff;
   font-size: 14px;
 }
 
 .user-name {
   font-size: 14px;
-  color: #334844;
+  color: var(--sp-t2);
 }
 
 .layout-main {

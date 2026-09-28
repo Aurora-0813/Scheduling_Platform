@@ -1,6 +1,9 @@
 <template>
   <div class="login-page">
     <div class="login-hero">
+      <div class="dotgrid"></div>
+      <div class="orb a"></div>
+      <div class="orb b"></div>
       <div class="hero-content">
         <div class="hero-badge">AI · IoT · Agent</div>
         <h1 class="hero-title">AI 全感知<br />智能空间与设备<br />综合调度平台</h1>
@@ -103,7 +106,7 @@ async function onSubmit() {
 
 .login-hero {
   flex: 1.1;
-  background: linear-gradient(150deg, #0d2825 0%, #14403a 55%, #1e6b5c 100%);
+  background: linear-gradient(145deg, #2d6fd0, #409eff 45%, #7c5cff);
   color: #fff;
   display: flex;
   flex-direction: column;
@@ -113,21 +116,57 @@ async function onSubmit() {
   overflow: hidden;
 }
 
-.login-hero::after {
-  content: '';
+.dotgrid {
   position: absolute;
-  right: -120px;
-  top: -120px;
-  width: 360px;
-  height: 360px;
+  inset: 0;
+  opacity: 0.5;
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.5) 1px, transparent 1px);
+  background-size: 34px 34px;
+  -webkit-mask-image: radial-gradient(620px 460px at 45% 45%, #000 15%, transparent 72%);
+  mask-image: radial-gradient(620px 460px at 45% 45%, #000 15%, transparent 72%);
+}
+
+.orb {
+  position: absolute;
   border-radius: 50%;
-  background: rgba(95, 184, 159, 0.12);
+  filter: blur(60px);
+}
+
+.orb.a {
+  width: 300px;
+  height: 300px;
+  background: rgba(255, 255, 255, 0.35);
+  top: -70px;
+  right: -50px;
+  animation: breathe 7s ease-in-out infinite;
+}
+
+.orb.b {
+  width: 280px;
+  height: 280px;
+  background: rgba(124, 92, 255, 0.55);
+  bottom: -90px;
+  left: -60px;
+  animation: breathe 9s ease-in-out infinite reverse;
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.95);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
 }
 
 .hero-badge {
   display: inline-block;
-  border: 1px solid rgba(95, 184, 159, 0.5);
-  color: #8fd6c1;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
   font-size: 12px;
   letter-spacing: 2px;
   padding: 5px 12px;
@@ -141,10 +180,11 @@ async function onSubmit() {
   line-height: 1.3;
   margin: 0 0 20px;
   font-weight: 800;
+  position: relative;
 }
 
 .hero-desc {
-  color: #a9c8c0;
+  color: rgba(255, 255, 255, 0.82);
   font-size: 14px;
   line-height: 1.8;
   margin: 0 0 28px;
@@ -158,7 +198,7 @@ async function onSubmit() {
 
 .hero-points li {
   font-size: 13px;
-  color: #c4d8d3;
+  color: rgba(255, 255, 255, 0.94);
   padding: 7px 0 7px 22px;
   position: relative;
 }
@@ -171,7 +211,7 @@ async function onSubmit() {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #5fb89f;
+  background: #fff;
 }
 
 .hero-footer {
@@ -179,7 +219,7 @@ async function onSubmit() {
   bottom: 28px;
   left: 64px;
   font-size: 12px;
-  color: #6f8a82;
+  color: rgba(255, 255, 255, 0.65);
   letter-spacing: 2px;
 }
 
@@ -200,11 +240,11 @@ async function onSubmit() {
 .login-title {
   font-size: 26px;
   margin: 0 0 8px;
-  color: #1f2d2b;
+  color: #303133;
 }
 
 .login-sub {
-  color: #8a9794;
+  color: #909399;
   font-size: 13px;
   margin: 0 0 28px;
 }
@@ -218,7 +258,7 @@ async function onSubmit() {
 .login-tip {
   margin-top: 18px;
   font-size: 12px;
-  color: #a0acaa;
+  color: #909399;
   text-align: center;
   line-height: 1.6;
 }
