@@ -34,8 +34,11 @@ Agent 只能通过 Tool 调用 **`services/` 层的异步函数**访问业务数
 | `ok` | bool | 是否创建成功 |
 | `orderId` | int \\| None | 成功时为新订单 ID，失败为 None |
 | `reason` | str | 面向用户的中文原因，可直接进 trace / 前端提示 |
-| `conflictType` | str \\| None | 失败归类：`invalid_param` / `not_found` / `time_conflict` / `device_conflict` |
+| `conflictType` | str \\| None | 失败归类，取值见下 |
 | `conflictDetail` | dict \\| None | 结构化冲突详情，供前端（屏 3）展示；无详情时为 None |
+
+`conflictType` 一共四个取值：`invalid_param`、`not_found`、`time_conflict`、`device_conflict`。
+（表里塞不下才挪到这儿 —— 行宽上限 100，`ruff.toml`。）
 
 `conflictDetail` 的形状随 `conflictType` 而定：
 
@@ -84,6 +87,7 @@ Tool 签名 `lock_resources(space_id, device_ids, start_time, end_time)`（`§5.
 由 `core/exceptions.py` 的统一异常处理器兜成 500 —— 那是故障，不是「方案不可行」，
 把它伪装成 `ok: False` 会让 Agent 把基础设施故障讲成业务建议。
 """
+
 from collections import Counter
 
 from sqlalchemy import select
@@ -144,9 +148,7 @@ def _lock_space_stmt(space_id: int):
     里有一条断言把这个差异钉死）。少了那条断言，哪天有人删掉 `with_for_update()`
     整套路还是会全绿，而云库上的并发语义已经没了。
     """
-    return (
-        select(SpaceResource).where(SpaceResource.id == space_id).with_for_update()
-    )
+    return select(SpaceResource).where(SpaceResource.id == space_id).with_for_update()
 
 
 def _lock_devices_stmt(device_ids: list[int]):
@@ -226,9 +228,7 @@ def _fail(conflict_type: str, reason: str, detail: dict | None = None) -> dict:
 async def _time_conflicts(db, space_id: int, start, end) -> list[dict]:
     """第 3 步：该场地在目标时段的重叠订单（占用口径见 `ACTIVE_ORDER_STATUSES`）。"""
     result = await db.execute(
-        select(
-            ReserveOrder.id, ReserveOrder.start_time, ReserveOrder.end_time
-        )
+        select(ReserveOrder.id, ReserveOrder.start_time, ReserveOrder.end_time)
         .where(
             ReserveOrder.space_id == space_id,
             ReserveOrder.order_status.in_(ACTIVE_ORDER_STATUSES),
@@ -310,7 +310,7 @@ async def _device_conflicts(
     used: Counter[int] = Counter()
     for row in rows:
         for did in _hit_device_ids(row.device_ids, wanted):
-            used[did] += 1      # 一单里同一台设备只算一次（`_hit_device_ids` 去重）
+            used[did] += 1  # 一单里同一台设备只算一次（`_hit_device_ids` 去重）
 
     full = {did for did in wanted if used[did] >= caps.get(did, 0)}
     if not full:
@@ -459,7 +459,7 @@ async def create_order(
     async with AsyncSessionLocal() as db:
         # ===================== §5.5 事务六步（开发流程.md:435-441）=====================
         try:
-            async with db.begin():                                      # 1. BEGIN
+            async with db.begin():  # 1. BEGIN
                 # 2. SELECT ... FOR UPDATE 对目标场地行加锁
                 #    （SQLite 方言会把 FOR UPDATE 编译掉，见 tests 走 aiosqlite；
                 #      云库 mysql+asyncmy 下真实生效）
@@ -492,13 +492,11 @@ async def create_order(
                         {"target": "user", "userId": user_id},
                     )
 
-                conflicts = await _time_conflicts(db, space_id, start, end)   # 3.
+                conflicts = await _time_conflicts(db, space_id, start, end)  # 3.
                 if conflicts:
-                    raise _Reject(
-                        "time_conflict", "该时段已被占用", {"conflicts": conflicts}
-                    )
+                    raise _Reject("time_conflict", "该时段已被占用", {"conflicts": conflicts})
 
-                await _check_devices(db, device_ids, locked_devices, start, end)   # 4.
+                await _check_devices(db, device_ids, locked_devices, start, end)  # 4.
 
                 # 5. 插入 reserve_order，写入 device_ids
                 order = ReserveOrder(
@@ -508,13 +506,11 @@ async def create_order(
                     start_time=start,
                     end_time=end,
                     order_status=order_status,
-                    agent_request=(
-                        (agent_request or "").strip()[:_AGENT_REQUEST_MAX] or None
-                    ),
+                    agent_request=((agent_request or "").strip()[:_AGENT_REQUEST_MAX] or None),
                     agent_trace=agent_trace,
                 )
                 db.add(order)
-                await db.flush()   # 取库侧自增 id；事务仍开着，未提交
+                await db.flush()  # 取库侧自增 id；事务仍开着，未提交
                 order_id = order.id
             # 6. COMMIT —— `begin()` 上下文正常退出即提交
         except _Reject as reject:

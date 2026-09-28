@@ -6,6 +6,7 @@ ASGI 栈，覆盖 `main.py` 的 lifespan 与 WebSocket 端点函数体。
 **注意**：`TestClient` 在自己的线程里跑独立事件循环，而 aiosqlite 的连接绑定创建它的
 事件循环 —— 跨循环复用会报错。因此进出前后都要 `async_engine.dispose()` 让出连接池。
 """
+
 import time
 from datetime import timedelta
 
@@ -60,7 +61,7 @@ async def test_lifespan_builds_schema_when_missing(fresh_engine):
         await conn.run_sync(Base.metadata.drop_all)
     await async_engine.dispose()
 
-    with TestClient(app) as c:          # 进入即触发 lifespan
+    with TestClient(app) as c:  # 进入即触发 lifespan
         r = c.get("/api/v1/resources/spaces")
 
     assert r.status_code == 200, "表未重建会因缺表直接 500"
@@ -72,10 +73,16 @@ async def test_lifespan_builds_schema_when_missing(fresh_engine):
 
 async def _create(client, headers=REST_HEADERS) -> int:
     """同步 `TestClient` 版建单，返回 orderId。"""
-    r = client.post("/api/v1/orders/create", json={
-        "spaceId": 1, "deviceIds": [],
-        "startTime": time_str(1, 9), "endTime": time_str(1, 10),
-    }, headers=headers)
+    r = client.post(
+        "/api/v1/orders/create",
+        json={
+            "spaceId": 1,
+            "deviceIds": [],
+            "startTime": time_str(1, 9),
+            "endTime": time_str(1, 10),
+        },
+        headers=headers,
+    )
     assert r.status_code == 200, r.text
     return r.json()["data"]["orderId"]
 
@@ -85,8 +92,7 @@ async def test_ws_notify_receives_realtime_push(fresh_engine):
     with TestClient(app) as c:
         with c.websocket_connect(WS_URL) as ws:
             oid = await _create(c)
-            assert c.put(f"/api/v1/orders/{oid}/confirm",
-                         headers=REST_HEADERS).status_code == 200
+            assert c.put(f"/api/v1/orders/{oid}/confirm", headers=REST_HEADERS).status_code == 200
             msg = ws.receive_json()
 
     assert msg["title"] == "预约已确认"
@@ -99,8 +105,7 @@ async def test_ws_notify_receives_cancel_push(fresh_engine):
     with TestClient(app) as c:
         with c.websocket_connect(WS_URL) as ws:
             oid = await _create(c)
-            assert c.put(f"/api/v1/orders/{oid}/cancel",
-                         headers=REST_HEADERS).status_code == 200
+            assert c.put(f"/api/v1/orders/{oid}/cancel", headers=REST_HEADERS).status_code == 200
             msg = ws.receive_json()
 
     assert msg["title"] == "预约已取消"
@@ -110,7 +115,8 @@ async def test_ws_notify_receives_cancel_push(fresh_engine):
 async def test_ws_notify_disconnect_cleans_up(fresh_engine):
     """客户端断开后，端点函数体的 `except WebSocketDisconnect` 分支要清理连接表。"""
     with TestClient(app) as c:
-        with c.websocket_connect(WS_URL) as ws:
+        # 不绑定句柄：本用例要的只是「连上再断开」，收发的断言在上一条用例里
+        with c.websocket_connect(WS_URL):
             assert _wait_until(lambda: bool(manager._connections.get(MOCK_USER_ID)))
         # 退出 with 即断开
 
@@ -122,8 +128,7 @@ async def test_ws_notify_multiple_clients_same_user(fresh_engine):
     with TestClient(app) as c:
         with c.websocket_connect(WS_URL) as a, c.websocket_connect(WS_URL) as b:
             oid = await _create(c)
-            assert c.put(f"/api/v1/orders/{oid}/confirm",
-                         headers=REST_HEADERS).status_code == 200
+            assert c.put(f"/api/v1/orders/{oid}/confirm", headers=REST_HEADERS).status_code == 200
             assert a.receive_json()["orderId"] == oid
             assert b.receive_json()["orderId"] == oid
 
@@ -143,13 +148,16 @@ def _connect_rejected(url: str) -> bool:
             return True
 
 
-@pytest.mark.parametrize("url", [
-    "/ws/notify",                                   # 完全不带凭据
-    f"/ws/notify?user_id={MOCK_USER_ID}",           # 旧写法：自报身份必须失效
-    f"/ws/notify?user_id={OTHER_USER_ID}",          # 旧写法：更不能冒用他人
-    "/ws/notify?token=not-a-jwt",                   # 令牌是假的
-    f"/ws/notify?token={access_token(MOCK_USER_ID)[:-3]}xx",   # 签名被改坏
-])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/ws/notify",  # 完全不带凭据
+        f"/ws/notify?user_id={MOCK_USER_ID}",  # 旧写法：自报身份必须失效
+        f"/ws/notify?user_id={OTHER_USER_ID}",  # 旧写法：更不能冒用他人
+        "/ws/notify?token=not-a-jwt",  # 令牌是假的
+        f"/ws/notify?token={access_token(MOCK_USER_ID)[:-3]}xx",  # 签名被改坏
+    ],
+)
 async def test_ws_handshake_rejects_unauthenticated(fresh_engine, url):
     """`?user_id=` 那条路必须彻底关闭。
 
