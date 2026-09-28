@@ -30,8 +30,22 @@ from app.core.database import Base
 #: 归属模块 3，且当前**不满足 ruff-format**，一旦改动它，pre-commit 的 `ruff-format`
 #: 钩子会连带重排其内多处注释与推导式，给正在改它的同学制造无关冲突。故两份并存，
 #: 由 `tests/test_space_service.py::test_occupying_status_matches_order_service`
-#: 断言相等 —— 靠测试防漂移，不靠注释。等 `order_service.py` 下次被改到时，把它那行
-#: 换成 `from app.models.reservation import OCCUPYING_STATUS` 即可合并。
+#: 断言相等 —— 靠测试防漂移，不靠注释。
+#:
+#: ⚠️ **合入 `main` 时本常量要整体删掉**，改用蔡玉礼分支
+#: （`origin/feat/module3-caiyuli`）**同一文件**里的 `ACTIVE_ORDER_STATUSES` ——
+#: 那边已把收敛做完了，取值引 `app.state_machine.OrderStatus.PENDING/CONFIRMED`，
+#: 比这里的字面量好，且他的注释已声明那是唯一真值、供 `order_service` /
+#: `api/conflicts.py`（模块 7）/ `api/agent.py` 共用。
+#:
+#: 届时本文件的冲突**直接取他的版本**（他这版另有 `PK_TYPE` 等改动），然后改三处：
+#:   1. `services/space_service.py` 的 import 与 `in_()` 那一处用名；
+#:   2. `tests/test_space_service.py` 的 import 与护栏用例（改为与
+#:      `ACTIVE_ORDER_STATUSES` 比较）；
+#:   3. 删掉本段注释与 `OCCUPYING_STATUS`。
+#:
+#: 这里**故意保持字面量、且不与他的常量同名**：同名会让冲突从「取他的版本」退化成
+#: 「同一个名字两份定义」，反而更难判。故不预先改名，只在合并时收敛。
 OCCUPYING_STATUS = (1, 2)
 
 

@@ -362,6 +362,10 @@ def test_occupying_status_matches_order_service() -> None:
     两份声明一旦分叉，后果是**并发重复预约**：`create_order` 落下的待确认订单按一边
     算占位、`query_spaces` 按另一边算可订，Agent 就会推荐一个刚被占住的场地。
     故用这条护栏代替注释防漂移。
+
+    ⚠️ 合入 `main` 时本用例要跟着改：蔡玉礼分支已把收敛做完（`ACTIVE_ORDER_STATUSES`，
+    定义在同一个 `app/models/reservation.py`），届时删掉模型层的 `OCCUPYING_STATUS`，
+    本用例改为断言那个常量 —— 步骤见模型层该常量的注释。
     """
     from app.services.order_service import OCCUPYING_STATUS as ORDER_SERVICE_OCCUPYING_STATUS
 
