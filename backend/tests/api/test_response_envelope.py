@@ -27,7 +27,8 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from app.core.error_codes import ErrorCode
+from app.core.error_codes import DEFAULT_MESSAGES, ErrorCode
+from app.core.exceptions import _BUSINESS_ERROR_HTTP_STATUS, BizError, BusinessError
 from app.core.response import ApiResponse, ok
 
 pytestmark = pytest.mark.api
@@ -274,6 +275,81 @@ async def test_response_model_violation_is_a_server_error(
 
     assert response.status_code == 500
     assert response.json()["code"] == ErrorCode.INTERNAL_ERROR
+
+
+# ==========================================================================
+# 兼容层与异常类的对账（两条抛法必须给出同一个状态码）
+# ==========================================================================
+def _biz_error_subclasses() -> list[type[BizError]]:
+    """递归收集 `BizError` 的全部子类（含孙类）。"""
+    found: list[type[BizError]] = []
+    pending = list(BizError.__subclasses__())
+    while pending:
+        cls = pending.pop()
+        found.append(cls)
+        pending.extend(cls.__subclasses__())
+    return found
+
+
+def test_legacy_status_table_agrees_with_the_exception_classes() -> None:
+    """
+    同一个业务码，两条抛法必须给出同一个 HTTP 状态码。
+
+    本项目有两种抛法，历史上它们**不一致**：
+
+        raise ResourceConflictError(...)   → 按子类取 409
+        raise BusinessError(40901, ...)    → 查 `_BUSINESS_ERROR_HTTP_STATUS`，
+                                             当时表里没登记 → 落默认 400
+
+    于是「目标时段资源已被占用」返回 409 还是 400，取决于调用方选的写法，
+    前端拿不到稳定契约。40901 已按此对齐；本用例保证以后新增的登记项不会
+    再制造同类不一致 —— 只比**两条路径都存在**的码，只有兼容层一条路径的码
+    （模块 1/2 的 41xxx，无对应子类）不在对账范围内。
+    """
+    by_code: dict[int, type[BizError]] = {}
+    for cls in _biz_error_subclasses():
+        code = getattr(cls, "code", None)
+        # 取最靠上层的子类：同一 code 若被派生类重复声明，以基类为准
+        if isinstance(code, int) and code not in by_code:
+            by_code[code] = cls
+
+    problems: list[str] = []
+    for code, mapped in _BUSINESS_ERROR_HTTP_STATUS.items():
+        cls = by_code.get(code)
+        if cls is not None and cls.http_status != mapped:
+            problems.append(f"{code}: 兼容层表里是 {mapped}，{cls.__name__} 是 {cls.http_status}")
+        if not 400 <= mapped < 600:
+            problems.append(f"{code}: 兼容层表里是 {mapped}，不是合法的 4xx/5xx")
+
+    assert not problems, (
+        "兼容层状态码映射与异常类不一致（同一个错误会返回两种状态码）:\n" + "\n".join(problems)
+    )
+
+
+async def test_legacy_conflict_error_returns_http_409(
+    application: FastAPI, tolerant_client: httpx.AsyncClient
+) -> None:
+    """
+    走兼容层抛 40901，HTTP 状态码必须是 409。
+
+    40901（`RESOURCE_CONFLICT`「目标时段资源已被占用」）目前**没有任何调用方**
+    —— 模块 3 尚未合入 —— 所以这条路上没有任何既有用例能发现状态码是错的。
+    本用例自己起一个探针路由把它钉住：只要有人把表里那行删了，这里立刻变红。
+    """
+
+    @application.post("/api/v1/_probe/legacy-conflict", name="probe_legacy_conflict")
+    async def _legacy_conflict():
+        raise BusinessError(ErrorCode.RESOURCE_CONFLICT)
+
+    response = await tolerant_client.post("/api/v1/_probe/legacy-conflict")
+
+    assert response.status_code == 409
+    body = response.json()
+    assert set(body) == ENVELOPE_KEYS
+    assert body["code"] == ErrorCode.RESOURCE_CONFLICT
+    assert body["message"] == DEFAULT_MESSAGES[ErrorCode.RESOURCE_CONFLICT]
+    # 与「HTTP 跟随业务码分段」的全局约定保持一致（40901 // 100 == 409）
+    assert response.status_code == body["code"] // 100
 
 
 async def test_lifespan_is_not_required_for_requests(client) -> None:
