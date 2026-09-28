@@ -141,10 +141,13 @@
    **这是一处待裁决的取舍**：留着会让 `record_call` 每次请求白跑一遍、
    并给读代码的人「埋点在这」的错觉；删掉则要同步动 `agent.py`、`agent_service.py`
    与 `conftest.py` 三处。已登记，未自作主张删除。
-   3b（mock.py / monitor.py 的 add/add 冲突）同批裁定为**取正式版**：正式版的
+   3b（mock.py / monitor.py 的 add/add 冲突）同批裁定为**取正式版**：合并当时正式版的
    `mock.py` 响应只有 4 步 trace、跨度约 2 秒、无 `observation`、`orderId` 缺失，
-   **不含**模块 4 那份 7 步 / 39 秒的冻结样例（`docs/mock/agent_schedule.json`
-   只在本分支存在，前端渲染与应急预案仍以该文件为准）。
+   **不含**模块 4 那份 7 步 / 39 秒的冻结样例。
+   ✅ **2026-09-28 当日已闭环**：集成组 `25b3ee3`「模块 4 思考链以
+   `docs/mock/agent_schedule.json` 为唯一真源」把 `mock_data.AGENT_SCHEDULE`
+   改为**读该 json 的 `data` 段**，响应体回到 **7 步**，json 成为唯一真源。
+   本阶段记录的「mock 响应体与冻结样例不一致」不再是问题，见 `stage-08` 开头补记与硬卡点 #9。
 
 
 ## 6. 遗留问题与阻塞

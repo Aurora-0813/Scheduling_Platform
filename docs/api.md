@@ -190,19 +190,27 @@
 
 **仅 `DEBUG=true` 时注册**；演示/生产环境（`DEBUG=false`）下该路径不存在，返回 404。
 
-> ⚠️ **2026-09-28 合并后更正**：本节原写 `GET`，且称其固定响应体与 `docs/mock/agent_schedule.json`
-> 一一对应。rebase 到 `origin/main`（`9f30d3a`）时 `api/v1/mock.py` 与 `mock_data.py` 取的是
-> **集成组扩展过的正式版**（该文件同时承载模块 5/6/7/8/10 的 mock 路由，分支版本只有模块 4 一段，
-> 不能覆盖）。正式版的这个端点是 **`POST`**，响应体由 `mock_data.AGENT_SCHEDULE` 提供，
-> 目前是 **4 步 trace、跨 2 秒、不含 `thought`/`action`/`observation`/`orderId`**。
-> 参数：Query `degraded=true` 会给响应加 `X-Agent-Degraded: 1` 头（模块 10 的埋点据此统计降级数）。
+> ✅ **2026-09-28 合并后更正（含当日闭环）**：本节原写 `GET`。rebase 到 `origin/main`
+> （`9f30d3a`）时 `api/v1/mock.py` / `mock_data.py` 取的是**集成组扩展过的正式版**
+> （该文件同时承载模块 5/6/7/8/10 的 mock 路由，分支版本只有模块 4 一段，不能覆盖），
+> 端点为 **`POST`**，且当时的数据是代码里另写的一份 **4 步 / 跨 2 秒**常量，
+> 与 `docs/mock/agent_schedule.json`（7 步 / 39 秒）**各说各话**。
+> **同日 `25b3ee3` 已闭环**：`mock_data.AGENT_SCHEDULE` 改为**读该 json 的 `data` 段**，
+> json 成为唯一真源，响应体随之回到 **7 步**。
 
-**与 `docs/mock/agent_schedule.json` 的关系（待裁定）**：那份 7 步 / 39 秒的样例文件仍在仓库里，
-仍是前端屏 3 渲染、40 秒回放、13.1 应急预案三处共用的**权威素材**；但它**目前不是本端点返回的内容**。
-两者不一致会在演示当天暴露（前端按 4 步渲染则回放不出 40 秒）。**建议**：把
-`mock_data.AGENT_SCHEDULE` 的 `trace` 换成该 JSON 里的 7 步数据（端点的路由与方法保持正式版不变，
-模块 10 的 `tests/api/test_mock_routes.py` 只断言路由与响应头，不受影响）。**未经裁定不擅自改动——
-该文件已属集成组地盘**。已登记为待办。
+**数据源：`docs/mock/agent_schedule.json`（唯一真源）。**
+响应体的 `data` 段**逐字段取自该文件的 `data` 段**——改思考链数据只改这个 json，代码侧不用动。
+路径解析兼容两种检出布局，取先命中的：仓库布局 `<repo>/docs/mock/…`（常态，优先）→
+后端独立布局 `<backend>/docs/mock/…`。**两处都读不到时打 ERROR 日志并返回空 `data`**
+（不抛异常：演示数据文件缺失不该把应用启动带崩），由
+`tests/api/test_agent_schedule_mock.py` 在测试阶段暴露。
+
+**请求参数**：Query `degraded=true` → 响应加 `X-Agent-Degraded: 1` 头
+（模块 10 的埋点据此统计降级数，见 `app/middlewares/agent_metrics.py`）。
+
+该 json 同时是前端屏 3 渲染、40 秒回放、13.1 应急预案三处共用的那一份；
+数据变更由 `tests/api/test_agent_schedule_mock.py`（7 例）与
+`tests/api/test_mock_routes.py`（响应体 camelCase 检查）双重把关。
 
 ---
 

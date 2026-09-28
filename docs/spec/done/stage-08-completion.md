@@ -27,22 +27,33 @@
 **未达成：五项交接的书面回执一项都没有。** 这需要真实的人际沟通（发消息、等回复），
 不是代码能替代的。逐项状态见第 3 节。
 
-> ⚠️ **2026-09-28 合并后更正（重要）**：本节 `[x]` 的三条，**实现侧已经变了**。
-> 合并到 `origin/main`（`9f30d3a`）时 `api/v1/mock.py` 取的是**集成组扩展过的正式版**
-> （该文件同时承载模块 5/6/7/8/10 的 mock 路由，模块 4 的分支版只有本模块一段，覆盖会删掉别人的端点），
-> 于是：
+> ✅ **2026-09-28 合并后更正（当日即闭环）**：本节 `[x]` 的三条，一度因合并而落空，
+> **现已被集成组 `25b3ee3` 修回并加强**。
 >
-> - **`_load_mock` / `ScheduleData.model_validate` 那道机器校验没有了**——正式版不走 JSON 文件，
->   直接返回 `mock_data.AGENT_SCHEDULE`。
-> - **端点由 `GET` 变成 `POST`**，并且多了 `?degraded=true` 参数（返回 `X-Agent-Degraded: 1` 头，
->   供模块 10 的埋点统计降级数）。
-> - **返回的 trace 只有 4 步、跨 2 秒**，不是本节的 7 步 / 39 秒。
+> **时间线**：
+> 1. 合并到 `origin/main`（`9f30d3a`）时 `api/v1/mock.py` / `mock_data.py` 取的是**正式版**
+>    （该文件同时承载模块 5/6/7/8/10 的 mock 路由，模块 4 的分支版只有本模块一段，覆盖会删掉别人的端点）。
+>    当时的正式版**不读 JSON**，`mock_data.AGENT_SCHEDULE` 是代码里另写的一份 **4 步 / 跨 2 秒**常量
+>    ——与本节交付的 7 步 / 39 秒 json **各说各话**。两份都能正常渲染、都不报错，
+>    只有到演示现场才会发现回放节奏与应急预案的预置 trace 对不上。登记为硬卡点 #9。
+> 2. **同日 `25b3ee3`「模块 4 思考链以 `docs/mock/agent_schedule.json` 为唯一真源」把 #9 闭环**：
+>    `mock_data.AGENT_SCHEDULE` 改为**读该 json 的 `data` 段**，响应体随之从 4 步变回 **7 步**；
+>    本模块创建该 json 的提交在 rebase 时被 git 判定为 `already upstream` 自动丢弃，**无冲突**。
 >
-> **`docs/mock/agent_schedule.json` 本身仍是权威素材**（前端屏 3 渲染、40 秒回放、13.1 应急预案
-> 三处共用），只是**不再由这个端点透出**。两者不一致会在演示当天暴露，已登记为硬卡点 #9，
-> 建议把 `mock_data.AGENT_SCHEDULE.trace` 换成该 JSON 的 7 步数据（路由与方法保持正式版不变，
-> 模块 10 的 `tests/api/test_mock_routes.py` 只断言路由与响应头，不受影响）——**未经裁定不擅自改，
-> `mock_data.py` 已属集成组地盘**。`docs/api.md` 的 mock 一节已按现实改写。
+> **数据源统一后的口径（后续以这条为准）**：
+>
+> | 项 | 结论 |
+> | --- | --- |
+> | **唯一真源** | `docs/mock/agent_schedule.json`。**改思考链数据只改这个 json，代码侧不用动** |
+> | 读取方式 | `mock_data._load_agent_schedule()` 取该 json 的 **`data` 段**（外层 `code`/`message` 由 `ok()` 统一包） |
+> | 路径解析 | 兼容两种检出布局，取先命中的：仓库布局 `<repo>/docs/mock/…`（常态，优先）→ 后端独立布局 `<backend>/docs/mock/…` |
+> | 读不到时 | 打 **ERROR 日志**并返回空 `data`，**不抛异常**——演示数据文件缺失不该把应用启动带崩，由 `tests/api/test_agent_schedule_mock.py` 在测试阶段暴露 |
+> | 端点 | 仍是正式版的 **`POST /api/v1/mock/agent/schedule`**，`?degraded=true` → `X-Agent-Degraded: 1` 头（模块 10 埋点据此统计降级数）。**端点形态与数据真源是两件事，别混** |
+>
+> ⚠️ **与本节原文的两处差异**（本节写的是模块 4 分支版当时的实现，不改写，在此对照）：
+> - **`_load_mock` / `ScheduleData.model_validate` 那道「每次请求强制校验」没有了**——现在的实现只
+>   `json.load`，不做 Pydantic 校验。字段一致性改由 `tests/api/test_agent_schedule_mock.py` 的用例保证。
+> - 端点由 `GET` 变成 **`POST`**（同 `docs/api.md` 的 mock 一节，该节也已改写）。
 
 ## 2. 完成判定逐项核对
 
@@ -126,8 +137,9 @@ mock 存在: False
 
 对比 `DEBUG=true` 时（第 4 节 `[mock]` 一行）：`GET /api/v1/mock/agent/schedule` 返回 200、
 7 步 trace。**两种取值下的差异已实测**，不是靠读代码推断。
-（**2026-09-28 合并后**：该端点在正式版里是 `POST /api/v1/mock/agent/schedule`，返回 4 步 trace。
-上面这段输出是模块 4 分支版当时的原始记录，不改写；现状见本节开头补记与硬卡点 #9。
+（**2026-09-28 合并后**：该端点在正式版里是 `POST /api/v1/mock/agent/schedule`，**返回 7 步 trace**
+（`25b3ee3` 起以 `docs/mock/agent_schedule.json` 为唯一真源）。上面这段输出是模块 4 分支版当时的
+原始记录，不改写；现状见本节开头补记。
 「`DEBUG=false` 时 `/api/v1/mock/*` 全部不注册」这条结论**未变**。）
 
 ### 步骤 ④ 已发群并记入文档（**未通过**）
@@ -148,7 +160,7 @@ mock 存在: False
 | --- | --- | --- | --- | --- | --- |
 | 1 | 阶段 8 前置 = `AGENT-STAGE-07` 通过 | 阶段 7 用例尚未编写，前置未满足即进入本阶段 | 按「先把全部代码生成完毕再补测试」的排期调整 | 本阶段只完成「不依赖阶段 7」的两条（mock 交付、注册条件）；交接回执本来就是沟通动作，与阶段 7 无关 | 是 |
 | 2 | mock 端点未规定是否要认证 | **要求 JWT** | 主文档 9.1：除登录外所有端点需认证；埋点/mock 都无匿名必要 | 前端取 mock 需先登录拿 token。若前端希望匿名取，改一行 `Depends` 即可 | 是（前端确认） |
-| 3 | mock 数据放在 `docs/` | `docs/mock/agent_schedule.json` | 它是**交付物**（交给前端直接拿走），不是后端运行期资源；`app/` 下会被当成代码资产 | 后端部署形态若只打包 `backend/`，该文件会缺失，此时 mock 端点返回 503 并给出文件路径。**（2026-09-28 更正**：合并后 mock 端点已不读该文件，此影响不再成立；该文件现仅作前端素材存在，见本节开头补记） | 否 |
+| 3 | mock 数据放在 `docs/` | `docs/mock/agent_schedule.json` | 它是**交付物**（交给前端直接拿走），也是 `25b3ee3` 之后 mock 端点的**唯一真源**；`app/` 下会被当成代码资产 | 后端部署形态若只打包 `backend/`，该文件会缺失。**（2026-09-28 更新**：`25b3ee3` 的路径解析已覆盖这一形态——`<repo>/docs/mock/` 优先，独立检出退回 `<backend>/docs/mock/`；两处都没有才打 ERROR 并返回空 `data`（不再返回 503、不再给出文件路径，见本节开头补记） | 否 |
 
 ## 6. 遗留问题与阻塞
 

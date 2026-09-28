@@ -352,10 +352,14 @@ list 形态 content 等），已在阶段 7 完成文档里列为后续补测项
 > 和 `stage-07-completion.md` 里那份一样属于证据，不是需要跟着刷新的摘要。
 > （同一批还把 `lock_resources` 的时间格式接缝修了，见 `stage-05-completion.md` 遗留 #7。）
 
-> 📌 **2026-09-28 rebase 到 `origin/main`（`9f30d3a`）后的新基线：503 passed / 4 deselected /
-> 2 xfailed / 0 failed，`app/agent` 覆盖率 92.37%。** 红数基线自此以这一次为准（合并前
-> 那份「84 例」是模块 4 单分支的数字，正式版重写了 `conftest` 与 image/voice/auth 用例，
-> 套件规模已不同）。四点变化必须知道：
+> 📌 **2026-09-28 合并后基线（最新，以此为准）：`520 tests · 518 passed · 2 skipped
+> (= 2 xfail(strict)) · 0 failed · 0 errors`，退出码 0。** 本次为 rebase 到
+> `origin/main`（`25b3ee3`）后的实测，**含 `tests/integration/test_migrations.py`（8 例）
+> 与 `tests/api/test_agent_schedule_mock.py`（7 例），无需 `--ignore`**。
+> `app/agent` 覆盖率 **92.37%**（阈值 80% 已入 `pytest.ini`）。
+> 沿革：`9f30d3a` 那次是 503 passed / 505（不含 migrations，用 `--ignore` 排除），
+> 更早那份「84 例」是模块 4 单分支的数字——**都是不同规模套件的快照，不要混用**。
+> 五点变化必须知道：
 >
 > 1. **夹具改名**：合并后 `conftest.py` 是**两套**夹具并存，名字不能混用。
 >    正式版的 `db_session` / `client` 走 SQLite 空库、全离线；模块 4 走开发真库的那两个
@@ -369,14 +373,22 @@ list 形态 content 等），已在阶段 7 完成文档里列为后续补测项
 >    `{userId, username, role, exp}` 载荷在本项目里等同伪造令牌），断言改用 `ErrorCode`；
 >    其中「无 `type` 声明」那条**口径反转**——原为「容忍」，现按正式版严格拒绝
 >    （`TokenInvalidError`）。
-> 4. **`tests/integration/test_migrations.py` 无法收集**，本次全量跑用
->    `--ignore=tests/integration/test_migrations.py` 排除。根因不在用例：`backend/alembic/`
->    （迁移目录，无 `__init__.py`）会遮蔽同名安装包，报 `No module named 'alembic.autogenerate'`。
->    该现象在 `origin/main` 上同样存在，属仓库结构问题，已登记为硬卡点 #8，留集成组。
+> 4. ✅ **`tests/integration/test_migrations.py` 现在能跑，8 例全过，已无需 `--ignore`。**
+>    此前记的「`backend/alembic/` 遮蔽同名包、报 `No module named 'alembic.autogenerate'`」
+>    **是错的**，2026-09-28 经申云飞复现反驳、复核后确认：`backend/alembic/` 无
+>    `__init__.py`，只是**命名空间包**，在整条 `sys.path` 扫完前仅作候选，命中
+>    site-packages 的**常规包**即让位——**不构成遮蔽**。实测 `import alembic` 解析到
+>    `site-packages\alembic\__init__.py`，`python -m alembic --version` 在仓库根与
+>    `backend/` 下**都是 1.20.0、退出码 0**。当时的真实原因就是 **`alembic` 没装**。
+> 5. **mock 思考链的数据源已统一**（`25b3ee3`）：`mock_data.AGENT_SCHEDULE` 不再写死，
+>    改为读 `docs/mock/agent_schedule.json` 的 `data` 段，响应体 **7 步 / 跨 39 秒**。
+>    该 json 是唯一真源（前端屏 3 渲染、40 秒回放、13.1 应急预案三处共用）。新增
+>    `tests/api/test_agent_schedule_mock.py`（7 例）守着它。
 >
 > 另：本机 conda 环境 `smart_dev` 原先缺 `requirements.txt` 已声明的 `aiosqlite==0.22.1`
 > 与 `alembic==1.20.0`，缺失时整个套件在**收集阶段**就 ERROR（此前误记为「image/voice
 > 用例继承红」的根因即此）。已在本机补装，未改动其他依赖。
+> **其他开发机同样需要补装这两项**，否则套件跑不起来——这一条仍成立。
 
 ### 断网与写库两条否定性结论的证据
 
