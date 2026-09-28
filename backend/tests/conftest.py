@@ -15,7 +15,6 @@ pytest 全局夹具
 挂到 `create_agent` 上直接抛 `NotImplementedError`，阶段 7 §3.1 给的示例夹具**不可用**，
 必须自实现一个 `bind_tools` 返回 `self` 的 `BaseChatModel` 子类
 （即下方 `StubChatModel`）。阶段 7 的夹具与用例见 `docs/spec/stage-07-testing.md`。
-"""
 
 整体策略（决策 8）
 ------------------

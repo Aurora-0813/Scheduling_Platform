@@ -24,7 +24,7 @@
 | 任务 | 交付物 | 状态 |
 | --- | --- | --- |
 | 7-1 夹具冒烟 | `tests/conftest.py`（`ScriptedChatModel` + 三个 autouse 护栏） | ✅ |
-| 7-2 只读会话夹具 | `tests/conftest.py::db_session` | ⚠️ **有偏差**（连开发库不连测试库，见第 6 节） |
+| 7-2 只读会话夹具 | `tests/conftest.py::dev_db_session`（合并前名 `db_session`，见 §6.1） | ⚠️ **有偏差**（连开发库不连测试库，见第 6 节） |
 | 7-3 `AGENT-U-01~05` | `tests/test_agent_tools.py`、`tests/test_agent_trace.py` | ✅ 30 例通过 |
 | 7-4 `AGENT-S-01~05` | `tests/test_agent_schedule.py` | ✅ 5 例通过（口径见第 4 节） |
 | 7-5 `AGENT-E-01~04` | `tests/test_agent_schedule.py` | ✅ 7 例通过 |
@@ -215,6 +215,34 @@ Required test coverage of 80% reached. Total coverage: 92.29%
 「用例自己的写」，而用例压根不许写。真正的保护是**拦截**：回滚方案在用例中途崩掉时可能
 留下半截数据，拦截是每次都生效的前置拒绝。安全性更高，但**不等于合规**，所以照记。
 
+### 6.1 补记：rebase 到 `origin/main`（`9f30d3a`，2026-09-28）后的基线重定
+
+本阶段的核心证据是「**84 passed + 2 xfailed**、覆盖率 92.37%」这套数字，**该证据仍然是当时
+那一刻的原始输出，不改写**。但合并后套件规模与夹具命名都变了，**新基线为
+503 passed / 4 deselected / 2 xfailed / 0 failed，`app/agent` 覆盖率仍为 92.37%**。
+后续引用请以新基线为准，理由如下：
+
+1. **正式版重写了 `conftest.py`，夹具分成两套，名字不能混用。** 正式版的
+   `db_session` / `client` 走 SQLite 空库、全离线；模块 4 走开发真库的那两个（本节偏差 1
+   说的那套）**改名为 `dev_db_session` / `dev_client`**。改名发生在
+   `tests/test_agent_schedule.py`（24 处）与 `tests/test_agent_concurrency.py`（7 处）。
+   理由写在 `tests/conftest.py` 的模块 4 段开头：同一个名字不能有两种语义，
+   而正式版那套是全仓共用的基础件，只能让模块 4 的加前缀。
+2. **偏差 1（连开发库不连测试库）未变，且依然未合规。** `dev_db_session` 仍连
+   `smart_scheduler_dev`，`_db_readonly_guard` 仍是前置拒绝。它现在**只**服务模块 4 的
+   真库用例；正式版的离线用例不受影响。测试库权限到位后仍须收窄拦截，否则
+   `AGENT-C-01/02` 的写入路径依旧验不了（硬卡点 #4）。
+3. **偏差 5 未变：`AGENT-C-01/02` 仍是 `xfail(strict)`，仍算未通过。** 新基线里的
+   「2 xfailed」就是这两条，不是通过。
+4. **套件规模从 86 涨到 509（503 passed + 4 deselected + 2 xfailed）**，增量来自正式版的
+   image / voice / auth / mock / monitor 用例——它们与本模块的用例现在跑在同一个
+   `pytest.ini` 下（本节 §3 的原始输出只是模块 4 那部分的快照）。
+5. **全量跑需排除 `tests/integration/test_migrations.py`**：`backend/alembic/`（迁移目录，
+   无 `__init__.py`）会遮蔽同名安装包，报 `No module named 'alembic.autogenerate'`。
+   该现象在 `origin/main` 上同样存在，属仓库结构问题，已登记为硬卡点 #8。
+6. **本机 conda 环境原先缺 `aiosqlite==0.22.1` / `alembic==1.20.0`**（`requirements.txt`
+   已声明），缺失时套件在收集阶段就 ERROR。已在本机补装，未动其他依赖。
+
 ## 7. 本阶段修掉的两个真实缺陷（不在计划内）
 
 写用例的过程中撞出两处**生产代码**的问题，都已修：
@@ -330,6 +358,9 @@ C-02 要断言的「锁定后 `available_count` 递减 / 失败时不减」**没
   **若将来并行跑用例，这里必须换成 `ContextVar`。**
 - **现有自证用例 `test_guard_db_writes_are_actually_blocked` 一行都不用改**：它打的是不带
   标记的 `db_session`，继续证明「默认拒绝没被放松」。
+  （**2026-09-28 合并后**：本附录说的那套夹具现名 `dev_db_session`——正式版的 `db_session`
+  已改为 SQLite 空库、与真库无关。**本附录的整套收窄方案仍只对 `dev_db_session` 有效**，
+  因为只有它连真库。改写时把下面所有 `db_session` 一律读作 `dev_db_session`。）
 
 **第二层：不污染种子——靠「真写 + 自己清理」，不是靠回滚**
 

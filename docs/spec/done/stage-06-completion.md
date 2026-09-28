@@ -116,6 +116,37 @@
 | 3 | 本模块只依赖集成组的应用入口 | 自行补出 `app/main.py` | 没有入口就起不了服务，「六次请求」这条验收无从执行 | 已在模块 docstring 写明「其余模块接入时在 `router.py` 加一行 `include_router`，**不要各自新建 FastAPI 实例**」 | 是 |
 | 4 | 认证失败的 HTTP 状态码未规定（本阶段只笼统写了「401 与参数校验失败也走统一响应体」） | **2026-09-28 裁定：认证失败保留 HTTP 401**；`AuthError` 单列处理器（`core/exceptions.py::_handle_auth_error`），不再走 `BusinessError` 的 200 | 两条认证实现分歧：`core/security.py` 抛 `ApiError`（HTTP 401）、`api/deps.py` 抛 `AuthError`（原为 200 + `code=401`）。分歧不消掉，第 3 项那条「收窄到 2 个名字、集成组替换文件」就做不到——同一个 401 在两条路径上表现不同 | ①`docs/api.md` 模块 4 的错误码表**本来就写 401**，本次改完反而与它一致；②模块 2 的 `tests/test_image_api.py::test_missing_token_returns_401` 原断言 `status_code == 200`，随裁定改为 401；③「参数校验失败 → 200 + `code=400`」**不受影响**，两者性质不同（前者前端跳登录，后者留在原页改输入） | 是（模块 2 已同步） |
 
+### 5.1 补记：rebase 到 `origin/main`（`9f30d3a`，2026-09-28）后的三处落空
+
+本表记的是阶段 6 当时的判断。合并时正式版落地，其中三条的前提不再成立——**不改写上面的记录，在此补记**：
+
+1. **偏离 #4 的 `ApiError` 在正式版里不存在。** 正式版的异常体系收敛在 `core/exceptions.py`：
+   只有 `BizError` / `BusinessError` 层级 + `ErrorCode` 码表，`ApiError` 与 `AuthError`
+   两个名字在 `origin/main` 上都是 0 命中。认证路径的 401 由 `_BUSINESS_ERROR_HTTP_STATUS`
+   里 401xx → 401 的映射统一承担，裁定要的「401 落 HTTP 401 + 统一响应体」**照旧成立**，
+   只是实现载体不是本表写的那两个类名。模块 4 的调用点已就地改掉：
+   `api/v1/agent.py` 的 503 路径用 `BusinessError(code=ErrorCode.AI_MODEL_UNAVAILABLE(41003))`
+   （正式版码表里 41003 已映射到 503），不再自建异常类。
+2. **偏离 #2 的「替换清单」已执行完毕，`core/security.py` 与 `core/response.py` 均取正式版。**
+   模块 4 自建的 `core/response.py::ApiError` / `CODE_OK`、
+   `core/security.py::create_access_token` / `create_refresh_token` 在正式版里**都不存在**，
+   调用点全部迁移完成（用例改用 `create_token` / `ErrorCode`）。身份依赖全应用只剩
+   `api/deps.py` 一份 `get_current_user`，`CurrentUser` 的字段名是 `id`（不是 `user_id`），
+   agent / mock / monitor 三处均已改指。详见硬卡点表第 7 行。
+3. **偏离 #1 与遗留 #2 的埋点实现已被正式版超越，本模块那套现在是死代码。** 正式版的埋点走
+   `app/middlewares/agent_metrics.py` + `services/monitor_service.py` + Redis，
+   `GET /api/v1/monitor/agent` 读的是它。模块 4 的进程内计数
+   （`agent_service.record_call` / `snapshot` / `reset`）**仍被 `agent.py` 调用**，
+   但**已无任何读端**——`reset` 还被 `tests/conftest.py` 的 autouse 夹具用着。
+   **这是一处待裁决的取舍**：留着会让 `record_call` 每次请求白跑一遍、
+   并给读代码的人「埋点在这」的错觉；删掉则要同步动 `agent.py`、`agent_service.py`
+   与 `conftest.py` 三处。已登记，未自作主张删除。
+   3b（mock.py / monitor.py 的 add/add 冲突）同批裁定为**取正式版**：正式版的
+   `mock.py` 响应只有 4 步 trace、跨度约 2 秒、无 `observation`、`orderId` 缺失，
+   **不含**模块 4 那份 7 步 / 39 秒的冻结样例（`docs/mock/agent_schedule.json`
+   只在本分支存在，前端渲染与应急预案仍以该文件为准）。
+
+
 ## 6. 遗留问题与阻塞
 
 | # | 问题 | 类型 | 影响 | 责任人 | 期望闭环时间 |

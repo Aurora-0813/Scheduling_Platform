@@ -272,16 +272,10 @@ def test_missing_token_returns_401(auth_client, fake_jpeg):
         files={"file": ("site.jpg", fake_jpeg, "image/jpeg")},
     )
 
-<<<<<<< HEAD
     assert resp.status_code == 401
     body = resp.json()
-    assert body["code"] == 40101
-=======
-    assert resp.status_code == 401, "认证失败必须保留 HTTP 401"
-    body = resp.json()
     assert set(body) == {"code", "message", "data"}, "401 也必须是统一响应体结构"
-    assert body["code"] == 401
->>>>>>> 1c77283 (fix(api): 认证失败保留 HTTP 401，AuthError 单列处理器)
+    assert body["code"] == 40101
     assert "登录" in body["message"] or "认证" in body["message"]
 
 

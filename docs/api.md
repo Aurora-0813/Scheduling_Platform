@@ -24,17 +24,19 @@
 503 的触发条件、401 与参数校验失败也走统一响应体、以及 mock 端点的注册条件。
 
 > **两种失败的状态码不同（2026-09-28 裁定，非字段级）**：认证失败保留 **HTTP 401**，
-> 参数校验失败是 **HTTP 200 + `code=400`**。两者都走统一响应体结构，区别在状态行。
+> 参数校验失败是 **HTTP 400 + `code=40001`**。两者都走统一响应体结构，区别在状态行与业务码。
 > 理由：401 是「这一整类请求都不该发出去」，前端拦截器靠状态行跳登录；
 > 参数校验失败是「请求到了业务层、这单做不了」，前端留在当前页改输入。
 > 详见 `docs/spec/done/stage-06-completion.md` 偏离 #4。
 已按本契约实现并实测：`backend/app/api/v1/agent.py`、`docs/mock/agent_schedule.json`。
 
-> **参数校验口径变更（2026-09-27，非字段级）**：本模块原先规定 `text` 为空或超长返回
-> HTTP 422，后在合并全局异常处理器时让给了模块 1/2 的口径 —— **HTTP 200 + `code=400`**。
-> 理由是 `core/exceptions.py` 的 `RequestValidationError` 处理器全应用只有一份，
-> 而模块 1/2 的用例断言 `body["code"] == 400`。字段本身、约束范围、以及
-> 「不空跑模型」的行为均未变。偏离已记入 `docs/spec/done/stage-02-completion.md`。
+> **参数校验口径变更（2026-09-28 二次更正，非字段级）**：本模块原先规定 `text` 为空或超长
+> 返回 HTTP 422；合并前一度改成 **HTTP 200 + `code=400`**（模块 4 自建的异常处理器）；
+> **rebase 到 `origin/main`（`9f30d3a`）后，`core/response.py` 的
+> `RequestValidationError` 处理器是正式版的，口径为 HTTP 400 + `code=40001`
+> （`ErrorCode.PARAM_INVALID`）**，与模块 2 的 `tests/test_image_api.py` 一致。
+> 文档按第三种口径改写。字段本身、约束范围、以及「不空跑模型」的行为前后均未变。
+> 两次偏离都已记入 `docs/spec/done/stage-02-completion.md`。
 
 ### POST /api/v1/agent/schedule
 
@@ -51,7 +53,7 @@
 
 **注意：请求体没有 `userId` 字段。** 身份一律从 JWT 解析（主文档 5.1、9.1）；请求体若夹带 `userId` 会被忽略。若从请求体取用户 ID，任何人都能替别人预约。
 
-`text` 为空字符串时被参数校验挡下，返回 **HTTP 200 + `code=400`**（见下方错误码表），
+`text` 为空字符串时被参数校验挡下，返回 **HTTP 400 + `code=40001`**（见下方错误码表），
 不会让 Agent 空跑一次大模型。
 
 **请求示例**
@@ -165,9 +167,11 @@
 | code | HTTP | 场景 |
 | --- | --- | --- |
 | 200 | 200 | 正常，或上述任一降级路径 |
-| — | 401 | 缺少或无效的 `Authorization` |
-| 400 | 200 | `text` 为空或超长（参数校验的统一口径，见本节开头说明） |
-| 503 | 503 | **服务端**未配置大模型（`.env` 缺 `LLM_MODEL_NAME`/`LLM_API_KEY`/`LLM_BASE_URL`） |
+| 40101 | 401 | 缺少 `Authorization` 头 |
+| 40102 / 40103 | 401 | 令牌签名无效 / 已过期 |
+| 40104 | 401 | 拿 refreshToken 调业务接口 |
+| 40001 | 400 | `text` 为空或超长（参数校验的统一口径，见本节开头说明） |
+| 41003 | 503 | **服务端**未配置大模型（`.env` 缺 `LLM_MODEL_NAME`/`LLM_API_KEY`/`LLM_BASE_URL`） |
 
 **以上非 200 的响应体与成功路径结构完全相同**（同为 `{code, message, data}`），
 前端只需要一套解析逻辑。这是阶段 6 的完成判定之一：
@@ -182,15 +186,23 @@
 - 不存在 `/api/v1/tools/*` 路由：Tool 是给模型调用的内部函数，不对外暴露（主文档 5.3、9.3）
 - 请求体不接受 `userId`
 
-### GET /api/v1/mock/agent/schedule
+### POST /api/v1/mock/agent/schedule
 
 **仅 `DEBUG=true` 时注册**；演示/生产环境（`DEBUG=false`）下该路径不存在，返回 404。
 
-固定响应体，字段与上面的 `data` 结构逐一相同，供前端在联调前渲染屏 3 的思考链、
-以及作为演示当天 Agent 超时时的预置回放素材。
+> ⚠️ **2026-09-28 合并后更正**：本节原写 `GET`，且称其固定响应体与 `docs/mock/agent_schedule.json`
+> 一一对应。rebase 到 `origin/main`（`9f30d3a`）时 `api/v1/mock.py` 与 `mock_data.py` 取的是
+> **集成组扩展过的正式版**（该文件同时承载模块 5/6/7/8/10 的 mock 路由，分支版本只有模块 4 一段，
+> 不能覆盖）。正式版的这个端点是 **`POST`**，响应体由 `mock_data.AGENT_SCHEDULE` 提供，
+> 目前是 **4 步 trace、跨 2 秒、不含 `thought`/`action`/`observation`/`orderId`**。
+> 参数：Query `degraded=true` 会给响应加 `X-Agent-Degraded: 1` 头（模块 10 的埋点据此统计降级数）。
 
-数据源文件：`docs/mock/agent_schedule.json`（7 步、时间戳跨 39 秒、间隔不均）。
-完整样例可直接取该文件——它同时是前端渲染、40 秒回放、13.1 应急预案三处共用的那一份。
+**与 `docs/mock/agent_schedule.json` 的关系（待裁定）**：那份 7 步 / 39 秒的样例文件仍在仓库里，
+仍是前端屏 3 渲染、40 秒回放、13.1 应急预案三处共用的**权威素材**；但它**目前不是本端点返回的内容**。
+两者不一致会在演示当天暴露（前端按 4 步渲染则回放不出 40 秒）。**建议**：把
+`mock_data.AGENT_SCHEDULE` 的 `trace` 换成该 JSON 里的 7 步数据（端点的路由与方法保持正式版不变，
+模块 10 的 `tests/api/test_mock_routes.py` 只断言路由与响应头，不受影响）。**未经裁定不擅自改动——
+该文件已属集成组地盘**。已登记为待办。
 
 ---
 
@@ -198,34 +210,58 @@
 
 ### GET /api/v1/monitor/agent
 
-负责人：徐川　｜　状态：**已定稿（阶段 6）**
+负责人：徐川（模块 4 视角）／集成组（实现）　｜　状态：**已随 `origin/main` 落地（2026-09-28）**
 
 Agent 调用埋点（主线二与模块 10 展示用）。
 
-**认证**：必须携带 `Authorization: Bearer <JWT>`（主文档 9.1：除登录外所有端点需认证）。
+> ⚠️ **2026-09-28 合并后整节改写**：本节原先记的是模块 4 阶段 6 的自建实现（进程内计数、
+> 必须鉴权、`avgLatency` 单位为毫秒、成功率按 `plan` 非空判定）。rebase 到
+> `origin/main`（`9f30d3a`）时监控整条链路取的是**集成组正式版**，四处口径都不同，**以本节为准**。
+> 原文不再保留——它描述的实现已不存在，留着只会误导前端。
+> 实现位置：`app/middlewares/agent_metrics.py`（自动收集）+ `app/core/metrics.py`（存储）
+> + `app/services/monitor_service.py`（单位换算）+ `app/schemas/monitor.py`（契约）。
+
+**认证：不需要。** 本端点**不鉴权**（`app/api/v1/monitor.py` 的模块 docstring 有完整理由）：
+它是给前端监控面板与答辩演示用的只读统计，内容不敏感，且面板常在登录态之外加载
+（例如登录页的健康指示），加鉴权会让面板在未登录时整块报错。
+⚠️ **代价与边界**：若将来指标加入业务维度（按用户/按接口细分），必须改为
+`Depends(require_permission(...))` —— 那时的数据已能反推业务量。当前实现刻意不接受任何筛选参数。
 
 **响应 data 结构**
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `totalCalls` | int | 累计调用次数 |
-| `successRate` | number | 成功率（百分数，保留一位小数） |
-| `avgLatency` | number | 平均耗时（**毫秒**） |
+| `totalCalls` | int | `/api/v1/agent/*` 的 **HTTP 请求数**（按请求计，**不是** token 数） |
+| `successRate` | number | 成功**百分比**，0~100，1 位小数（`96.1` 表示 96.1%） |
+| `avgLatency` | number | 平均耗时，单位**秒**，1 位小数（`3.2` 表示 3.2 秒） |
 
-> 成功率口径：`plan` 非空且未触发降级才计入成功。若把降级也计入，展示数据会虚高。
-> 无调用时三个字段返回 `0` / `0.0` / `0`，**不返回 `null`**——前端对 `successRate`
-> 做 `toFixed(1)`，拿到 `null` 会直接抛错。
+> **单位务必与前端面板文案一致**：`successRate` 是 `96.1` 不是 `0.961`，
+> `avgLatency` 是**秒**不是毫秒。换算只在 `monitor_service` 一层做，router 与 schema 都不二次换算。
+> 无调用时返回 `0` / `0.0` / `0`，**不返回 `null`**——前端对 `successRate` 做 `toFixed(1)`，
+> 拿到 `null` 会直接抛错。
 
-**存储**：当前为**进程内计数**，服务重启清零、多 worker 各自计数。
-`TODO(申云飞)`：埋点存储方式（Redis 或库表）与集成组确认后替换，
-替换点只在 `backend/app/services/agent_service.py` 一个文件内。
+> **成功率口径（与模块 4 原设计不同）**：正式版**仅按 HTTP 状态码判定**——`< 400` 记为成功。
+> 大模型降级通常**仍返回 200**，因此降级**单列**为 `degradedCalls` / `degradedRate`，
+> **不并入** `successRate`。模块 4 原设计是「`plan` 非空且未降级才计入成功」，
+> 两者数字会不同：**以正式版为准**。
+
+**`?detail=true`** 时额外返回 `successCalls` / `errorCalls` / `degradedCalls` /
+`degradedRate` / `source`。`source` 为 `redis` 表示跨重启累计，`memory` 表示
+Redis 不可用、数据仅为本进程启动至今。**这两个值不是错误码，是数据来源说明。**
+
+**存储**：`app/core/metrics.py` 的 `MetricStore`，优先 Redis（跨重启累计、多 worker 共享），
+Redis 不可用时退化为进程内计数。**模块 4 自建的 `agent_service.record_call` / `snapshot` /
+`reset` 进程内计数已被本实现取代，目前无任何读端**（`record_call` 仍在 `agent.py` 里被调用，
+属待清理项，见 `stage-06-completion.md` §5.1）。
+
+**Mock 灌数**：`POST /api/v1/mock/monitor/simulate`（`DEBUG=true` 时注册）可批量写入模拟数据，
+供模块 4 未完成或演示前预热面板使用。Mock 流量**不会**计入真实 Agent 调用。
 
 **错误码**
 
 | code | HTTP | 场景 |
 | --- | --- | --- |
-| 200 | 200 | 正常（含无调用时的零值） |
-| — | 401 | 缺少或无效的 `Authorization` |
+| 200 | 200 | 正常（含无调用时的零值）。**无 401**——本端点不鉴权 |
 
 ---
 

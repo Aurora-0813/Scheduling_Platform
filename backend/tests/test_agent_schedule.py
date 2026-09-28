@@ -37,7 +37,7 @@ from langchain_core.messages import AIMessage
 
 from app.agent.chains import builder
 from app.core.config import settings
-from app.core.response import CODE_OK
+from app.core.error_codes import ErrorCode
 from app.schemas.agent import ScheduleData
 
 pytestmark = pytest.mark.asyncio
@@ -580,7 +580,7 @@ async def test_i01_normal_call_returns_full_unified_body(use_model, scripted, sl
     assert resp.status_code == 200
     body = resp.json()
     assert set(body) == {"code", "message", "data"}, "响应体不是主文档 5.2 的三段式"
-    assert body["code"] == CODE_OK
+    assert body["code"] == ErrorCode.SUCCESS
     assert body["message"] == "操作成功"
 
     data = body["data"]
@@ -604,20 +604,29 @@ async def test_i02_missing_authorization_is_401(dev_client) -> None:  # noqa: AN
 
 
 async def test_i02b_refresh_token_cannot_be_used_as_access(dev_client) -> None:  # noqa: ANN001
-    """refreshToken 不能当 accessToken 用：401。
+    """refreshToken 不能当 accessToken 用：HTTP 401 + 业务码 40104。
 
     `AGENT-I-02` 只验了「没带头」，验不出「带错了头」。两种 Token 用**同一个密钥**签发，
     `jwt.decode` 对两者都验签通过——不单独校验 `type`，refreshToken 就是一把万能钥匙，
     而它的有效期是 accessToken 的 7 倍。本条把这个口子钉住。
 
-    2026-09-28 起全应用只有 `api/deps.py` 一份身份依赖（原先 agent 路由走
-    `core/security.py` 那份，它本来就有 `type` 校验；验收的是另一份依赖）。
-    口径细节与「为什么 `type` 缺失时放行」见
-    `test_api_deps_tolerates_token_without_type_claim`。
+    2026-09-28 合并 `origin/main` 后的实现：全应用只有 `api/deps.py` 一份身份依赖，
+    它调 `decode_token(..., expected_type=TokenType.ACCESS)`；正式版的
+    `TokenTypeInvalidError` 在 `core/exceptions.py` 的码表里映射到 HTTP 401，
+    业务码 `40104`（`ErrorCode.TOKEN_TYPE_INVALID`）。
+    合并前本体断言的是 `AuthError`，该异常类已随正式版异常体系下线。
     """
-    from app.core.security import create_refresh_token
+    from datetime import timedelta
 
-    refresh = create_refresh_token(1, username="zhangsan", role="user")
+    from app.core.error_codes import ErrorCode
+    from app.core.security import TokenType, create_token
+
+    refresh, _payload = create_token(
+        user_id=1,
+        role="user",
+        token_type=TokenType.REFRESH,
+        expires_delta=timedelta(days=7),
+    )
 
     resp = await dev_client.post(
         "/api/v1/agent/schedule",
@@ -626,62 +635,78 @@ async def test_i02b_refresh_token_cannot_be_used_as_access(dev_client) -> None: 
     )
 
     assert resp.status_code == 401, "refreshToken 竟然能调业务端点"
-    assert set(resp.json()) == {"code", "message", "data"}, "401 也必须是统一响应体"
+    body = resp.json()
+    assert set(body) == {"code", "message", "data"}, "401 也必须是统一响应体"
+    assert body["code"] == ErrorCode.TOKEN_TYPE_INVALID
 
 
-async def test_api_deps_rejects_refresh_token(monkeypatch) -> None:  # noqa: ANN001
+async def test_api_deps_rejects_refresh_token(monkeypatch, dev_db_session) -> None:  # noqa: ANN001
     """`api/deps.py::get_current_user` —— 全应用唯一的身份依赖 —— 必须把 refreshToken 拦下。
 
-    2026-09-28 之前这条要单测的理由是「接口用例绿着，洞还敞着」：模块 4 的
-    agent/mock/monitor 走 `core/security.py` 的实现（本来就有 `type` 校验），
-    只测 agent 路由验的是**另一份**依赖，而真正缺校验的 `api/deps.py`
-    只有模块 2 的 image/voice 在用。现在两份已并成一份，本条与上面那条接口用例
-    验的是同一段代码；留着是因为它不经过路由，直接钉住依赖本身。
+    本条与上面那条接口用例验的是同一段代码；留着是因为它**不经过路由**，
+    直接钉住依赖本身——路由上将来加一层中间件或装饰器，接口用例绿着而依赖被换掉时，
+    只有这条会红。
 
-    实测确认过（把 `_TOKEN_TYPE_REFRESH` 临时拨成别的值）：不校验时 refreshToken
-    能一路穿过认证直达业务代码——在 `format_spoken_text` 里才开始建 LLM 客户端。
+    正式版的 `get_current_user(credentials=..., db=...)` 两个参数都是 `Depends`
+    注入的，直接调用需显式传入：令牌包成 `HTTPAuthorizationCredentials`，
+    会话用 `dev_db_session`（它会真的查库取角色与状态，因此需要开发库里的 `sys_user.id=1`）。
     """
+    from datetime import timedelta
+
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    from app.api.deps import get_current_user
     from app.core.config import settings
-    from app.core.exceptions import AuthError
-    from app.core.security import create_access_token, create_refresh_token
+    from app.core.exceptions import TokenTypeInvalidError
+    from app.core.security import TokenType, create_token
 
     monkeypatch.setattr(settings, "AUTH_BYPASS", False)  # .env 若开了放行模式，本用例就没意义了
 
-    from app.api.deps import get_current_user
+    def _creds(raw: str) -> HTTPAuthorizationCredentials:
+        return HTTPAuthorizationCredentials(scheme="Bearer", credentials=raw)
 
     # 对照：accessToken 正常放行
-    user = await get_current_user(authorization=f"Bearer {create_access_token(1)}")
-    assert user.user_id == 1
+    access, _ = create_token(
+        user_id=1, role="user", token_type=TokenType.ACCESS, expires_delta=timedelta(minutes=30)
+    )
+    user = await get_current_user(credentials=_creds(access), db=dev_db_session)
+    assert user.id == 1
 
     # 待验：refreshToken 被拒
-    refresh = create_refresh_token(1, username="zhangsan", role="user")
-    with pytest.raises(AuthError):
-        await get_current_user(authorization=f"Bearer {refresh}")
+    refresh, _ = create_token(
+        user_id=1, role="user", token_type=TokenType.REFRESH, expires_delta=timedelta(days=7)
+    )
+    with pytest.raises(TokenTypeInvalidError):
+        await get_current_user(credentials=_creds(refresh), db=dev_db_session)
 
 
-async def test_api_deps_tolerates_token_without_type_claim(monkeypatch) -> None:  # noqa: ANN001
-    """`api/deps.py` **只拒明确标了 `refresh` 的**，`type` 缺失则放行。
+async def test_api_deps_rejects_token_without_type_claim(monkeypatch, dev_db_session) -> None:  # noqa: ANN001
+    """`api/deps.py` 走的是**严格**口径：`type` 缺失的令牌一律拒（40102）。
 
-    这条**刻意钉住一个选择**，免得将来有人「顺手收紧」而不知道代价：
+    这条**刻意钉住一个选择**，因为口径在 2026-09-28 合并时**反过来了**：
 
-    · 收紧到「缺 type 一律拒」换不来额外安全——攻击者没有密钥，签不出任何能验签的 token；
-      能签出不带 `type` 的人，同样能签出带 `type=access` 的。真正的闸门是签名，不是这个字段。
-    · 代价却是实的：模块 2 的鉴权用例按主文档 5.1 的 `userId` 命名自签 token、不带 `type`
-      （`tests/test_image_api.py::test_valid_token_is_accepted`），一律拒会把他们的绿灯打红。
-      本文件是 5.1 与 9.1 两套命名之间的兼容层，兼容正是它的职责。
-
-    将来若真要收紧，应当是一次有意识的修改，并同步模块 2 的用例。
+    · 合并前模块 4 自建的 `deps.py` 是宽松口径——只拒明确标了 `refresh` 的，
+      理由是「攻击者没有密钥，签不出任何能验签的 token；能签出不带 `type` 的人，
+      同样能签出带 `type=access` 的，所以一律拒换不来额外安全，
+      却会打红模块 2 按主文档 5.1 `userId` 命名自签、不带 `type` 的用例」。
+    · 正式版的 `decode_token` 反过来：`jwt.decode` 的 `required` 里就有
+      `sub` / `type` / `jti` / `iat` / `exp`，缺一个即 `TokenInvalidError`。
+      相应地，模块 2 那条用例也已改写成 `create_token` 签发
+      （见 `tests/test_image_api.py::test_valid_token_is_accepted` 的说明）。
+      两处口径现已一致，本文件不再承担「5.1 / 9.1 命名兼容层」的职责。
     """
     import datetime as dt
 
     import jwt as _jwt
 
-    from app.core.config import settings
     from app.api.deps import get_current_user
+    from app.core.config import settings
+    from app.core.exceptions import TokenInvalidError
+    from fastapi.security import HTTPAuthorizationCredentials
 
     monkeypatch.setattr(settings, "AUTH_BYPASS", False)
 
-    # 模块 2 那种形状：userId 命名、没有 type
+    # 旧形状：userId 命名、没有 type / jti
     legacy = _jwt.encode(
         {
             "userId": 1,
@@ -693,21 +718,28 @@ async def test_api_deps_tolerates_token_without_type_claim(monkeypatch) -> None:
         algorithm=settings.JWT_ALGORITHM,
     )
 
-    user = await get_current_user(authorization=f"Bearer {legacy}")
-    assert user.user_id == 1
-    assert user.username == "user01"
+    with pytest.raises(TokenInvalidError):
+        await get_current_user(
+            credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=legacy),
+            db=dev_db_session,
+        )
 
 
 async def test_i03_empty_text_is_rejected_without_calling_the_model(dev_client, auth, monkeypatch) -> None:  # noqa: ANN001
     """`AGENT-I-03` `text` 为空串：被参数校验挡下，**且不空跑模型**（`min_length=1` 生效）。
 
-    ⚠️ 口径是 **HTTP 200 + `code=400`**，不是 422。
+    ⚠️ 口径是 **HTTP 400 + `code=40001`**（`ErrorCode.PARAM_INVALID`），不是框架默认的 422。
 
-    全局 `RequestValidationError` 处理器（`core/exceptions.py`）把框架默认的
-    「422 + 字段级报错」统一收敛成 `code=400` + 一句人话，与模块 1/2 的用例口径一致
-    （它们断言 `body["code"] == 400`）。两套口径不可兼得，模块 4 让出 422：
-    `docs/api.md` 原先写的 422 已按此改正。**契约冻结后因跨模块统一响应体改口径**，
-    记在 stage-02 完成文档的偏离表。
+    全局 `RequestValidationError` 处理器（`core/response.py`）把框架默认的
+    「422 + 字段级报错」收敛成 40001 + 一句人话，与模块 2 的口径一致
+    （`tests/test_image_api.py` 断言 `body["code"] == 40001`）。
+
+    口径变过两次，记在这里免得第三次改的人找不到依据：
+      1. 最初按 `docs/api.md` 写 422；
+      2. 2026-09-28 合并前，模块 4 自建的异常处理器返回 HTTP 200 + `code=400`，
+         本用例随之改成断言 200 / 400（提交 `aec6ff3`）；
+      3. 合并 `origin/main` 后处理器换成正式版：HTTP 400 + `code=40001`。
+         **HTTP 状态行与业务码都变了**，故本条与 `docs/api.md` 一并对齐。
     """
     called = False
 
@@ -720,8 +752,10 @@ async def test_i03_empty_text_is_rejected_without_calling_the_model(dev_client, 
 
     resp = await dev_client.post("/api/v1/agent/schedule", json={"text": ""}, headers=auth)
 
-    assert resp.status_code == 200, "统一响应体的约定是 HTTP 恒 200，错误码只放 body.code"
-    assert resp.json()["code"] == 400
+    assert resp.status_code == 400, "参数校验失败按正式版口径返回 HTTP 400"
+    body = resp.json()
+    assert set(body) == {"code", "message", "data"}, "统一响应体的三段式不变"
+    assert body["code"] == ErrorCode.PARAM_INVALID
     assert not called, "空文本仍然跑了一遍模型"
 
 

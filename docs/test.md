@@ -247,7 +247,7 @@ A 把标准改成前提确实可达的那件事，C 用一条前提能算出来�
 | --- | --- | --- | --- |
 | AGENT-I-01 | 正常调用 | 200，符合统一响应体，`data.trace` 非空且字段齐全 | ✅ 1 例通过 |
 | AGENT-I-02 | 无 `Authorization` 头 | 401（响应体仍是统一结构） | ✅ 1 例通过 |
-| AGENT-I-03 | `text` 为空字符串 | 200 + `code=400`（`min_length=1` 生效，不空跑模型） | ✅ 1 例通过 |
+| AGENT-I-03 | `text` 为空字符串 | **400 + `code=40001`**（`min_length=1` 生效，不空跑模型） | ✅ 1 例通过 |
 | AGENT-I-04 | 请求体夹带 `userId` / `user_id` / `role` | 被忽略，实际使用 JWT 中的用户 | ✅ 3 参数化例通过 |
 | AGENT-I-05 | 响应体不含敏感信息 | 响应中无 API Key、数据库连接串、JWT 密钥 | ✅ 4 例通过 |
 
@@ -337,6 +337,32 @@ list 形态 content 等），已在阶段 7 完成文档里列为后续补测项
 > `app/agent` 覆盖率 **92.37%**。上面的原始输出**保留不改写**——它是 82 例那一刻的快照，
 > 和 `stage-07-completion.md` 里那份一样属于证据，不是需要跟着刷新的摘要。
 > （同一批还把 `lock_resources` 的时间格式接缝修了，见 `stage-05-completion.md` 遗留 #7。）
+
+> 📌 **2026-09-28 rebase 到 `origin/main`（`9f30d3a`）后的新基线：503 passed / 4 deselected /
+> 2 xfailed / 0 failed，`app/agent` 覆盖率 92.37%。** 红数基线自此以这一次为准（合并前
+> 那份「84 例」是模块 4 单分支的数字，正式版重写了 `conftest` 与 image/voice/auth 用例，
+> 套件规模已不同）。四点变化必须知道：
+>
+> 1. **夹具改名**：合并后 `conftest.py` 是**两套**夹具并存，名字不能混用。
+>    正式版的 `db_session` / `client` 走 SQLite 空库、全离线；模块 4 走开发真库的那两个
+>    改名为 **`dev_db_session` / `dev_client`**。`tests/test_agent_schedule.py`（24 处）、
+>    `tests/test_agent_concurrency.py`（7 处）已随之改完。理由写在 `tests/conftest.py`
+>    的模块 4 段开头。
+> 2. **`AGENT-I-03` 的口径第三次变更**：`text` 为空现在断言 **HTTP 400 + `code=40001`**
+>    （正式版 `core/response.py` 的 `RequestValidationError` 处理器），表格行已改。
+>    沿革与理由见 `stage-02-completion.md` 偏离 #3 与 `docs/api.md` 模块 4 节开头。
+> 3. **三条 token/deps 用例按正式版 API 重写**：令牌改由 `create_token` 签发（旧的手写
+>    `{userId, username, role, exp}` 载荷在本项目里等同伪造令牌），断言改用 `ErrorCode`；
+>    其中「无 `type` 声明」那条**口径反转**——原为「容忍」，现按正式版严格拒绝
+>    （`TokenInvalidError`）。
+> 4. **`tests/integration/test_migrations.py` 无法收集**，本次全量跑用
+>    `--ignore=tests/integration/test_migrations.py` 排除。根因不在用例：`backend/alembic/`
+>    （迁移目录，无 `__init__.py`）会遮蔽同名安装包，报 `No module named 'alembic.autogenerate'`。
+>    该现象在 `origin/main` 上同样存在，属仓库结构问题，已登记为硬卡点 #8，留集成组。
+>
+> 另：本机 conda 环境 `smart_dev` 原先缺 `requirements.txt` 已声明的 `aiosqlite==0.22.1`
+> 与 `alembic==1.20.0`，缺失时整个套件在**收集阶段**就 ERROR（此前误记为「image/voice
+> 用例继承红」的根因即此）。已在本机补装，未改动其他依赖。
 
 ### 断网与写库两条否定性结论的证据
 

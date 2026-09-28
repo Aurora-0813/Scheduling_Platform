@@ -23,9 +23,11 @@ import logging
 from fastapi import APIRouter, Depends
 
 from app.agent.chains.builder import AgentUnavailableError, run_schedule
-from app.core.response import ApiError, ok
 from app.api.deps import CurrentUser, get_current_user
-from app.schemas.agent import ScheduleRequest
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import BusinessError
+from app.core.response import ApiResponse, ok
+from app.schemas.agent import ScheduleData, ScheduleRequest
 from app.services.agent_service import persist_agent_trace, record_call
 
 __all__ = ["router"]
@@ -39,11 +41,12 @@ router = APIRouter(tags=["Agent"])
     "/agent/schedule",
     summary="提交自然语言调度需求，返回方案与思考链",
     response_description="统一响应体；降级路径同样是 HTTP 200",
+    response_model=ApiResponse[ScheduleData],
 )
 async def schedule(
     req: ScheduleRequest,
     user: CurrentUser = Depends(get_current_user),
-) -> dict:
+) -> ApiResponse[ScheduleData]:
     """跑一次核心调度 Agent。
 
     **身份只来自 JWT。** 请求体里若夹带 `userId`，Pydantic 按 `extra="ignore"`
@@ -60,20 +63,28 @@ async def schedule(
     try:
         outcome = await run_schedule(
             text=req.text,
-            user_id=user.user_id,
+            user_id=user.id,
             image_context=req.imageContext,
         )
     except AgentUnavailableError as exc:
         # 503 而不是 500：这是「本服务暂时不具备该能力」，不是「服务器崩了」。
         # 同时把配置项的**名字**告诉运维，但绝不回显值（主文档 9.2）。
-        raise ApiError(str(exc), http_status=503) from exc
+        #
+        # 用 `BusinessError(code=41003)` 而不是自建异常类：41003
+        # （`ErrorCode.AI_MODEL_UNAVAILABLE`）在正式版的 `_BUSINESS_ERROR_HTTP_STATUS`
+        # 里已映射到 503，码表与 HTTP 语义都是现成的，不必再造一份。
+        # 2026-09-28 合并前这里用的是模块 4 自建的 `core.response.ApiError`，
+        # 正式版把异常体系收敛到了 `core/exceptions.py`，该名字已不存在。
+        raise BusinessError(
+            code=ErrorCode.AI_MODEL_UNAVAILABLE, message=str(exc)
+        ) from exc
 
     # 埋点**必须**在返回之前，且不能因为埋点失败而改变响应。
     record_call(outcome)
 
-    await _persist_trace(req.text, user.user_id, outcome)
+    await _persist_trace(req.text, user.id, outcome)
 
-    return ok(outcome.data.model_dump(), message=outcome.message)
+    return ok(outcome.data, message=outcome.message)
 
 
 async def _persist_trace(request_text: str, user_id: int, outcome) -> None:  # noqa: ANN001
