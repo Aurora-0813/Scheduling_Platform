@@ -184,12 +184,42 @@ async def 计数（每文件）: query_spaces=1  query_devices=1  lock_resources
 | 2 | 增补的 `submit_plan` | 已实现并接入 Agent | 主文档 5.3 的 Tool 清单用的是「**包括**」而非「仅限」，故增补合法 | 属**建议**而非既定事项，需在 M3 评审同步团队，避免被认为擅自扩大接口范围 | 是 |
 | 3 | `generate_notification(order_info: dict)` | 参数名不变、类型收紧为 `OrderInfo` | `dict` 的 JSON Schema 无字段提示，模型猜错键名会**静默**产出「所选场地」这类兜底文案 | 冻结签名对 service 层不变；被收紧的只是 Agent↔Tool 边界 | 是（告知黄嵩） |
 
+### 5.1 裁定：`generate_notification` 的 Tool 层归属 —— **选 A**（2026-09-28，项目群，黄嵩确认）
+
+阶段 3 登记的分叉（黄嵩侧另给过一份 `(order_id, notify_type, reason) -> str` 的冲突签名，
+且「交付 Tool 还是 service」未澄清）就此闭合。
+
+| 项 | 裁定 |
+| --- | --- |
+| **Tool 层** | 归**模块 4**。`app/agent/tools/generate_notification.py` 按主文档 5.3 的**冻结签名**留在本模块 |
+| **service 层** | 归**模块 7**。`app/services/notify_service.py` 的桩由黄嵩的真实实现替换，**只换函数体、签名不动** |
+| 黄嵩侧的 `notify_tools.py` | **不挂进 `AGENT_TOOLS`** —— 本模块的挂载清单**保持 5 个**，不新增第二个通知工具 |
+| 本模块的动作 | **零代码变更**：签名不改、`AGENT_TOOLS` 不加项、Prompt 工具清单不变。本次只登记口径 |
+
+**为什么选 A**：主文档 5.3 已冻结 Tool 签名，而模块 3 / 模块 5 / 模块 7 走的是**同一个形状**
+——「模块 4 定 Tool 签名，对方实现 service」（见阶段 3 第 4 节的替换清单）。
+若改由模块 7 提供通知 Tool，`AGENT_TOOLS` 会出现第二个通知工具、
+Prompt 里的清单与 5.3 不一致，且**「谁在什么时机把通知落库」会有两套**。
+通知 Tool 的入参是 `OrderInfo`（含 `orderId`），它的触发时机属于 Agent 决策链的一部分，
+留在本模块才谈得上「一轮内锁单 → 通知」这个顺序。
+
+**复核证据（2026-09-28 实测，改后不动代码）**：
+
+```text
+app/agent/tools/__init__.py:38   AGENT_TOOLS = [query_spaces, query_devices, lock_resources,
+                                               generate_notification, submit_plan]      → 5 个
+ls app/agent/tools/             → __init__.py  _common.py  generate_notification.py  lock_resources.py
+                                   query_devices.py  query_spaces.py  submit_plan.py   → 无 notify_tools.py
+app/agent/tools/generate_notification.py:49
+                                async def generate_notification(order_info: OrderInfo) -> dict   → 签名未动
+```
+
 ## 6. 遗留问题与阻塞
 
 | # | 问题 | 类型 | 影响 | 责任人 | 期望闭环时间 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `create_order` 仍是**只读桩**，`orderId` 恒为 None | 阻塞 | 阶段 7 的 `AGENT-C-01/02`（并发与库存扣减）无法验证；`agent_trace` 补写链路只能走到「跳过」分支 | 蔡玉礼（模块 3） | M3 末 |
-| 2 | `notify_service` 的「延期致歉」在 6.3 字典内无 INT 值（未决 #6） | 待确认 | 该类型的通知文案生成会返回 `ok=False` | 黄嵩 + 集成组 | M3 末 |
+| 2 | ~~`notify_service` 的「延期致歉」在 6.3 字典内无 INT 值（未决 #6）~~ → **已裁定（2026-09-28，黄嵩）** | 裁定已出，实现未落到本分支 | **裁定：不扩字典**，`延期致歉` 映射到既有值 **2（变更致歉）**；模块 7 已按此实现（其 `notify_templates.py` 的 `ToneSpec(key="延期致歉", notify_type=2)`，并有落库断言 `notify_type == 2`）。**本分支 `app/services/notify_service.py` 仍是桩**，该类型仍返回 `ok=False`——**这是预期状态**，不是缺陷：桩按「字典外取值一律失败并说明原因」设计。等模块 7 落 `main` 后自然消解，届时本模块用例期望值同步改 | 黄嵩（实现，已完成）+ 集成组（落 main，待） | 模块 7 落 `main` 时 |
 
 ## 7. 未决事项进展
 
@@ -198,7 +228,8 @@ async def 计数（每文件）: query_spaces=1  query_devices=1  lock_resources
 | 1 | `lock_resources` 的 `user_id` 传递方式 | **是**（2026-09-27 与蔡玉礼对齐） | 冻结签名不加 `user_id`；身份由 API 层从 JWT 解出后经 `app/agent/context.py` 的调用上下文注入 Tool。见 `docs/spec/contract-alignment.md` 第 1 条 |
 | 2 | `TraceStep` 字段冻结待前端回执 | 否 | 字段已冻结并实现，**仍缺前端书面回执**（阶段 2 遗留） |
 | 4 | `query_spaces`/`query_devices` 真实 service 签名 | 否 | 阶段 3 桩已可用；替换后需核对签名 |
-| 6 | `notify_type` 映射 | 否 | 见第 6 节 #2 |
+| 6 | `notify_type` 映射 | **裁定已出（2026-09-28），本分支未闭环** | 见第 6 节 #2：**不扩字典，`延期致歉` → 2（变更致歉）**。本分支 service 仍是桩，故 `AGENT-U-*` 里那条 `ok=false` 的期望值**暂时保留**（并加注释写明改法），等模块 7 落 `main`、service 层映射生效后再改为断言 `notify_type == 2` |
+| —— | `generate_notification` Tool 层归属（阶段 3 的 E2 分叉） | **是**（2026-09-28 裁定选 A） | 见第 5.1 节：Tool 层归模块 4、service 层归模块 7、黄嵩的 `notify_tools.py` 不入 `AGENT_TOOLS`。本模块零代码变更 |
 
 ## 8. 下一阶段入口条件确认
 
@@ -235,4 +266,4 @@ async def 计数（每文件）: query_spaces=1  query_devices=1  lock_resources
 | --- | --- | --- | --- |
 | 负责人 | 徐川 | 2026-09-27 | |
 | 模块 3（`create_order` 时序与并发） | 蔡玉礼 | | 见第 6 节 #1 |
-| 模块 7（`notify_type` 映射） | 黄嵩 | | 见第 6 节 #2 |
+| 模块 7（`notify_type` 映射 + Tool 层归属） | 黄嵩 | 2026-09-28（口头/项目群裁定） | **两项均已裁定**：① Tool 层归属**选 A**（Tool 层归模块 4、service 层归模块 7，见第 5.1 节）；② `notify_type` **不扩字典**，`延期致歉` → 2（见第 6 节 #2）。**书面回执仍缺**，记在阶段 8 的交接清单 |

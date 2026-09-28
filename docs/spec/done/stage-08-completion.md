@@ -94,7 +94,7 @@
 | --- | --- | --- | --- |
 | 蔡玉礼（模块 3） | `lock_resources` 的 `user_id` 传递方式；`reserve_order.agent_trace` 落库时机与格式 | ☐ **无** | 前两项**技术结论已对齐**（`docs/spec/contract-alignment.md`，2026-09-27），但缺一句书面回执 |
 | 杨睿坤（模块 5） | `query_spaces` / `query_devices` 的真实 service 签名替换 | ☐ **无** | 桩已可用；替换时必须核对签名（桩上带 `签名未锁定` 注释） |
-| 黄嵩（模块 7） | `generate_notification` 对接方式；`notify_type` 映射 | ☐ **无** | 未决 #6：「延期致歉」在 6.3 字典内无 INT 值 |
+| 黄嵩（模块 7） | `generate_notification` 对接方式；`notify_type` 映射 | ☐ **无** | 两项**技术口径 2026-09-28 已裁定**：① Tool 层归属**选 A**（Tool 层归模块 4、模块 7 的 service 层保留，黄嵩的 `notify_tools.py` 不入 `AGENT_TOOLS`，见 `stage-04-completion.md` 第 5.1 节）；② `notify_type` **不扩字典**，`延期致歉` → **2（变更致歉）**。**但书面回执仍缺**，与其它四项一样未回收 |
 | 前端 / 小程序 | `TraceStep` 字段冻结；40 秒回放方案 | ☐ **无** | 阶段 2 就欠着的前端回执，**至今未闭环** |
 | 集成组（申云飞） | 表结构变更执行确认、测试库、埋点数据来源 | ☐ **无** | 测试库 `smart_scheduler_test` 访问被拒，直接影响阶段 7 |
 
@@ -190,7 +190,7 @@ mock 存在: False
 | --- | --- | --- | --- |
 | 3 | 40 秒思考过程的回放方案 | **是** | 确定为「前端按 trace 时间轴回放」（阶段 5 §3.5 的推荐方案）；素材即 `docs/mock/agent_schedule.json`，与 13.1 应急预案共用同一份，回放逻辑只写一次 |
 | 5 | SQLite 应急预案 | 否 | 见第 6 节的建议：砍掉 SQLite，应急预案收敛到前端回放。**待集成组裁定** |
-| 6 | `notify_type` 映射 | 否 | 「延期致歉」在 6.3 字典内无 INT 值；未决期间该类型返回 `ok=False` 并说明原因，**不擅自映射** |
+| 6 | `notify_type` 映射 | 裁定已出（2026-09-28），**本分支未闭环** | **裁定：不扩字典，「延期致歉」映射到既有值 2（变更致歉）**（黄嵩）；模块 7 已按此实现。**本分支 `notify_service.py` 仍是桩**，该类型仍返回 `ok=False` 并说明原因，**属预期**，等模块 7 落 `main` 后自然消解。同批还裁定了 `generate_notification` 的 Tool 层归属（**选 A**，见 `stage-04-completion.md` 第 5.1 节） |
 
 ## 8. 下一阶段入口条件确认
 
