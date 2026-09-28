@@ -188,6 +188,9 @@ async def 计数（每文件）: query_spaces=1  query_devices=1  lock_resources
 
 阶段 3 登记的分叉（黄嵩侧另给过一份 `(order_id, notify_type, reason) -> str` 的冲突签名，
 且「交付 Tool 还是 service」未澄清）就此闭合。
+**2026-09-28 黄嵩核对主文档后二次确认**，并更正了他上一轮的「模块 7 单方面冻结」说法
+（那条结论源自 `git grep` 未关 `core.quotepath` 时中文路径被转义导致的漏检）
+—— 两条均见 `docs/spec/contract-alignment.md` **§8.1**。
 
 | 项 | 裁定 |
 | --- | --- |
@@ -213,6 +216,39 @@ ls app/agent/tools/             → __init__.py  _common.py  generate_notificati
 app/agent/tools/generate_notification.py:49
                                 async def generate_notification(order_info: OrderInfo) -> dict   → 签名未动
 ```
+
+### 5.2 合并时 `app/agent/tools/__init__.py` 的取舍 —— **取我方为主体**（2026-09-28）
+
+合并**模块 7** 时，`backend/app/agent/tools/__init__.py` **两边都有内容，且不是同一份文件**。
+
+| 侧 | 出处（可复核的提交） | 该文件内容 | 有 `AGENT_TOOLS`? |
+| --- | --- | --- | --- |
+| **模块 4（取为主体）** | 本分支 `08360dd` | 模块说明（含四条禁令表）+ 5 个 import + `__all__` + `AGENT_TOOLS` | ✅ **5 个**：`query_spaces` / `query_devices` / `lock_resources` / `generate_notification` / `submit_plan` |
+| 模块 7 | `origin/feat/module7-conflict-notify` 的 `8a3d921` | **6 行纯 docstring** | ❌ 无 |
+| 模块 7（集成分支） | `origin/integ/module7-into-main` 的 `f1a9b1c` | **12 行纯 docstring**（「本目录为 LangChain 自定义 Tool 集，当前含 notify_tools.py」） | ❌ 无 |
+
+**裁定：取本模块那份为主体。** 三条理由：
+
+1. **模块 7 那两份是 docstring，不是实现。** 没有 `AGENT_TOOLS` 就意味着 `create_agent`
+   拿不到任何工具 —— 取它，阶段 4 的 5 个 Tool 与阶段 5 的组装会**整条断掉**，
+   而且断在运行期（Prompt 里一个工具都没有），不是导入期报错，最难查。
+2. **取我不丢他们的约束。** 模块 7 想留的两条口径（「不注册为 FastAPI 路由」「只经 `services/` 层访问业务数据」）
+   **本模块那份的 docstring 里都有**，且是四条禁令的 1–4 条；他们的原文措辞属重复表述，不是新信息。
+3. **没有需要在这份文件里体现的模块 7 内容。** 他们的 `notify_tools.py` 按 5.1 的裁定
+   **本就不挂进 `AGENT_TOOLS`**，所以这份文件的最终形态**与合并前一致**。
+
+> **本项是「前置口径」而非已发生的冲突**：截至 2026-09-28，
+> `git merge-base --is-ancestor f1a9b1c origin/main` → **否**，模块 7 尚未并进 `main`。
+> 上表是按**两条模块 7 分支上的真实 blob** 比对得出的，不是对一次已发生冲突的追记 ——
+> 等真正合过来时按本表取我方即可。
+>
+> **复核命令（当时的原始输出）**：
+>
+> ```text
+> git show 8a3d921:backend/app/agent/tools/__init__.py | grep -c AGENT_TOOLS   → 0   （wc -l → 6）
+> git show f1a9b1c:backend/app/agent/tools/__init__.py | grep -c AGENT_TOOLS   → 0   （wc -l → 12）
+> git show HEAD:backend/app/agent/tools/__init__.py    | grep -c AGENT_TOOLS   → 3   （docstring 提到 1 次 + `__all__` 1 次 + 赋值 1 次；wc -l → 44）
+> ```
 
 ## 6. 遗留问题与阻塞
 
