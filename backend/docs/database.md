@@ -81,6 +81,8 @@ mysql+asyncmy://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=ut
 ## 三、索引
 
 `开发流程.md` 6.6 定义了 10 个索引，全部由 Alembic 迁移 `b7f1c4a92e35` **幂等**创建。
+另有一条 **6.6 之外的补充索引**（`idx_status_start`，见 3.4），同一条迁移创建 ——
+因此这条迁移实际建出 **11** 条。
 
 | 表 | 索引 | 类型 | 列 | 用途 |
 | --- | --- | --- | --- | --- |
@@ -91,10 +93,40 @@ mysql+asyncmy://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=ut
 | `reserve_order` | `idx_user_id` | NORMAL | `user_id` | 用户订单查询 |
 | `reserve_order` | `idx_space_time` | COMPOSITE | `space_id, start_time, end_time` | 并发预约冲突检测 |
 | `reserve_order` | `idx_status` | NORMAL | `order_status` | 状态筛选 |
+| `reserve_order` | **`idx_status_start`** | COMPOSITE | `order_status, start_time` | **设备维度**的时段占用统计（**6.6 之外**，见 3.4） |
 | `inspect_record` | `idx_space_id` | NORMAL | `space_id` | 空间巡检查询 |
 | `repair_ticket` | `idx_device_id` | NORMAL | `device_id` | 设备工单查询 |
 | `repair_ticket` | `idx_ticket_status` | NORMAL | `ticket_status` | 工单状态筛选 |
 | `notify_message` | `idx_receiver_read` | COMPOSITE | `receiver_id, is_read` | 未读消息查询 |
+
+### 3.4 第 11 条索引 `idx_status_start`（**6.6 之外**）
+
+**为什么加**：统计「某台设备在某时段被占用几次」时，6.6 的索引在这一维度**全部失效**：
+
+- 设备是**全局资源**（跨场地共用），`device_resource` 没有 `space_id`，
+  所以 `idx_space_time(space_id, ...)` 的**最左前缀**用不上；
+- `reserve_order.device_ids` 是 JSON 列，不能直接建索引。
+
+模块 3 的 `_device_conflicts` 因此只在 SQL 里过滤「状态 + 时段重叠」，设备匹配退回 Python。
+它的谓词是：
+
+```sql
+WHERE order_status IN (活跃) AND end_time > :start AND start_time < :end
+```
+
+没有这条索引时只能**全表扫描**。加上后 `order_status` 等值 + `start_time` 范围可走索引，
+扫描量降到「该状态在 `:end` 之前开始的订单」。
+**注意列序**：`order_status` 是等值列必须在前，反了索引就用不上。
+
+两点如实声明：
+
+- 它的**最左前缀 `order_status` 已覆盖 6.6 里 `idx_status` 的用途**。保留 `idx_status`
+  是因为本迁移是**纯增量、不删索引**；等确认线上没有旧版本代码依赖后可合并为一条。
+- 这只是**中间档**，不是终局方案。彻底的做法是建 `order_device` 关联表、
+  或用 MySQL 8.0.17+ 对 JSON 列的多值索引，两者都超出本轮范围。
+
+> **6.6 的原文并未包含这一条**，是集成组确认后补的。若 §6.6 要收编它，
+> 应同步更新 `开发流程.md` 6.6 的清单（本轮未改团队文档）。
 
 ### 3.1 为什么迁移是「幂等」的
 
@@ -106,6 +138,18 @@ mysql+asyncmy://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=ut
 
 所以 `b7f1c4a92e35` 在**创建前逐个检查**，存在则跳过并记日志。**无论云库现状如何，重复执行都安全**
 （可以反复 `alembic upgrade head`）。
+
+**存在性按「列」判断，不按「名」判断。** 这是上面第二条的直接后果，也是本迁移最初**踩过的坑**：
+MySQL 会为**每个外键自动建索引**，名字形如 `inspect_record_ibfk_1`，与 6.6 点名的
+`idx_space_id` / `idx_device_id` 对不上 —— 只比名字就会在 `space_id` / `device_id` 上
+**再建一条同列的重复索引**：白占空间、拖慢写入，而且不报错，只会安静地留在云库里。
+
+判定口径是**列序列完全相同**（含顺序），不是「前缀相同」。
+刻意不取前缀：前缀判定会让 6.6 点名的索引在 `SHOW INDEX` 里彻底不出现，
+这正是本轮「三方复现报索引缺失」那类**误判**的来源。
+对应实现见 `alembic/versions/b7f1c4a92e35_*.py` 的 `_index_on_columns`，
+护栏是 `tests/integration/test_migrations.py::test_upgrade_skips_columns_already_indexed_under_another_name`
+（SQLite 不为外键建索引，该用例**手工造出** `..._ibfk_N` 的现场）。
 
 ### 3.2 `uk_username` 只检查、不创建
 
@@ -133,7 +177,7 @@ MySQL 会为**每个外键自动创建索引**（如 `sys_user.role_id`、各表
 | --- | --- |
 | `app/models/resource.py` `SpaceResource` | `idx_space_type`、`idx_capacity` |
 | `app/models/resource.py` `DeviceResource` | `idx_device_type` |
-| `app/models/reservation.py` `ReserveOrder` | `idx_user_id`、`idx_space_time`、`idx_status` |
+| `app/models/reservation.py` `ReserveOrder` | `idx_user_id`、`idx_space_time`、`idx_status`、`idx_status_start`（6.6 之外，见 3.4） |
 | `app/models/inspection.py` `InspectRecord` | `idx_space_id` |
 | `app/models/inspection.py` `RepairTicket` | `idx_device_id`、`idx_ticket_status` |
 | `app/models/notification.py` `NotifyMessage` | `idx_receiver_read` |
@@ -227,7 +271,7 @@ NULL
 ```
 8969262c9d0c  init_tables_single_role      ← 建 9 张表（已有）
       ↓
-b7f1c4a92e35  add_doc66_indexes_idempotent ← 幂等补 6.6 的 10 个索引
+b7f1c4a92e35  add_doc66_indexes_idempotent ← 幂等补 11 个索引（6.6 的 10 个 + 3.4 的 1 个）
 ```
 
 ### 6.2 常用命令
@@ -445,14 +489,27 @@ bash scripts/gen_seed_hashes.sh '新口令'
 | --- | --- |
 | 本地/CI 自动化测试 | SQLite 临时文件库（`tests/conftest.py` 创建，测试结束删除） |
 | 云库联调、并发验证、种子数据 | `smart_scheduler_dev` |
-| 需要真库的自动化测试（未来） | `smart_scheduler_test` |
+| 需要真库的自动化测试 | 暂不使用独立测试库，改用下述「外层事务 + savepoint 回滚」（见下） |
 
-若确实需要在真库上跑自动化测试，请用 `smart_scheduler_test`；
-若无建库权限，退而求其次：在 `smart_scheduler_dev` 中给测试用表加前缀 `test_`，测试结束 `TRUNCATE` 清理。
+### 9.1 真库测试的口径（已定）
+
+原先的备用方案是「在 `smart_scheduler_dev` 里给测试用表加 `test_` 前缀，跑完 `TRUNCATE`」。
+**该方案已废弃**，原因：`test_` 前缀表要手工建、与 ORM 模型是两份定义，模型一改就悄悄偏离；
+且 `TRUNCATE` 在 MySQL 中是隐式提交，回滚不了，清理失败就会把脏数据留在云库里。
+
+现在的做法是**外层事务 + savepoint 回滚**：整个用例包在一个外层事务里，
+用例内部用 savepoint 分段，结束时不提交而是整体回滚 —— 不建任何测试表、
+不依赖清理语句，异常路径也会被回滚掉。
+具体实现与 `_db_readonly_guard` 的收窄方案见模块 3/4 的 stage-07 附录。
+
+若确需真库的**写**权限（含建库权限），由模块负责人**向管理员申请**后再用；
+在此之前真库相关用例保持标记为 `integration` 并默认排除。
+
 **禁止测试直接写 `reserve_order` 正式表。**
 
-> ⚠️ **未知项**：`smart_scheduler_test` 是否已建、`smart_dev` 账号有无建库权限，均**未核实**（云库不可达）。
-> 已列入 `docs/汇报文档.md` 的待确认项。
+> 注：`smart_scheduler_test` 是否已建、`smart_dev` 账号有无建库权限，
+> 从「阻塞项」降级为「将来若要用独立测试库时才需要核实」，
+> 不再是推进的前置条件。
 
 ---
 
@@ -462,7 +519,7 @@ bash scripts/gen_seed_hashes.sh '新口令'
 | --- | --- | --- |
 | 1 | 云库时区（`SELECT @@global.time_zone, NOW();`） | 决定是否给连接加 `init_command=SET time_zone`。当前全链路用**本地 naive datetime**，若云库时区不是东八区，写入与读取会出现偏移 |
 | 2 | 云库现有索引的真实清单（需在隧道里查 `information_schema.statistics`） | 决定幂等迁移会「创建」还是「跳过」哪些索引；当前无法核实，故做成幂等 |
-| 3 | `smart_scheduler_test` 是否已建；`smart_dev` 账号有无建库权限 | 决定真库测试是否可行（见第九节） |
+| 3 | ~~`smart_scheduler_test` 是否已建；`smart_dev` 账号有无建库权限~~ **已闭**：真库测试改用「外层事务 + savepoint 回滚」，不再依赖独立测试库（见 9.1） | —— |
 | 4 | 种子数据的类型分布是否按 `开发流程.md` 6.9 调整（见 8.7） | 纯数据，不涉及表结构 |
 | 5 | 云库的 `space_resource` / `device_resource` 是否已有存量数据 | 若有，`seed.sql` 的 `ON DUPLICATE KEY UPDATE` 会覆盖 id 1..N 的行 |
 

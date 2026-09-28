@@ -52,8 +52,18 @@ class ReserveOrder(Base):
     # idx_space_time 是并发预约冲突检测的关键索引：检测「同一空间时段重叠」
     # 时按 (space_id, start_time, end_time) 做范围扫描，缺了它模块 5
     # 的冲突检测会退化成全表扫描。
+    #
+    # idx_status_start 不在 6.6 里，是集成组确认后补的：6.6 的索引在**设备
+    # 维度**的时段统计上全部失效（设备是全局资源，`device_resource` 没有
+    # space_id，idx_space_time 的最左前缀用不上；device_ids 又是 JSON 列）。
+    # 模块 3 的 _device_conflicts 谓词为
+    #     order_status IN (活跃) AND end_time > :start AND start_time < :end
+    # 加这条后等值与范围都能走索引。其最左前缀 order_status 覆盖了
+    # idx_status 的用途，保留后者只为不动线上既有索引，详见迁移
+    # b7f1c4a92e35 的说明。
     __table_args__ = (
         Index("idx_user_id", "user_id"),
         Index("idx_space_time", "space_id", "start_time", "end_time"),
         Index("idx_status", "order_status"),
+        Index("idx_status_start", "order_status", "start_time"),
     )

@@ -26,6 +26,18 @@
 项目文档不一致，需要集成组人工确认后再处理 —— 这属于数据库结构变更，
 按约定必须先在群里确认。
 
+除 6.6 的 10 条外，本迁移还建 1 条 6.6 之外的补充索引
+------------------------------------------------------
+`idx_status_start(order_status, start_time)`，供模块 3 统计「设备在某时段被
+占几次」使用（设备是全局资源，`device_resource` 没有 space_id，6.6 的
+`idx_space_time` 最左前缀用不上）。理由详列在 `INDEX_SPECS` 中该条上方。
+
+存在性判断按「列」而不是按「名」
+--------------------------------
+MySQL 会为每个外键自动建索引，名字形如 `xxx_ibfk_1` 或直接取列名，与 6.6 里
+`idx_space_id` / `idx_device_id` 的名字对不上。只比名字会在同一列上再建一条
+重复索引 —— 白占空间、拖慢写入。详见 `_index_on_columns` 的说明。
+
 Revision ID: b7f1c4a92e35
 Revises: 8969262c9d0c
 Create Date: 2026-09-27
@@ -45,8 +57,9 @@ depends_on: str | None = None
 
 logger = logging.getLogger("alembic.runtime.migration")
 
-# 项目文档 6.6 中需要本迁移创建的索引：(索引名, 表名, 列序列)
+# 需要本迁移创建的索引：(索引名, 表名, 列序列)
 INDEX_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    # ---- 项目文档 6.6「索引规范」的 10 条 ----
     ("idx_space_type", "space_resource", ("space_type",)),
     ("idx_capacity", "space_resource", ("capacity",)),
     ("idx_device_type", "device_resource", ("device_type",)),
@@ -57,6 +70,25 @@ INDEX_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("idx_device_id", "repair_ticket", ("device_id",)),
     ("idx_ticket_status", "repair_ticket", ("ticket_status",)),
     ("idx_receiver_read", "notify_message", ("receiver_id", "is_read")),
+    # ---- 6.6 之外，集成组确认后补的第 11 条 ----
+    # 设备维度的时段占用统计要用。6.6 的索引在这条查询上全部失效：
+    #     · `device_resource` 没有 space_id（设备是全局资源，跨场地共用），
+    #       所以 `idx_space_time(space_id, ...)` 的最左前缀用不上；
+    #     · `reserve_order.device_ids` 是 JSON 列，不能直接建索引。
+    # 模块 3 的 `_device_conflicts` 于是在 SQL 里只过滤状态与时段重叠、
+    # 设备匹配退回 Python（见 order_service）。它的谓词是：
+    #     WHERE order_status IN (活跃) AND end_time > :start AND start_time < :end
+    # 没有本索引时该谓词只能全表扫描。加上后 order_status 等值 + start_time
+    # 范围可走索引，扫描量从「全表」降到「该状态在 :end 之前开始的订单」。
+    #
+    # 另外两点声明在前，避免后来者误判：
+    #   · 本索引的最左前缀是 order_status，**已覆盖** 6.6 里 `idx_status` 的
+    #     用途。保留 idx_status 是因为本迁移是纯增量、不删索引；等确认线上
+    #     没有依赖（如仍在跑的旧版本代码）后可合并为一条。
+    #   · 真正彻底的解法是 `order_device` 关联表、或 MySQL 8.0.17+ 对 JSON 列
+    #     的多值索引，两者都超出本轮范围。本索引是「演示级可用、数据量上来
+    #     能扛住」的中间档，不是终局方案。
+    ("idx_status_start", "reserve_order", ("order_status", "start_time")),
 )
 
 # 只需检查、不创建的唯一索引（原因见模块文档）：(表名, 列序列, 文档中的名字)
@@ -74,6 +106,41 @@ def _index_names(inspector: Inspector, table: str) -> set[str]:
         # 错误暴露问题，而这里让检查逻辑继续走完，不影响其它表。
         logger.warning("索引迁移：表 %s 不存在，跳过其索引检查", table)
         return set()
+
+
+# 数据库把索引报为「无名字」时的占位描述。同 _UNNAMED_UNIQUE 的理由：
+# 让「找没找到」只取决于有没有，与命名无关（SQLite 的行内约束反射出来 name 为 None）。
+_UNNAMED_INDEX = "(数据库未命名该索引)"
+
+
+def _index_on_columns(
+    inspector: Inspector, table: str, columns: tuple[str, ...]
+) -> str | None:
+    """
+    查找**列序列完全相同**（含顺序）的索引，返回其名字；找不到返回 None。
+
+    为什么不按索引名判断
+    --------------------
+    本模块文档开头就写着「只看索引名做判断也不够」，而检查最初只比名字，
+    于是踩了同一个坑：MySQL 会为**每个外键自动建索引**，名字形如
+    `inspect_record_ibfk_1`，与 6.6 点名的 `idx_space_id` / `idx_device_id`
+    对不上。只比名字就会在同一列上再建一条重复索引 —— 白占空间、拖慢写入。
+
+    为什么是「完全相同」而不是「前缀相同」
+    --------------------------------------
+    前缀判定拦下的情况更多（已有 `(space_id, start_time)` 时不再建
+    `(space_id, start_time, end_time)`），代价是 6.6 点名的索引在
+    `SHOW INDEX` 里彻底不出现 —— 这正是本轮「三方复现报索引缺失」这类误判的
+    来源。这里取「完全相同」，只拦真正的重复：同一列序列建两遍。
+    """
+    target = list(columns)
+    try:
+        for item in inspector.get_indexes(table):
+            if list(item.get("column_names") or []) == target:
+                return item.get("name") or _UNNAMED_INDEX
+    except sa.exc.NoSuchTableError:
+        return None
+    return None
 
 
 # 数据库把唯一性约束报为「无名字」时的占位描述。见 _find_unique_index_on。
@@ -153,9 +220,16 @@ def _upgrade_online() -> None:
     skipped: list[str] = []
 
     for name, table, columns in INDEX_SPECS:
+        existing = _index_on_columns(inspector, table, columns)
+        if existing:
+            # 已有覆盖同一列序列的索引 —— 可能是同名，也可能是 MySQL 为外键
+            # 自动建的另一个名字（见 _index_on_columns）。两种都不该再建一条。
+            skipped.append(f"{table}.{name} <- 已由 {existing} 覆盖")
+            continue
+
         if name in _index_names(inspector, table):
-            # 已存在：幂等跳过。云库大概率已由建表脚本建好部分索引。
-            skipped.append(f"{table}.{name}")
+            # 同名但列不同（罕见）：仍不重复建，避免 Duplicate key name 中断迁移。
+            skipped.append(f"{table}.{name} <- 已存在同名索引（列不同）")
             continue
 
         # 复合索引的列顺序即定义顺序，op.create_index 会原样保留
