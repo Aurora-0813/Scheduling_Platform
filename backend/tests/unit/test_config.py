@@ -103,6 +103,7 @@ def test_env_example_lists_every_required_setting():
         "DEBUG",
         "JWT_ALGORITHM",
         "JWT_EXPIRE_MINUTES",
+        "CORS_ORIGINS",
         "CONFLICT_DEDUP_TTL_SECONDS",
     }
     missing = sorted(set(Settings.model_fields) - declared - optional)
