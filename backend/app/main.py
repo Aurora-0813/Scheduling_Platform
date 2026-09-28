@@ -50,20 +50,25 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
+from starlette.status import WS_1008_POLICY_VIOLATION
 
+from app import models  # noqa: F401  确保模型注册后再建表（_ensure_schema 用）
 from app.api.deps import reset_token_store
 from app.api.v1 import API_V1_PREFIX, api_router
 from app.core.config import MIN_JWT_SECRET_LENGTH, settings
-from app.core.database import async_engine
+from app.core.database import Base, async_engine
+from app.core.exceptions import BizError
 from app.core.logging import get_logger, setup_logging
 from app.core.metrics import reset_metric_store
 from app.core.redis import check_health as redis_check_health
 from app.core.response import register_exception_handlers
+from app.core.security import TokenType, decode_token
 from app.middlewares import AgentMetricsMiddleware, RequestContextMiddleware
+from app.websocket import manager
 
 __all__ = ["app", "create_app", "lifespan"]
 
@@ -123,6 +128,34 @@ def _warn_about_security_settings() -> None:
         logger.info("当前环境为 %s（非 dev），已启用密钥强度硬校验", settings.APP_ENV)
 
 
+async def _ensure_schema() -> None:
+    """确保 ORM 声明的表都存在（`checkfirst=True`：已存在的不动）。
+
+    为什么启动时要建表，而不是全交给 Alembic
+    ----------------------------------------
+    1. **`§13.1` 的演示应急预案**：「云数据库断连 -> 切换本地 SQLite 镜像库」。
+       镜像库是演示现场临时建的空库，没有跑过任何迁移 —— 不建表就只能演示一个
+       「每个接口都 500」的系统，应急预案等于没有。
+    2. **`§6.5` 的云库路径不受影响**：云库上的表由基础支撑与集成组统一建立，
+       `checkfirst=True` 使这一步在云库上退化为一次 `has_table` 查询，
+       不会改任何既有表结构。**它不能替代迁移**：新增/变更列仍须走
+       `alembic/versions/`，由集成组统一执行（`§6.5`）。
+
+    失败只告警不阻止启动，与 `_probe_database` 同一取舍：库不可用时更需要
+    进程活着，好让 `/api/v1/ready` 能回答「到底哪一环不通」。
+    """
+    try:
+        async with async_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as exc:  # noqa: BLE001 - 启动期不能因建表失败而崩
+        logger.warning(
+            "启动建表失败（服务仍会启动，业务接口可能因缺表报错） target=%s %s: %s",
+            settings.masked_database_url,
+            type(exc).__name__,
+            exc,
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """应用生命周期：日志 → 配置自检 → 依赖探活 →（yield）→ 资源释放。"""
@@ -159,6 +192,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         db_status,
         redis_status,
     )
+
+    await _ensure_schema()
 
     try:
         yield
@@ -268,6 +303,48 @@ def create_app() -> FastAPI:
         StaticFiles(directory=str(settings.image_upload_path)),
         name="uploads",
     )
+
+    # ------------------------------------------------------------------
+    # 模块 3：WebSocket 通知通道
+    # ------------------------------------------------------------------
+    # 预约确认 / 取消后由 services/message_service.py 经 ConnectionManager 推送。
+    # 路径刻意**不带** `/api/v1` 前缀：它是 REST 之外的实时通道，与 REST 树分开，
+    # 前端连 `ws://<host>/ws/notify?token=<accessToken>`。
+    #
+    # 为什么令牌在查询串而不是 `Authorization` 头
+    # ------------------------------------------
+    # 浏览器的 `WebSocket` 构造函数**不允许**自定义请求头，实时通道只能把凭据
+    # 放进 URL。这里早先传的是 `?user_id=`，等于把「我是谁」交给客户端自报：
+    # 连上 `/ws/notify?user_id=2` 就能实时收到别人预约的确认/取消通知。
+    # 现在传的是**令牌**，服务端自己解出 user_id（§5.1 / docs/api.md §1.6：
+    # 身份一律从令牌解析，禁止从 Query 传入身份本身）。
+    #
+    # 已知残留（与本轮 REST 侧改造同一性质，记号待办）
+    # ----------------------------------------------
+    # 这里只校验令牌签名与类型，**不查库**确认用户仍存在 / 未被禁用 ——
+    # 那段逻辑在 `app.api.deps.get_current_user` 里，是为 `Depends` 写的，
+    # 无法直接复用。影响有限：被删用户的令牌最多再活一个有效期（30 分钟），
+    # 且 `send_to_user` 只会推库中为它生成的通知，删号后不会再生成。
+    @app.websocket("/ws/notify")
+    async def ws_notify(websocket: WebSocket, token: str) -> None:
+        """通知推送通道：`/ws/notify?token=<accessToken>`（模块 3）。"""
+        try:
+            payload = decode_token(token, expected_type=TokenType.ACCESS)
+        except BizError:
+            # 握手阶段就拒绝：不 accept，直接按「策略违规」关闭。
+            # 不区分过期/签名错/类型错 —— 与 REST 侧同样不透原因（§9.2）。
+            await websocket.close(code=WS_1008_POLICY_VIOLATION)
+            return
+
+        await manager.connect(payload.user_id, websocket)
+        try:
+            while True:
+                # 心跳/保活：客户端定时发文本，服务端收到即确认存活。
+                # 收不到就靠 WebSocketDisconnect 退出 —— 这条循环没有业务含义，
+                # 只是维持连接不被中间层按空闲回收。
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            manager.disconnect(payload.user_id, websocket)
 
     if settings.DEBUG:
         # 延迟导入：Mock 路由只在开发环境存在，生产环境连模块都不加载。

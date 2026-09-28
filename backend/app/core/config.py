@@ -4,7 +4,11 @@
 从 `.env` 文件读取配置，统一管理。`.env` 严禁提交至仓库（项目文档 8.6 / 9.4），
 仓库中只提供不含真实值的 `.env.example`。
 
-连接串由 DB_* 各项拼接而成，不单独配置 DATABASE_URL，避免两处配置漂移。
+连接串默认由 DB_* 各项拼接而成。**模块 3 额外提供一个 `DATABASE_URL` 显式覆盖口**，
+仅供 §13.1 的本地 SQLite 自测 / 应急镜像使用（见该字段注释），生产必须留空。
+
+`env_file` 用**绝对路径**指向 `backend/.env`：相对路径会跟着进程工作目录跑，
+从仓库根启动就读不到它，与 `.env` 里的配置静默失联。
 """
 
 from __future__ import annotations
@@ -14,6 +18,9 @@ from pathlib import Path
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# backend/ 目录（.env 所在位置）
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 logger = logging.getLogger(__name__)
 
@@ -196,9 +203,24 @@ class Settings(BaseSettings):
     # 25 足够覆盖「多轮查询 + 重试 + 生成通知」的长链路；再高只会让跑飞的 Agent 拖满超时。
     AGENT_RECURSION_LIMIT: int = 25
 
+    # ==================== 模块 3 引入的配置 ====================
+    # 来源：模块 3（移动端预约与通知）。（同批的 `sync_engine` /
+    # `sync_database_url` **没有**保留 —— 本仓库已把 Alembic 改为全异步迁移、
+    # requirements 也不再包含 PyMySQL，同步引擎已无任何消费者，留着只是死代码。）
+
+    # 显式连接串覆盖口，**留空则按上方 DB_* 五项拼接**（正常情况一律留空）。
+    # 唯一用途：§13.1 的本地 SQLite 应急/自测镜像，以及测试期把引擎指向
+    # 临时 SQLite —— `tests/conftest.py` 在导入任何 `app.*` 之前设置同名环境变量。
+    # ⚠️ 生产 / 演示环境必须为空字符串，否则会绕开 DB_* 直连。
+    DATABASE_URL: str = ""
+
+    # 调度 Agent 服务地址；为空时 `services/agent_client.py` 走内置 mock 调度器。
+    AGENT_URL: str = ""
+
     # 指定 .env 文件位置和编码
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # 绝对路径：相对路径会跟着进程工作目录跑（详见模块 docstring）
+        env_file=str(BASE_DIR / ".env"),
         env_file_encoding="utf-8",
         # .env 中存在未定义的键时忽略，避免队友本地多写的变量导致启动失败
         extra="ignore",
@@ -213,7 +235,13 @@ class Settings(BaseSettings):
 
         项目文档 3.4：连接串固定为 `mysql+asyncmy://`，
         禁止使用同步驱动 PyMySQL / mysqlclient。
+
+        例外：`DATABASE_URL` 非空时**直接返回它**（§13.1 的 SQLite 应急镜像与
+        测试期覆盖）。这是唯一会绕开 `mysql+asyncmy://` 的路径，故只允许
+        在 `APP_ENV=dev` 下使用 —— 见 `_check_security_settings`。
         """
+        if self.DATABASE_URL:
+            return self.DATABASE_URL
         return (
             f"mysql+asyncmy://{self.DB_USER}:{self.DB_PASSWORD}"
             f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
@@ -351,9 +379,23 @@ class Settings(BaseSettings):
                 "仅允许在 dev 环境使用。请把 AUTH_BYPASS 改回 false。"
             )
 
+        # DATABASE_URL 覆盖口会绕开 §3.4「连接串固定 mysql+asyncmy://」的硬约束
+        # （见 database_url 属性），因此与 AUTH_BYPASS 同样只允许在 dev 环境使用。
+        if self.DATABASE_URL and not self.is_dev:
+            raise ValueError(
+                f"DATABASE_URL 有显式取值但 APP_ENV={self.APP_ENV}：该口仅用于 §13.1 的"
+                "本地 SQLite 应急镜像与测试期覆盖，会绕开 §3.4 的 mysql+asyncmy:// 约束。"
+                "请清空 DATABASE_URL，改用 .env 中的 DB_* 五项。"
+            )
+
         return self
 
 
 # 全局配置实例。其他地方直接：
 #   from app.core.config import settings
 settings = Settings()
+
+# 模块 3：`services/agent_client.py` 以模块级名字导入 `AGENT_URL`
+# （`from ..core.config import AGENT_URL`）。保留这行别名，避免为了一处导入
+# 去改模块 3 的既有代码；新代码请直接用 `settings.AGENT_URL`。
+AGENT_URL = settings.AGENT_URL

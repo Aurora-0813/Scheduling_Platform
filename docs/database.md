@@ -32,7 +32,7 @@
 
 > ⚠️ **关于端口：`3307` 与 `3308` 不是同一个数。** 云服务器侧 MySQL 监听 `3307`，本机经 SSH 隧道接入（`ssh -L 3308:127.0.0.1:3307 <user>@<云服务器IP> -N`），隧道在**本机**的入口是 `3308`。代码连的是本机入口，所以 `.env` 的 `DB_PORT` 填 `3308`；填成 `3307` 会连到本机一个没人监听的端口，报错只有一句「连接被拒绝」，极难定位。同理，走隧道时 `DB_HOST` 恒为 `127.0.0.1`，云服务器 IP 只出现在上面那条 `ssh` 命令里。
 
-`backend/.env.example`（**已提交，仅占位符**）：
+`backend/.env.example`（**已提交，仅占位符**）；真实值写进 `backend/.env`（**严禁提交**，用 `.env.example` 作模板）：
 
 ```env
 DB_HOST=127.0.0.1
@@ -40,7 +40,16 @@ DB_PORT=3308
 DB_USER=<数据库用户名>
 DB_PASSWORD=<数据库密码>
 DB_NAME=smart_scheduler_dev
-DATABASE_URL=mysql+asyncmy://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?charset=utf8mb4
+
+APP_NAME=SmartScheduler
+APP_ENV=dev
+DEBUG=true
+
+JWT_SECRET_KEY=<JWT密钥>
+JWT_ALGORITHM=HS256
+JWT_EXPIRE_MINUTES=1440
+
+AGENT_URL=
 ```
 
 > 🔴 **`backend/.env` 必须被 `.gitignore` 忽略，`.env.example` 必须提交。**
@@ -426,3 +435,48 @@ SELECT COUNT(*) FROM space_resource WHERE capacity >= 40 AND budget <= 500;
 | 2026-09-27 | 修正第二节 `DB_PORT` 口径为隧道入口 `3308`（原写 `3307`）并补充 `3307`/`3308` 差异说明；示例中的 `DB_HOST` 由 `<云服务器IP>` 同步为 `127.0.0.1`，与 `.env.example` 保持一致 | 黄嵩（模块 7） | 待集成组确认 |
 
 > 本文件由核心调度 Agent 模块负责人依主文档 6.5 要求整理成稿。**表结构与 DDL 的最终解释权在基础支撑与集成组**，如与主文档冲突，以主文档为准并立即修正本文。
+
+---
+
+## 十、模块 3 补充说明（2026-09-28 合并时并入）
+
+> 本节由模块 3 版本的 `docs/database.md` 在合并时并入，**只保留合并后仍然成立**的内容。
+> 该版本另有两节与当前代码矛盾，未予收录，原因见 §10.4。
+
+### 10.1 连接串由五项拼接
+
+`DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` 五项由 `config.database_url`
+自动拼成：
+
+    mysql+asyncmy://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?charset=utf8mb4
+
+另有 `DATABASE_URL` 作为**显式覆盖口**（默认空串，非空时直接返回它，见
+`app/core/config.py`）；非 `dev` 环境下它非空会拒绝启动。
+
+### 10.2 自建库脚本
+
+云库中的表已按 §6.5 创建完成。**自建库**时的完整脚本见 `backend/init_db.sql`
+（其中仍带 7 条 `INDEX` 声明，只在自建库时生效；云库的索引落实情况见 §6 的实测对照表）。
+
+### 10.3 四个外键都是真外键（及对测试夹具的连带影响）
+
+`reserve_order` 的 `space_id`、`user_id` 与 `notify_message` 的 `order_id`、`receiver_id`
+**均为真外键**。云库 `information_schema.STATISTICS` 显示这四列上都有外键自动生成的索引，
+证实约束确实存在。
+
+> **连带影响**：写 `reserve_order` / `notify_message` 之前**必须先有对应的 `sys_user` 行**，
+> 否则云库以 1452 拒绝写入。测试夹具因此新增 `_seed_users()`
+> （`backend/tests/module3/conftest.py`）。
+
+### 10.4 未收录的两节及原因
+
+模块 3 版还有两节，合并后**已与代码不符**，故不收录：
+
+1. **「主键类型 `PK_TYPE`」**：该节称主键用
+   `BigInteger().with_variant(Integer, "sqlite")`。而 `app/core/database.py` 的模块
+   docstring 已明写「模型一律用裸 `BigInteger`，本模块**不再提供** `PK_TYPE`」——
+   SQLite 下的主键自增改由测试进程内的 `SQLiteTypeCompiler` 垫片解决，两法等价。
+2. **「模型不声明任何索引」**：该节称模型不声明索引。合并后的 `backend/app/models/`
+   实际声明了 11 处 `Index(...)`（`idx_space_type`、`idx_capacity`、`idx_space_time`、
+   `idx_status`、`idx_receiver_id` 等，见 `resource.py` / `reservation.py` /
+   `notification.py` / `inspection.py`），与 §5 的规范索引一致。

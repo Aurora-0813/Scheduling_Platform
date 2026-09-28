@@ -264,3 +264,26 @@ node tools/compile.js
 > 这两个脚本只是**本地自检**，不替代真机验证——
 > 自定义导航栏与胶囊的避让、录音权限、`uni.reLaunch` 切 tab 的手感，
 > 这些只能在微信开发者工具和真机上确认。
+
+
+---
+
+## 十一、模块 3 遗留文件说明（2026-09-28 合并后）
+
+合并 `origin/integrate/module3` 时，本目录同时落进了**模块 3 版小程序**的一批文件。
+它们与本套实现**不兼容**（鉴权与网络层的函数名都不同），因此**未注册进 `pages.json`**，
+当前是死代码，仅为留档保留：
+
+| 文件 | 与本文档实现的冲突点 |
+| --- | --- |
+| `utils/request.js` | 与 `api/request.js` 是两套网络层；本套页面一律用后者 |
+| `utils/ws.js` | `App.vue` 不调用它；且它 import 的是 Pinia 版 `useNotifyStore` |
+| `api/notify.js`、`api/reserve.js`、`api/agent.js` | import 的是 `@/utils/request`；本套同名文件用 `@/api/request` |
+| `pages/reserve/*`、`pages/notify/*`、`pages/agent/schedule.vue` | 6 个页面未注册；功能已由本套 `pages/order/*`、`pages/message/*`、`pages/agent/*` 覆盖 |
+| `components/StatusTag.vue`、`uni.scss` | 模块 3 版样式与组件；本套用 `styles/theme.css` |
+
+**处理方式**：合并时以本套（12 页 uni-app 版）为唯一注册实现，逐文件冲突全部取本套版本。
+上表文件待模块 3 负责人确认后再删除。
+
+> ⚠️ 维护提醒：由于两套的 `utils/auth.js`、`store/notify.js` 同名而 API 不同，
+> **不要**把这些遗留文件逐个"复活"——它们与 `pages.json` 里注册的页面不是同一套。

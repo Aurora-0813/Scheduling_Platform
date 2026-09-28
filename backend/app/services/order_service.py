@@ -1,122 +1,317 @@
-"""订单创建与资源锁定 service —— **桩函数**（阶段 3 任务 3-2）。
+"""预约订单服务层：创建预约（§5.5 事务六步）。
 
-来源约定：流程文档阶段 3 §3.1「订单创建 + 资源锁定（模块 3，含 5.5 事务）」｜负责人：蔡玉礼。
+## 这个文件为什么存在
 
-==============================================================================
-签名已冻结（2026-09-27，蔡玉礼）
-==============================================================================
-    create_order(*, user_id, space_id, start_time, end_time,
-                 device_ids=None, agent_request=None, agent_trace=None, order_status=1)
-        -> {ok, orderId, reason, conflictType, conflictDetail}
+`§4.3`（模块间调用规范）、`§7.4`（AI 代码规范）、`§9.3`（AI 安全）三条指向同一件事：
+Agent 只能通过 Tool 调用 **`services/` 层的异步函数**访问业务数据，Tool 内禁止使用
+`AsyncSession`、禁止注册为 HTTP 端点。所以「创建预约」必须有一个**不依赖 HTTP、
+不依赖调用方会话**的实现。本模块就是那个实现；`app/api/orders.py` 的路由只是它的薄壳。
 
-**业务性失败不抛异常**，一律以 `ok=False` + `conflictType` 返回。
+在此之前，这段逻辑是 `app/api/orders.py` 里的路由层私有函数 `_create_order(db, ...)`：
+入参是 HTTP DTO、失败抛 `HTTPException`、没有 `FOR UPDATE` 也没有显式事务边界。
+三处都不满足上面的规范，且并发下第 3 步查重与第 5 步 INSERT 之间存在空窗。
 
-本桩返回体额外恒带 `"stub": True`——这是**桩期专有的第 6 个键**，故意偏离上面的冻结形状：
-冻结形状描述的是真实实现，而桩必须能自证「这不是一次真实预约」（阶段 3 防假绿）。
-真实实现替换进来时这个键随之消失；**任何断言 `stub` 的代码都是桩期临时代码，一并删除**。
+## 冻结契约（核心调度 Agent 的 `lock_resources` Tool 直接调用，签名不得更改）
+
+    async def create_order(*, user_id, space_id, start_time, end_time,
+                           device_ids=None, agent_request=None,
+                           agent_trace=None, order_status=1) -> dict
+
+五条一起冻结，改任何一条都是破坏性变更：
+
+1. **函数名与模块路径**：`app.services.order_service.create_order`
+2. **参数名与顺序**：全部 keyword-only（位置传参一律拒绝，避免日后加参数时静默错位）
+3. **签名里没有 `db`**：Tool 拿不到 `AsyncSession`（`§7.4`），会话由本函数自管；
+   事务边界也由本函数自管——这正是 `§5.5` 六步原子性的落点。调用方**无法**
+   在六步之间插入一次 commit，也就无法把锁提前放掉。
+4. **返回结构**：`{ok, orderId, reason, conflictType, conflictDetail}`
+5. **业务性失败不抛异常**（`§5.5` 的「ROLLBACK 并返回友好提示」）：见下
+
+### 返回值
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `ok` | bool | 是否创建成功 |
+| `orderId` | int \\| None | 成功时为新订单 ID，失败为 None |
+| `reason` | str | 面向用户的中文原因，可直接进 trace / 前端提示 |
+| `conflictType` | str \\| None | 失败归类：`invalid_param` / `not_found` / `time_conflict` / `device_conflict` |
+| `conflictDetail` | dict \\| None | 结构化冲突详情，供前端（屏 3）展示；无详情时为 None |
+
+`conflictDetail` 的形状随 `conflictType` 而定：
+
+    invalid_param   -> None（原因写在 reason 里）
+    not_found       -> {"target": "space"|"user"|"device", ...对应的 ID}
+    time_conflict   -> {"conflicts": [{"orderId", "startTime", "endTime"}, ...]}
+    device_conflict -> {"conflicts": [{"orderId", "deviceIds", "startTime", "endTime"}, ...]}
+                       或 {"conflicts": [{"deviceId", "reason": "status"|"exhausted"}]}
+                       （设备本身不可用，与既有订单无关）
+
+> `device_conflict` 的**判据**在 2026-09-28 由「查到重叠就拒」改成**计数比较**
+> （`重叠单数 >= available_count` 才拒，见 `_device_conflicts`）。**形状与字段集
+> 未变** —— `docs/api.md` 里 `create_order` 的契约冻结了上面这张表，改形状要走
+> §5.3；变的只是列出来的单**都落在已约满的那几台设备上**。
+
+`not_found` 与 `device_conflict` 的分界是「东西不存在」还是「东西被占/不能用」——
+前者对 HTTP 是 404，后者是 409，归错类会把状态码整体带偏。
+
+### 与 `lock_resources` 的对应
+
+Tool 签名 `lock_resources(space_id, device_ids, start_time, end_time)`（`§5.3` 模块 4）
+比本函数少一个 `user_id`：身份一律从 JWT 解析（`§5.1`），由 Agent 运行上下文补入。
+其余参数一对一，`order_status` 由 Tool 传 `needConfirm` 推出的取值（默认 1 待确认）。
+
+## 补缺：`update_agent_trace`
+
+上面五项签名**一项都没动**。Agent 的思考链路是**跑完之后**才有的：落单那一刻还拿不到，
+所以链路只能分两步写——`create_order` 先落 `agent_trace=None`，Agent 跑完由路由调
+`update_agent_trace` 补一次 UPDATE。
+
+为什么创建时不落「残缺 trace」：残缺 trace 在库里与完整 trace 无法区分，前端会当成完整
+链路渲染，而 TC-26 / TC-30 验收的恰恰是「溯源完整」。`None` 的语义干净——**尚未生成**，
+不是**生成了一半**。事后一次覆盖是安全的，因为不存在中间态。
+
+这是**补缺，不是改契约**：冻的是已列的五项，补的是缺的那个函数。
+
+## 异常边界
+
+只有**业务性失败**走结构化返回。基础设施异常（连不上库、连接断开等）仍会抛出，
+由 `core/exceptions.py` 的统一异常处理器兜成 500 —— 那是故障，不是「方案不可行」，
+把它伪装成 `ok: False` 会让 Agent 把基础设施故障讲成业务建议。
 """
-from __future__ import annotations
-
-from datetime import datetime
+from collections import Counter
 
 from sqlalchemy import select
 
-from app.core.database import AsyncSessionLocal
-from app.models.reservation import ReserveOrder
-from app.models.resource import DeviceResource
+from ..core.database import AsyncSessionLocal
+from ..core.utils import format_time, parse_time
+from ..models import (
+    ACTIVE_ORDER_STATUSES,
+    DeviceResource,
+    ReserveOrder,
+    SpaceResource,
+    SysUser,
+)
+from ..state_machine import OrderStatus
 
-__all__ = [
-    "create_order",
-    "update_agent_trace",
-    "OCCUPYING_STATUS",
-    "CONFLICT_TIME",
-    "CONFLICT_DEVICE_MISSING",
-    "CONFLICT_DEVICE_UNAVAILABLE",
-    "CONFLICT_DEVICE_SHORTAGE",
-    "CONFLICT_INVALID_TIME",
-]
+__all__ = ["create_order", "update_agent_trace"]
 
-#: `reserve_order.order_status` 中「占位」的状态（主文档 6.3 表 6）。
-#: 1待确认、2已确认；3已取消与4已完成都不占位。
-#:
-#: ⚠️ 这里取 (1, 2) **比主文档 5.5 第 3 步更严**——5.5 原文写的是
-#: 「该场地在目标时段是否存在**已确认**订单」，字面只覆盖 status=2。
-#: 但 create_order 的 `order_status` 默认值是 1，若真实实现照 5.5 字面只查 status=2，
-#: **Agent 落下的待确认订单就不占位**，并发下会被别人重复预约（模块 7 黄嵩的
-#: 冲突监控也会漏报）。二者必须统一，见「待蔡玉礼确认」第 2 条。
-OCCUPYING_STATUS = (1, 2)
+#: `§6.3` 表 6：agent_request VARCHAR(1024)。超长截断而不是报错——需求文本是模型
+#: 生成的，因长度丢一次预约比截断更糟。
+_AGENT_REQUEST_MAX = 1024
 
-#: 返回体 `conflictType` 的取值。
-#:
-#: ✅ **2026-09-27 已与蔡玉礼对齐为下列值**（依据 `docs/spec/contract-alignment.md` 第 3 条，
-#: 出自 `docs/api.md` §7.2）。此前阶段 3 的 SCREAMING_SNAKE 取值**已作废**。
-#:
-#: 两条要点：
-#:   1. 命名是 **snake_case**，不是 SCREAMING_SNAKE。
-#:   2. 设备类的两种情形**不再拆成两个取值**，统一为 `device_conflict`，
-#:      靠 `conflictDetail.conflicts[].reason` 区分「设备停用」(`status`)
-#:      与「数量不足」(`exhausted`)。
-#:
-#: 全仓唯一定义点仍是这里——不要把这些字符串散落到 Tool 层或前端。
-CONFLICT_TIME = "time_conflict"              # 场地时段冲突
-CONFLICT_DEVICE_MISSING = "not_found"        # 设备 ID 不存在
-CONFLICT_DEVICE_UNAVAILABLE = "device_conflict"  # 设备非完好状态（reason=status）
-CONFLICT_DEVICE_SHORTAGE = "device_conflict"     # 设备库存不足（reason=exhausted）
-CONFLICT_INVALID_TIME = "invalid_param"      # 起止时间本身非法
-
-#: `conflictDetail.conflicts[].reason` 的取值。
-#: ⚠️ `docs/api.md` §7.2 的**四种 `conflictDetail` 形状尚未到手**
-#: （contract-alignment 第 4、6 条），这里只放出已确认的两个 reason 字面量；
-#: 形状补齐前**不要据此改桩**。
-CONFLICT_REASON_DEVICE_STATUS = "status"        # 设备停用（device_status != 1）
-CONFLICT_REASON_DEVICE_EXHAUSTED = "exhausted"  # 数量不足（available_count <= 0）
-
-_TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M")
+#: 创建时允许的订单状态：只有状态机的两个入口态（`§6.3` 表 6）。
+#: 3/4 是流转出来的结果态，创建即完成/取消都是错误输入。
+_ALLOWED_CREATE_STATUS = (OrderStatus.PENDING.value, OrderStatus.CONFIRMED.value)
 
 
-def _parse_time(raw: str) -> datetime:
-    """解析时间串。模型给的格式不保证唯一，逐个试。
+def _as_int(value) -> int | None:
+    """把模型可能传成字符串的数值安全转成 int；转不了返回 None。
 
-    TODO(蔡玉礼): 若模块 3 对入参格式有强约定，这里应换成对应的单格式校验。
+    Agent 的 Tool 入参是模型生成的 JSON，`"space_id": "101"` 完全可能。
+    `§9.3` 要求对模型输出做业务边界校验，这里就是那道边界。
     """
-    for fmt in _TIME_FORMATS:
-        try:
-            return datetime.strptime(raw, fmt)
-        except ValueError:
-            continue
-    raise ValueError(f"无法解析的时间格式：{raw!r}，期望 YYYY-MM-DD HH:mm:ss")
-
-
-def _coerce_int(value: object) -> int | None:
-    """尽力转整数。转不了返回 None（由调用方转成业务失败）。
-
-    `True`/`False` 要挡掉——Python 里 `isinstance(True, int)` 为真，
-    不挡的话 `device_ids=[True]` 会静默变成设备 ID 1。
-    """
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        try:
-            return int(value.strip())
-        except ValueError:
-            return None
-    if isinstance(value, float) and value.is_integer():
+    try:
         return int(value)
-    return None
+    except (TypeError, ValueError):
+        return None
 
 
-def _fail(conflict_type: str, reason: str, detail: object = None) -> dict:
-    """业务性失败的统一返回。**不抛异常**（蔡玉礼冻结的契约要求）。"""
+class _Reject(Exception):
+    """业务性拒绝（`§5.5` 第 3、4 步校验失败）。
+
+    用异常只是为了触发 `begin()` 上下文的 ROLLBACK —— 它**不会**逃出本模块，
+    在 `create_order` 内被翻译成结构化返回值。
+    """
+
+    def __init__(self, conflict_type: str, reason: str, detail: dict | None = None):
+        super().__init__(reason)
+        self.conflict_type = conflict_type
+        self.reason = reason
+        self.detail = detail
+
+
+def _lock_space_stmt(space_id: int):
+    """`§5.5` 第 2 步的语句：对目标场地行加锁。
+
+    单独抽成函数只为让「锁有没有被写丢」可被机械验证 —— 单测跑在 SQLite 上，
+    其方言会把 `FOR UPDATE` **编译掉**（`tests/module3/test_order_service.py`
+    里有一条断言把这个差异钉死）。少了那条断言，哪天有人删掉 `with_for_update()`
+    整套路还是会全绿，而云库上的并发语义已经没了。
+    """
+    return (
+        select(SpaceResource).where(SpaceResource.id == space_id).with_for_update()
+    )
+
+
+def _fail(conflict_type: str, reason: str, detail: dict | None = None) -> dict:
+    """失败结果（字段集与成功结果一致，调用方无需分支取值）。"""
     return {
         "ok": False,
         "orderId": None,
         "reason": reason,
         "conflictType": conflict_type,
         "conflictDetail": detail,
-        "stub": True,
     }
+
+
+async def _time_conflicts(db, space_id: int, start, end) -> list[dict]:
+    """第 3 步：该场地在目标时段的重叠订单（占用口径见 `ACTIVE_ORDER_STATUSES`）。"""
+    result = await db.execute(
+        select(
+            ReserveOrder.id, ReserveOrder.start_time, ReserveOrder.end_time
+        )
+        .where(
+            ReserveOrder.space_id == space_id,
+            ReserveOrder.order_status.in_(ACTIVE_ORDER_STATUSES),
+            # 重叠判定：半开区间，首尾相接（10:00 结束 / 10:00 开始）不算冲突
+            ReserveOrder.end_time > start,
+            ReserveOrder.start_time < end,
+        )
+        .order_by(ReserveOrder.start_time)
+    )
+    return [
+        {
+            "orderId": r.id,
+            "startTime": format_time(r.start_time),
+            "endTime": format_time(r.end_time),
+        }
+        for r in result.all()
+    ]
+
+
+def _hit_device_ids(raw, wanted: set[int]) -> list[int]:
+    """取该订单里与 `wanted` 相交的设备 ID（容错：JSON 列里混入非整数则跳过）。"""
+    hit = set()
+    for item in raw or []:
+        try:
+            value = int(item)
+        except (TypeError, ValueError):
+            continue
+        if value in wanted:
+            hit.add(value)
+    return sorted(hit)
+
+
+async def _device_conflicts(
+    db, device_ids: list[int], caps: dict[int, int], start, end
+) -> list[dict]:
+    """第 4 步的时间维度部分：这些设备在同时段是否已被**约满**。
+
+    `§6.3` 没有「设备占用」表，设备的时段占用只存在 `reserve_order.device_ids`
+    （JSON 列）里，所以只能先捞重叠时段的订单、再在 Python 里按设备计数；`§6.6`
+    的 10 个 `idx_*` 里也没有设备维度的索引，这一步没有可用索引。数据量上来后
+    需要集成组给出正式口径（占用表 / 生成列 / 多值索引），当前实现是**尽力而为**
+    的正确性，不做性能承诺。
+
+    **判据是计数比较，不是「查到重叠就拒」**：`device_resource.available_count`
+    是**可用上限**（不是「还剩几台」），同一台设备在同时段允许多单共存，只要总数
+    没到上限。剩余量**用时推导**：
+
+        某设备在某时段的剩余量 = available_count − 该时段重叠单数
+
+    所以本函数不写任何列，`§5.5` 六步既没有扣减、也没有第 7 步回补 —— 订单一旦
+    离开 `ACTIVE_ORDER_STATUSES`（取消 / 完成），下一单算出来的剩余量自然就回来，
+    **回补不需要代码**。
+
+    参数：
+        caps: `{device_id: available_count}`，由 `_check_devices` 从设备行读出。
+            取不到时按 0 处理（= 约满），方向上是**保守拒绝**而不是静默放行。
+
+    返回：`docs/api.md` 里 `create_order` 冻结的形状（一单一条）。只列**碰到已约满
+    设备**的那些单 —— 不过滤的话，「A 满了」会把只用到空闲 B 的单也一并报出来。
+    """
+    wanted = set(device_ids)
+    result = await db.execute(
+        select(
+            ReserveOrder.id,
+            ReserveOrder.start_time,
+            ReserveOrder.end_time,
+            ReserveOrder.device_ids,
+        ).where(
+            ReserveOrder.order_status.in_(ACTIVE_ORDER_STATUSES),
+            ReserveOrder.end_time > start,
+            ReserveOrder.start_time < end,
+        )
+    )
+    rows = result.all()
+
+    used: Counter[int] = Counter()
+    for row in rows:
+        for did in _hit_device_ids(row.device_ids, wanted):
+            used[did] += 1      # 一单里同一台设备只算一次（`_hit_device_ids` 去重）
+
+    full = {did for did in wanted if used[did] >= caps.get(did, 0)}
+    if not full:
+        return []
+
+    conflicts = []
+    for row in rows:
+        busy = sorted(set(_hit_device_ids(row.device_ids, wanted)) & full)
+        if busy:
+            conflicts.append(
+                {
+                    "orderId": row.id,
+                    "deviceIds": busy,
+                    "startTime": format_time(row.start_time),
+                    "endTime": format_time(row.end_time),
+                }
+            )
+    return conflicts
+
+
+async def _check_devices(db, device_ids: list[int], start, end) -> None:
+    """第 4 步：校验设备可用性。失败抛 `_Reject`。
+
+    四查：存在（`not_found`）→ 状态完好 → 还有可用上限 → 时段未被约满
+    （后三者是 `device_conflict`，时间维度的检查见 `_device_conflicts`）。
+
+    注意 `available_count` **只读不写** —— 这不是「暂时不扣」而是**口径本身**：
+    它是**可用上限**（`total_count` 是物理台账数，留出备用机），「还剩几台」是
+    `available_count − 该时段重叠单数`，属于**用时推导**。写时扣减会让一个不带
+    时间维度的整数列去记「(设备, 时段)」的二维事实，必然串台：周一借走一台会
+    把周二的名额一起吃掉，且 `available_count` 单调递减、没有任何自然事件能把
+    它救回来。因此 `§5.5` 六步不加第 7 步「回补库存」，取消/完成靠
+    `ACTIVE_ORDER_STATUSES` 自动生效。口径判据与 AGENT-C-01/02 的对照表见
+    `docs/available_count口径判据.md`。
+    """
+    if not device_ids:
+        return
+
+    result = await db.execute(
+        select(DeviceResource).where(DeviceResource.id.in_(device_ids))
+    )
+    devices = {d.id: d for d in result.scalars().all()}
+
+    for did in device_ids:
+        device = devices.get(did)
+        if device is None:
+            # 归类为 not_found 而不是 device_conflict：这是「参数指向的东西不存在」，
+            # 不是「资源被占用」。HTTP 契约（§5.3 模块3）里设备不存在是 404，
+            # 归错类会把这个 404 变成 409。
+            raise _Reject(
+                "not_found",
+                f"设备 {did} 不存在",
+                {"target": "device", "deviceIds": [did]},
+            )
+        if device.device_status != 1:  # 1完好 2损坏 3缺失配件（§6.3 表5）
+            raise _Reject(
+                "device_conflict",
+                f"设备 {device.device_name} 状态异常，暂不可用",
+                {"conflicts": [{"deviceId": did, "reason": "status"}]},
+            )
+        if (device.available_count or 0) <= 0:
+            raise _Reject(
+                "device_conflict",
+                f"设备 {device.device_name} 已无可用库存",
+                {"conflicts": [{"deviceId": did, "reason": "exhausted"}]},
+            )
+
+    caps = {did: (devices[did].available_count or 0) for did in device_ids}
+    busy = await _device_conflicts(db, device_ids, caps, start, end)
+    if busy:
+        # 「已约满」而不是「已被占用」：容量 > 1 时，重叠单数没到上限本来就不算冲突，
+        # 走到这里的都是**这台设备的名额用光了**，沿用旧文案会让人以为「只要没人用就行」。
+        raise _Reject("device_conflict", "该时段设备已约满", {"conflicts": busy})
 
 
 async def create_order(
@@ -127,245 +322,202 @@ async def create_order(
     end_time: str,
     device_ids: list[int] | None = None,
     agent_request: str | None = None,
-    agent_trace: dict | None = None,
-    order_status: int = 1,
+    agent_trace: list | None = None,
+    order_status: int = OrderStatus.PENDING.value,
 ) -> dict:
-    """[桩] 订单创建 + 资源锁定：校验场地时段冲突与设备可用性。
-
-    TODO(蔡玉礼): 替换为模块 3 的真实实现，**替换时只换函数体，签名不动**。
+    """在**一个事务**内完成 `§5.5` 的资源锁定与落单。
 
     参数：
-        user_id:     预约人 ID。**必填**——由 API 层从 JWT 解出，经 Agent 调用上下文
-                     注入；禁止让模型去猜，也禁止从请求体取（主文档 5.1/9.1：从请求体
-                     取则任何人都能替别人预约）。2026-09-27 蔡玉礼把本参数正式写进签名，
-                     长期挂账的「未决 #1」就此闭环。
-        space_id:    场地 ID。
-        start_time:  开始时间，`YYYY-MM-DD HH:mm:ss`。
-        end_time:    结束时间，同格式。
-        device_ids:  设备 ID 列表，可为 None / 空列表。
-        agent_request: 用户原始自然语言需求（主文档 6.3 `reserve_order.agent_request`）。
-        agent_trace:    AI 思考过程（主文档 6.3 `reserve_order.agent_trace`）。
-                        ⚠️ 见下方「待蔡玉礼确认」第 1 条——**本参数在锁定时刻拿不到完整值**。
-        order_status:   落库状态，默认 1（待确认）。取值由调用方按「是否需要人工确认」决定。
+        user_id: 预约人；由调用方从 JWT 解出后传入（`§5.1` 禁止从请求体取）
+        space_id: 场地 ID
+        start_time / end_time: `YYYY-MM-DD HH:mm:ss`（`§5.1` 时间格式统一）
+        device_ids: 设备 ID 列表，无设备传 None 或 []
+        agent_request: 用户原始需求，落 `reserve_order.agent_request`，超 1024 截断
+        agent_trace: Agent 思考过程（TraceStep 对象数组），落 `reserve_order.agent_trace`
+        order_status: 1待确认（默认）/ 2已确认；其余取值一律拒绝
 
-    返回：
-        {"ok": bool, "orderId": int|None, "reason": str,
-         "conflictType": str|None, "conflictDetail": object|None}   ← 冻结形状
-        外带桩期专有的 "stub": True（真实实现落地后消失）
-
-    ══════════════════════════════════════════════════════════════════════
-    待蔡玉礼确认（按硬度排序，均为签名之外的口径问题，不阻塞桩期）
-    ══════════════════════════════════════════════════════════════════════
-    **1. `agent_trace` 的落库时序——需要一个本签名里没有的 service 函数。**
-       主文档 3.3 规定 `agent_trace` 由 LangGraph `messages` 里的 AIMessage / ToolMessage
-       按序映射而来。而 `lock_resources` 被调用的那一刻，**本次 Agent 运行还没结束**，
-       trace 注定是残缺的——完整 trace 只有在 `create_order` 返回之后才存在。
-       所以 `agent_trace` 不可能在 INSERT 时就写全。可行解只有：
-         (a) 本函数落 `agent_trace=None`，路由在 Agent 跑完后补一次 UPDATE；
-         (b) 本函数落残缺 trace，事后覆盖。
-       无论哪种，**都需要一个 `update_agent_trace(order_id, trace)` 之类的业务函数**
-       ——Tool 不能直接改库（主文档 4.3），只能走 service 层。该函数不在冻结签名里，
-       需补。**若不现在补，阶段 5 组装 trace 落库时必然撞上。**
-
-    **2. `order_status` 默认 1 与主文档 5.5 第 3 步的校验口径不一致。**
-       5.5 原文只校验「已确认订单」（字面 status=2）。默认落 1 的话，
-       **Agent 创建的待确认订单不占位**，并发下会被人重复预约。
-       需定：把 5.5 的校验范围明确成 `status IN (1,2)`，还是 Agent 路径直接落 2。
-       本桩暂按 `status IN (1,2)`（更严）实现，即与 5.5 字面**不一致**——
-       以谁为准需拍板。
-
-    **3. `conflictType` 的取值枚举。** 见上方常量区，当前值是我方暂定。
-
-    **4. `conflictDetail` 的类型。** 我暂定 object（装冲突订单号 / 时段 / 缺失设备 ID），
-       前端屏 3 要按它渲染。若是 string，请明说。
-
-    ══════════════════════════════════════════════════════════════════════
-    ⚠️ 本桩**只读，不写库**——与真实实现的差距在此
-    ══════════════════════════════════════════════════════════════════════
-    真实实现必须严格按主文档 5.5 的顺序：
-
-        BEGIN
-          SELECT ... FOR UPDATE 锁定 space_resource 行
-          校验 time 重叠（reserve_order 中 order_status IN (1,2)，见待确认第 2 条）
-          校验设备可用性
-          INSERT reserve_order + 扣减 device_resource.available_count
-        COMMIT
-
-    两处从本桩到真实实现的硬缺口：
-      - 本桩**没有 FOR UPDATE**，只是普通 SELECT。低并发下测不出差别，
-        演示当天并发上来才翻车——这段正确性由 `AGENT-C-01` 把关。
-      - 主文档 5.5 六步里**没有「扣减 available_count」这一步**（第 4 步校验完
-        直接 INSERT）。`device_resource.available_count` 字段确实存在，
-        谁扣、何时扣需要明确，否则设备数会越用越多。
-
-    本桩插入与扣减**一律不做**，原因：
-      - 主文档 6.8 红线：测试禁止写 `reserve_order` 正式表；
-      - `AGENT-C-01` 的并发语义无法在桩上验，假装能验就是假绿。
-    因此 `orderId` 恒为 None，且返回里恒有 `"stub": True`。
+    返回：见模块 docstring 的返回值表。业务性失败返回 `ok=False`，不抛异常。
     """
-    # ---- 入参容错（2026-09-27 对齐结果第 3 条，一并对齐）----
-    # 背景：LLM 与前端都可能把 ID 传成字符串。两种情形的处置**刻意不同**：
-    #   `space_id="101"`   → 转成整数。无害，转了就能用。
-    #   `device_ids="1"`   → **必须挡掉报错**。不挡的话 `for x in "1"` 会**逐字符迭代**，
-    #                        静默变成 `[1]`——错得无声无息，比报错危险得多。
-    coerced_space_id = _coerce_int(space_id)
-    if coerced_space_id is None:
-        return _fail(CONFLICT_INVALID_TIME, f"space_id 无法解析为整数：{space_id!r}。")
-    space_id = coerced_space_id
-
-    if device_ids is not None and not isinstance(device_ids, (list, tuple)):
+    # ---- 入参校验：不占 §5.5 六步，但同样不抛 —— Agent 的入参来自模型输出（§9.3）----
+    user_id = _as_int(user_id)
+    if user_id is None or user_id <= 0:
+        # Agent 侧最容易漏的一环：JWT 解出的 user_id 忘了往下传。
+        # 这里明确拒绝，而不是落 NULL 或抛异常。
+        return _fail("invalid_param", "缺少 user_id：身份必须从 JWT 解析后传入（§5.1）")
+    space_id = _as_int(space_id)
+    if space_id is None:
+        return _fail("invalid_param", "space_id 必须是整数")
+    order_status = _as_int(order_status)
+    if order_status not in _ALLOWED_CREATE_STATUS:
         return _fail(
-            CONFLICT_INVALID_TIME,
-            f"device_ids 必须是数组，收到 {type(device_ids).__name__}（{device_ids!r}）。"
-            "传字符串会被逐字符迭代成错误的 ID 列表，故直接拒绝。",
+            "invalid_param",
+            f"order_status 只能为 1（待确认）或 2（已确认），收到 {order_status}",
         )
-    if device_ids:
-        bad = [d for d in device_ids if _coerce_int(d) is None]
-        if bad:
-            return _fail(CONFLICT_INVALID_TIME, f"device_ids 含非整数项：{bad}。")
-        device_ids = [_coerce_int(d) for d in device_ids]
 
-    start_dt = _parse_time(start_time)
-    end_dt = _parse_time(end_time)
+    if device_ids is None:
+        device_ids = []
+    if not isinstance(device_ids, (list, tuple)):
+        return _fail("invalid_param", "device_ids 必须是整数数组")
+    parsed_ids = [_as_int(d) for d in device_ids]
+    if any(d is None for d in parsed_ids):
+        return _fail("invalid_param", "device_ids 必须是整数数组")
+    device_ids = parsed_ids
+    if len(set(device_ids)) != len(device_ids):
+        return _fail("invalid_param", "设备列表存在重复项")
 
-    if end_dt <= start_dt:
+    if agent_request is not None and not isinstance(agent_request, str):
+        return _fail("invalid_param", "agent_request 必须是字符串")
+    if agent_trace is not None and not isinstance(agent_trace, list):
         return _fail(
-            CONFLICT_INVALID_TIME,
-            f"结束时间({end_time})不晚于开始时间({start_time})，拒绝锁定。",
+            "invalid_param",
+            "agent_trace 必须是 TraceStep 对象数组（§5.3 模块4）",
         )
 
-    async with AsyncSessionLocal() as session:
-        # ---- 5.5 第 2 步（只读版）：场地时段重叠检测 ----
-        # 真实实现此处为 SELECT ... FOR UPDATE，并依赖 idx_space_time 收窄锁范围
-        # （space_id, start_time, end_time）。该索引目前**不存在**，见阶段 0 核对结论。
-        conflict_stmt = (
-            select(ReserveOrder.id, ReserveOrder.start_time, ReserveOrder.end_time)
-            .where(
-                ReserveOrder.space_id == space_id,
-                ReserveOrder.order_status.in_(OCCUPYING_STATUS),
-                ReserveOrder.start_time < end_dt,
-                ReserveOrder.end_time > start_dt,
-            )
-            .limit(1)
-        )
-        conflict = (await session.execute(conflict_stmt)).first()
-        if conflict is not None:
-            return _fail(
-                CONFLICT_TIME,
-                (
-                    f"场地 {space_id} 在该时段已被占用"
-                    f"（订单 {conflict.id}：{conflict.start_time} ~ {conflict.end_time}），"
-                    "请改时段或换场地。"
-                ),
-                detail={
-                    "spaceId": space_id,
-                    "orderId": conflict.id,
-                    "startTime": str(conflict.start_time),
-                    "endTime": str(conflict.end_time),
-                },
-            )
+    try:
+        start = parse_time(start_time)
+        end = parse_time(end_time)
+    except ValueError as exc:
+        return _fail("invalid_param", str(exc))
+    if start >= end:
+        return _fail("invalid_param", "开始时间必须早于结束时间")
 
-        # ---- 5.5 第 3 步：设备可用性校验 ----
-        # 两种情形共用 `device_conflict`，靠 conflicts[].reason 区分（对齐结果第 3 条）。
-        if device_ids:
-            devices_stmt = select(DeviceResource).where(DeviceResource.id.in_(device_ids))
-            rows = (await session.execute(devices_stmt)).scalars().all()
+    async with AsyncSessionLocal() as db:
+        # ===================== §5.5 事务六步（开发流程.md:435-441）=====================
+        try:
+            async with db.begin():                                      # 1. BEGIN
+                # 2. SELECT ... FOR UPDATE 对目标场地行加锁
+                #    （SQLite 方言会把 FOR UPDATE 编译掉，见 tests 走 aiosqlite；
+                #      云库 mysql+asyncmy 下真实生效）
+                locked = await db.execute(_lock_space_stmt(space_id))
+                if locked.scalar_one_or_none() is None:
+                    raise _Reject(
+                        "not_found",
+                        "场地不存在",
+                        {"target": "space", "spaceId": space_id},
+                    )
 
-            missing = sorted(set(device_ids) - {r.id for r in rows})
-            if missing:
-                return _fail(
-                    CONFLICT_DEVICE_MISSING,
-                    f"设备不存在：{missing}。请从可借设备中选择。",
-                    detail={"deviceIds": missing},
+                # 预约人必须存在：云库上 reserve_order.user_id 是真外键
+                # （docs/database.md），不先查会以 1452 炸成 500
+                if await db.get(SysUser, user_id) is None:
+                    raise _Reject(
+                        "not_found",
+                        "用户不存在",
+                        {"target": "user", "userId": user_id},
+                    )
+
+                conflicts = await _time_conflicts(db, space_id, start, end)   # 3.
+                if conflicts:
+                    raise _Reject(
+                        "time_conflict", "该时段已被占用", {"conflicts": conflicts}
+                    )
+
+                await _check_devices(db, device_ids, start, end)              # 4.
+
+                # 5. 插入 reserve_order，写入 device_ids
+                order = ReserveOrder(
+                    user_id=user_id,
+                    space_id=space_id,
+                    device_ids=device_ids,
+                    start_time=start,
+                    end_time=end,
+                    order_status=order_status,
+                    agent_request=(
+                        (agent_request or "").strip()[:_AGENT_REQUEST_MAX] or None
+                    ),
+                    agent_trace=agent_trace,
                 )
+                db.add(order)
+                await db.flush()   # 取库侧自增 id；事务仍开着，未提交
+                order_id = order.id
+            # 6. COMMIT —— `begin()` 上下文正常退出即提交
+        except _Reject as reject:
+            # §5.5：第 3/4 步校验失败 → ROLLBACK（已由 begin() 上下文完成）
+            # 并返回友好提示
+            return _fail(reject.conflict_type, reject.reason, reject.detail)
 
-            conflicts = [
-                {"deviceId": r.id, "reason": CONFLICT_REASON_DEVICE_STATUS}
-                for r in rows if r.device_status != 1
-            ]
-            if conflicts:
-                return _fail(
-                    CONFLICT_DEVICE_UNAVAILABLE,
-                    f"设备不可用（非完好状态）：{[c['deviceId'] for c in conflicts]}。"
-                    "请改用替代设备。",
-                    detail={"conflicts": conflicts},
-                )
-
-            conflicts = [
-                {"deviceId": r.id, "reason": CONFLICT_REASON_DEVICE_EXHAUSTED}
-                for r in rows if r.available_count <= 0
-            ]
-            if conflicts:
-                return _fail(
-                    CONFLICT_DEVICE_SHORTAGE,
-                    f"设备库存不足（available_count <= 0）：{[c['deviceId'] for c in conflicts]}。"
-                    "请改用替代设备。",
-                    detail={"conflicts": conflicts},
-                )
-            # ⚠️ 校验通过后**不做任何扣减**。对齐结果第 5 条：主文档 5.5 六步里既没有
-            # 扣减、也没有取消时回补，单方面扣会造出第二份真值。当前口径是
-            # 「只校验 available_count > 0，不落任何写入」，正式口径待集成组给。
-
-    # ---- 5.5 第 4 步：INSERT + 扣减 —— 桩不执行 ----
-    _ = (user_id, agent_request, agent_trace, order_status)  # 桩不落库，故不消费
     return {
         "ok": True,
-        "orderId": None,
-        "reason": (
-            f"校验通过（预约人 {user_id}、场地 {space_id}、设备 {device_ids or '无'}、"
-            f"{start_time} ~ {end_time}、拟落状态 {order_status}）。"
-            "⚠️ 桩未落库、未扣减库存，orderId 为 None。"
-        ),
+        "orderId": order_id,
+        "reason": "预约创建成功",
         "conflictType": None,
         "conflictDetail": None,
-        "stub": True,
     }
 
 
-async def update_agent_trace(*, order_id: int, user_id: int, agent_trace: dict | None) -> dict:
-    """[桩] 补写 `reserve_order.agent_trace`。
+async def update_agent_trace(
+    *,
+    order_id: int,
+    user_id: int,
+    agent_trace: list,
+) -> dict:
+    """补写 Agent 思考链路（`create_order` 之后由路由回调，见模块 docstring）。
 
-    TODO(蔡玉礼): 替换为模块 3 的真实实现，**替换时只换函数体，签名不动**。
+    与 `create_order` 同规矩：keyword-only、签名**不含 `db`**（会话与事务边界都自管）、
+    业务性失败返回 `ok=False` 而不抛异常。
 
-    ══════════════════════════════════════════════════════════════════════
-    签名来源：2026-09-27 与蔡玉礼对齐第 1 条（`contract-alignment.md`）
-    ══════════════════════════════════════════════════════════════════════
-        update_agent_trace(order_id, user_id, agent_trace)
+    参数：
+        order_id: 要补写的订单 ID
+        user_id: 归属校验用，由调用方从 JWT 解出后传入（`§5.1`）。**必须进签名**——
+            只凭 `order_id` 就能改任意订单的 `agent_trace`，等于把它变成可写公共字段。
+        agent_trace: Agent 思考过程（TraceStep 对象数组），**整体覆盖**库中该列
 
-    | 项 | 约定 | 本桩是否遵守 |
-    | --- | --- | --- |
-    | 参数限定 | **keyword-only**（与 `create_order` 同规矩） | 是 |
-    | 签名含 `db` | 否——会话与事务边界由函数自管 | 是 |
-    | `user_id` | **必须进签名**，用于**归属校验** | 是（见下） |
-    | 失败语义 | 业务性失败返回 `ok=false`，**不抛异常** | 是 |
-    | 返回值 | 与 `create_order` 同构，含 `ok` | 是 |
-
-    **为什么 `user_id` 必须进签名**：没有它，任何调用方拿到一个 `orderId`
-    就能改别人的 trace——而 trace 会在 PC 后台展示（答辩溯源），
-    等于开放了一个「篡改他人记录」的口子。主文档 5.1 要求身份一律受控。
-
-    ══════════════════════════════════════════════════════════════════════
-    为什么需要这个函数（它不是「多出来的」）
-    ══════════════════════════════════════════════════════════════════════
-    `lock_resources` 被调用那一刻，本次 Agent 运行**还没结束**，trace 注定残缺；
-    完整 trace 只有 `create_order` 返回之后才存在。而 Tool 不能直接改库（主文档 4.3），
-    所以必须有一个独立的 service 函数来补这次 UPDATE。
-
-    时序采用方案 **(a)**：`create_order` 落 `agent_trace=None`，路由在 Agent 跑完后
-    调本函数补一次。不采用方案 (b)（落残缺 trace 再覆盖）——残缺 trace 会被前端
-    **当成完整链路渲染**，而 `TC-26` / `TC-30` 验收的恰恰是「溯源完整」，
-    且覆盖存在并发窗口。`None` 的语义是干净的：**尚未生成**。
-
-    ⚠️ 本桩**不写库**：不 UPDATE、恒返回 `ok=False`，与 `create_order` 桩同一处置
-    （主文档 6.8 红线：测试禁止写 `reserve_order` 正式表）。返回体恒带 `"stub": True`。
+    返回：字段集与 `create_order` **完全一致**，调用方一处取值逻辑两处通用。
+    可重复调用（同一份 trace 补写两次仍返回 `ok=True`）。
     """
-    _ = (order_id, user_id, agent_trace)  # 桩不落库，故不消费
+    order_id = _as_int(order_id)
+    if order_id is None or order_id <= 0:
+        return _fail("invalid_param", "order_id 必须是正整数")
+
+    user_id = _as_int(user_id)
+    if user_id is None or user_id <= 0:
+        return _fail("invalid_param", "缺少 user_id：身份必须从 JWT 解析后传入（§5.1）")
+
+    if not isinstance(agent_trace, list):
+        return _fail(
+            "invalid_param",
+            "agent_trace 必须是 TraceStep 对象数组（§5.3 模块4）",
+        )
+    # 空数组拒绝：它在库里与 `NULL`（尚未生成）区分不开，写进去只会让前端把
+    # 「没跑出东西」渲染成一条空链路。没有内容可补写时**不要调用本函数**。
+    # 注意 `create_order` 允许空 list —— 那里 `None` 才是常态（补写链路的起点），
+    # 显式传 `[]` 是合法输入；两处宽严不同是刻意的。
+    if not agent_trace:
+        return _fail(
+            "invalid_param",
+            "agent_trace 不能为空数组：空链路与「尚未生成」无法区分，没有内容时勿调用",
+        )
+
+    async with AsyncSessionLocal() as db:
+        try:
+            async with db.begin():
+                # 刻意用「先 SELECT ... FOR UPDATE 再赋值」，而不是一条 UPDATE：
+                # MySQL 的 affected_rows 默认只数**真正发生变化**的行，同一份 trace
+                # 补写两次时第二条 UPDATE 返回 0，会被误判成 not_found。分成两步才能
+                # 把「不存在 / 非本人」与「值没变」分开。（SQLite 方言把 FOR UPDATE
+                # 编译掉，测试跑 aiosqlite 时锁不生效；云库 mysql+asyncmy 下真实生效。）
+                result = await db.execute(
+                    select(ReserveOrder)
+                    .where(
+                        ReserveOrder.id == order_id,
+                        ReserveOrder.user_id == user_id,
+                    )
+                    .with_for_update()
+                )
+                order = result.scalar_one_or_none()
+                if order is None:
+                    # 不存在与非本人**同一处理、不区分原因**：区分了就等于承认「这单
+                    # 存在，只是不是你的」，可据此枚举全库订单。与 api 层的
+                    # `_get_owned_order`、`messages.py::read_message` 同一口径。
+                    raise _Reject("not_found", "预约不存在")
+                order.agent_trace = agent_trace
+            # 上下文正常退出即 COMMIT
+        except _Reject as reject:
+            return _fail(reject.conflict_type, reject.reason, reject.detail)
+
     return {
-        "ok": False,
+        "ok": True,
         "orderId": order_id,
-        "reason": (
-            "update_agent_trace 仍是桩：未写库。"
-            "真实实现落地前，agent_trace 不会出现在 reserve_order 中。"
-        ),
-        "stub": True,
+        "reason": "思考链路已补写",
+        "conflictType": None,
+        "conflictDetail": None,
     }
