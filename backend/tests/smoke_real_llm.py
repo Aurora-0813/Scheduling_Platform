@@ -18,10 +18,20 @@ cd backend && PYTHONIOENCODING=utf-8 \
 
 ## 要验什么（`AGENT-STAGE-05` 的四条通过标准）
 
-1. 跑通一次
-2. `plan` 保住场地、设备降级为单投影
-3. `reason` 说明降级原因
-4. **各步 `timestamp` 互不相同且递增** —— 只有真实调用才验得了
+1. 跑通一次（`degraded=false`）
+2. `plan` 保住场地（`spaceId` 命中），且 **`reason` 明确说明为什么不需要降级**
+3. 各步 `timestamp` **互不相同且递增** —— 只有真实调用才验得了
+4. 设备清单非空（`deviceIds` 不为 `[]`）
+
+> ⚠️ **第 2 条 2026-09-27 已由项目群裁定改写（原标准 A + 新增 C）。**
+> 原措辞是「设备降级为单投影」，前提是「800 元预算与双投影冲突」——
+> 但这个前提**在数据模型里不成立**：`device_resource` 没有价格字段、设备不计费，
+> 而 `space_resource.budget` 恰好等于 800，`capacity>=40 AND space_type=2` 只命中场地 4。
+> 任何模型都算不出「双投影超支」，Prompt 又明文禁止编造价格。
+> 改后的 A = 保住场地 + 说明为何不需降级；C = 另补一条**前提真成立**的降级用例，
+> 落在 `tests/test_agent_schedule.py::AGENT-S-06`（要两台直播设备、库里只有 1 台可借）
+> 及其前提护栏 `test_seed_supports_the_degradation_case`。
+> 沿革见 `docs/spec/done/stage-05-completion.md` §3.2 与 §6 #1。
 
 第 4 条是本阶段的存在理由：假模型不产生真实耗时，所有步骤会挤在同一秒；
 只有真实调用才能暴露「用提取时刻统一打点」这个坑（阶段 5 §3.4）。
@@ -45,8 +55,11 @@ from app.agent.chains.builder import AgentUnavailableError, run_schedule
 from app.core.config import settings
 
 #: 场景 A：主文档 4.4 表格第一个场景。**需求原文不要改**——
-#: 「800 元 / 40 人 / 双投影」三个约束的冲突是这个场景的全部内容：
-#: 40 人 → A栋3楼展厅（¥800，恰好吃掉全部预算）→ 双投影没有预算空间 → 降级为一台。
+#: 「800 元 / 40 人 / 双投影」三个约束是这个场景的全部内容。
+#: ⚠️ 但「双投影超预算 → 降级为一台」这个**旧预期不成立**：设备不计费
+#: （`device_resource` 无价格字段），800 元是**场地**的预算上限，恰好等于场地 4 的价格，
+#: 两台投影仪不产生任何额外预算压力。所以这个场景考的是「约束全匹配时不乱降级」，
+#: 真降级那半边由 `AGENT-S-06` 承担。
 SCENARIO_A = "下周三下午，我们要办一个 40 人的展厅活动，预算 800 元，需要两台投影仪。"
 
 #: 原始日志落盘位置（归档证据）。`.gitignore` 里 `docs/` 未被忽略，
@@ -179,6 +192,13 @@ async def main() -> int:
         "locked_order_id": outcome.locked_order_id,
         "message": outcome.message,
     })
+    # 实测这次 29.8s / 上限 30.0s（2026-09-28），只差 155ms。真实调用慢在网络，
+    # 演示当天网络一抖就会落进超时降级路径，而这条路径返回的是 200 + 友好提示，
+    # 现场看代码发现不了。所以把余量摆出来，不藏在一个数字里。
+    _margin_ms = int(settings.AGENT_TIMEOUT * 1000 - outcome.latency_ms)
+    if _margin_ms < 3000:
+        _dump("⚠️ 超时余量", f"仅剩 {_margin_ms} ms（预算 {int(settings.AGENT_TIMEOUT * 1000)} ms）。"
+              "演示前请确认是否放宽 AGENT_TIMEOUT。")
 
     # ---- 完整 trace：逐字段打印 ----
     _dump(f"[3.1] 完整 trace（{len(data.trace)} 步）", "")
@@ -210,17 +230,24 @@ async def main() -> int:
                             if space_kept else "⛔ 否：plan 为空或无 spaceId")
 
     devices = data.plan.deviceIds if data.plan else []
-    _dump("② plan 设备降级为单投影",
-          f"✅ 是（deviceIds={devices}）" if len(devices) == 1
-          else f"⛔ 否：deviceIds={devices}（期望恰好 1 个）")
+    _dump("② plan 给出设备清单（非空）",
+          f"✅ 是（deviceIds={devices}）" if devices
+          else "⛔ 否：deviceIds 为空，方案没有配套设备")
 
     reason = (data.plan.reason if data.plan else None) or ""
-    _dump("③ reason 说明降级原因",
-          f"✅ 是：{reason}" if reason.strip() else "⛔ 否：reason 为空")
+    _dump("② reason 说明为何不需降级 —— 本条人工判读，脚本不代判",
+          f"reason 原文：{reason}" if reason.strip()
+          else "⛔ 否：reason 为空，无从判断")
+    # 为什么不自动判：判「说明的是不是『无需降级』」只能靠关键字匹配（「无需」「完全匹配」…），
+    # 而模型换个说法就能同时骗过关键字和读这段输出的人——那就造出了假绿。
+    # 脚本把 reason 原样打在上面，由人读；能机判的只有「非空」（进 verdict）。
+    _dump("  ↳ 判读口径",
+          "须写明「约束已全部满足 / 为什么不需要降级」；只写「已找到方案」不算。"
+          "顺带声明：真降级用例是 tests/test_agent_schedule.py::AGENT-S-06，不在本脚本内。")
 
     ts_ok = _check_timestamps(data.trace)
 
-    verdict = all([not outcome.degraded, space_kept, len(devices) == 1,
+    verdict = all([not outcome.degraded, space_kept, bool(devices),
                    bool(reason.strip()), ts_ok])
     _dump("=" * 72, f"总判定：{'✅ 通过' if verdict else '⛔ 未通过'}")
     return 0 if verdict else 1

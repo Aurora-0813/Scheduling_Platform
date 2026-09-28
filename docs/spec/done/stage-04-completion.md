@@ -10,7 +10,7 @@
 | 计划工时 | 2.0 人日 |
 | **实际工时** | 1.5 人日 |
 | 验收测试 | `AGENT-STAGE-04` |
-| **验收结论** | **有条件通过** —— ①③④ 已验；② 与 ⑤ 依赖尚未编写的阶段 7 用例，改由等价的手段验证（见第 2 节） |
+| **验收结论** | **通过** —— `AGENT-STAGE-04` 步骤 ①②③④⑤ 已于 2026-09-28 全部执行完毕，原始输出见第 3 节；曾挂账的 ②⑤ 与 `AGENT-U-01/02` 由阶段 7 用例补齐后一并过（31 passed），详见 §3.6 |
 
 ## 1. 本阶段目标与达成情况
 
@@ -37,7 +37,8 @@
       **service 层看到的仍是冻结签名**
 - [x] 工具参数校验失败返回业务错误而非抛异常 —— 证据：第 3 节 ① 的直接调用输出
 - [x] `query_devices` 过滤 `device_status != 1` 与 `available_count <= 0` —— 证据：第 3 节 ②
-- [ ] `AGENT-U-01` / `AGENT-U-02` 通过 —— **未完成**：用例文件属阶段 7，见第 5 节偏离 #1
+- [x] `AGENT-U-01` / `AGENT-U-02` 通过 —— 证据：§3.6 的 `pytest tests/test_agent_tools.py`
+      （31 passed）；用例文件属阶段 7 任务 7-3，已于阶段 7 补齐
 - [x] 全部 Tool 为 `async def` —— 证据：第 3 节 ③ 的 `grep`
 - [x] 无一直接使用 `AsyncSession` —— 证据：第 3 节 ③ 的 `grep`（`app/agent/` 下仅注释提及）
 - [x] 未注册任何路由 —— 证据：第 3 节 ③ 的 `grep`；`APIRouter` 只出现在 `app/api/` 下
@@ -46,7 +47,7 @@
 
 | 条目 | 状态 | 原因 | 处置计划 | 责任人 |
 | --- | --- | --- | --- | --- |
-| 验收步骤 ①⑤（跑 `test_agent_tools.py`） | 未完成 | 阶段 7 用例尚未编写 | 阶段 7 任务 7-3 补写 `AGENT-U-01/02/03`，断言口径沿用第 3 节 | 徐川 |
+| 验收步骤 ①⑤（跑 `test_agent_tools.py`） | **已闭环（2026-09-28）** | 阶段 7 用例尚未编写 | 阶段 7 任务 7-3 已补写 `AGENT-U-01/02/03`，断言口径沿用第 3 节；步骤 ⑤ 的注入检查见 §3.6 | 徐川 |
 
 ## 3. 验收测试执行记录
 
@@ -115,6 +116,52 @@ app/api/v1/router.py:29:  api_router = APIRouter(prefix="/api/v1")
 ```
 
 **结论**：三条禁令均未破。步骤 ④「检查是否注册了路由」由此通过。
+
+### ⑥ 2026-09-28 收口复核：五项检查一次性重跑
+
+阶段 7 的用例写好之后，本节把 `AGENT-STAGE-04` 的五项检查**从头重跑了一遍**，
+不再用「等价手段」。执行环境同上（conda `smart_dev` / 离线 / `--no-cov`）。
+
+```bash
+# ⑤-pytest：Tool 层用例
+pytest tests/test_agent_tools.py -p no:cacheprovider --no-cov
+
+# ③-禁令三条
+grep -rn "@router\|include_router\|APIRouter" app/agent/
+grep -rn "AsyncSession" app/agent/
+grep -c "^async def " app/agent/tools/*.py
+```
+
+```text
+31 passed in 12.49s
+
+@router / APIRouter      → 无任何匹配（退出码 1）
+AsyncSession             → 3 处，全部是**文档字符串/注释**，无一行代码引用：
+  tools/lock_resources.py:14   （解释「正因为不该用，所以这里没有事务代码」）
+  tools/_common.py:3           （纯函数，不碰库）
+  tools/__init__.py:6          （禁令原文）
+  ——另有 3 个 .pyc 命中，是上面三段注释的编译产物，不是新引用
+async def 计数（每文件）: query_spaces=1  query_devices=1  lock_resources=1
+                          generate_notification=1  submit_plan=1  （_common/__init__=0）
+
+注入检查（4 条构造数据 → 只留健康样本）：
+  id=901 deviceStatus=2 availableCount=1  注入-损坏    → 被滤（status）
+  id=902 deviceStatus=1 availableCount=0  注入-零库存  → 被滤（库存）
+  id=903 deviceStatus=2 availableCount=0  注入-又坏又空 → 被滤（两道都中）
+  id=904 deviceStatus=1 availableCount=2  注入-健康    → ✅ 唯一存活
+  → ok=True count=1 ids=[904]；service 只被调 1 次（过滤确实在 Tool 层）
+负控（只喂 901/902，该类型一台都不可借）：
+  → ok=False；reason=「『音响』共 2 台，但当前**没有一台可借用**（损坏或库存为 0）。
+     建议改用替代设备类型，或与用户确认是否接受替代。」
+```
+
+**为什么要注入**：种子数据里 id=13 / id=15 本来就带坏值，只看「结果里没有它们」
+分不清是「Tool 真在滤」还是「数据本来就没有」。注入之后 4 条走同一条路径，
+留下的那条是唯一健康样本（id=904），过滤生效才解释得通。
+负控再证一遍**两道过滤各自独立**（只剩坏样本时给的是专属话术，而不是静默返回空列表——
+后者会让模型以为「这个类型不存在」，转而去推荐别的设备类型）。
+
+五项结论：**① 通过（31 passed）② 通过 ③ 通过（三条禁令均未破）④ 通过 ⑤ 通过**。
 
 ## 4. 交付物清单
 
