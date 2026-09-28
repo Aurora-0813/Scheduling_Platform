@@ -3,6 +3,7 @@
 说明：`ws.js` ↔ `/ws/notify` 的真实长连接验证按 docs/模块3-test.md §7.2 用脚本手工执行；
 此处对 `ConnectionManager` 做单元级覆盖，并顺带验证「业务动作 → 推送」链路。
 """
+
 import pytest
 
 from app.services.message_service import create_message
@@ -71,11 +72,16 @@ async def test_tc21_offline_user_push_is_silent():
 async def test_offline_user_message_still_persisted(client, db_session):
     """TC-21 推送失败不影响落库：用户离线时消息仍写入，可通过列表补看。"""
     msg = await create_message(
-        db_session, MOCK_USER_ID, "预约已确认", "您的预约 #1 已确认",
-        notify_type=1, order_id=None, background_tasks=None,
+        db_session,
+        MOCK_USER_ID,
+        "预约已确认",
+        "您的预约 #1 已确认",
+        notify_type=1,
+        order_id=None,
+        background_tasks=None,
     )
     assert msg.id is not None
-    assert msg.create_time is not None      # server_default 已回填
+    assert msg.create_time is not None  # server_default 已回填
 
     msgs = (await client.get("/api/v1/messages")).json()["data"]
     assert [m["messageId"] for m in msgs] == [msg.id]
@@ -87,7 +93,7 @@ async def test_tc22_broken_connection_is_evicted():
     await manager.connect(MOCK_USER_ID, broken)
     await manager.connect(MOCK_USER_ID, healthy)
 
-    await manager.send_to_user(MOCK_USER_ID, {"n": 1})   # 不应抛异常
+    await manager.send_to_user(MOCK_USER_ID, {"n": 1})  # 不应抛异常
 
     assert healthy.sent == [{"n": 1}]
     assert broken not in manager._connections.get(MOCK_USER_ID, set())
@@ -121,9 +127,16 @@ async def test_confirm_pushes_realtime_notification(client):
     ws = FakeWebSocket()
     await manager.connect(MOCK_USER_ID, ws)
 
-    oid = (await client.post("/api/v1/orders/create", json={
-        "spaceId": 1, "deviceIds": [], "startTime": time_str(1, 9),
-        "endTime": time_str(1, 10)})
+    oid = (
+        await client.post(
+            "/api/v1/orders/create",
+            json={
+                "spaceId": 1,
+                "deviceIds": [],
+                "startTime": time_str(1, 9),
+                "endTime": time_str(1, 10),
+            },
+        )
     ).json()["data"]["orderId"]
 
     r = await client.put(f"/api/v1/orders/{oid}/confirm")
@@ -143,13 +156,20 @@ async def test_cancel_pushes_realtime_notification(client):
     ws = FakeWebSocket()
     await manager.connect(MOCK_USER_ID, ws)
 
-    oid = (await client.post("/api/v1/orders/create", json={
-        "spaceId": 1, "deviceIds": [], "startTime": time_str(1, 9),
-        "endTime": time_str(1, 10)})
+    oid = (
+        await client.post(
+            "/api/v1/orders/create",
+            json={
+                "spaceId": 1,
+                "deviceIds": [],
+                "startTime": time_str(1, 9),
+                "endTime": time_str(1, 10),
+            },
+        )
     ).json()["data"]["orderId"]
 
     await client.put(f"/api/v1/orders/{oid}/cancel")
 
     assert len(ws.sent) == 1
     assert ws.sent[0]["title"] == "预约已取消"
-    assert ws.sent[0]["notifyType"] == 2   # 变更致歉（§6.3）
+    assert ws.sent[0]["notifyType"] == 2  # 变更致歉（§6.3）

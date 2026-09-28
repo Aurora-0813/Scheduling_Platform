@@ -3,6 +3,7 @@
 本模块的配置必须与团队公用 `backend/` 保持一致（团队连同一个云库）。
 这里把「对齐」固化为断言：端口、驱动、主键类型一被改动就会失败。
 """
+
 import pathlib
 
 import pytest
@@ -26,7 +27,7 @@ def test_config_defaults_align_with_public_backend():
     fields = Settings.model_fields
 
     assert fields["DB_HOST"].default == "127.0.0.1"
-    assert fields["DB_PORT"].default == 3308      # SSH 隧道本地端口（-> 服务器 3307）
+    assert fields["DB_PORT"].default == 3308  # SSH 隧道本地端口（-> 服务器 3307）
     assert fields["DB_NAME"].default == "smart_scheduler_dev"
     assert fields["DB_USER"].default == "smart_dev"
 
@@ -47,8 +48,12 @@ def test_connection_string_is_async_only():
     那是 §3.4 明令禁止的同步驱动。
     """
     s = Settings(
-        DATABASE_URL="", DB_HOST="h", DB_PORT=3308,
-        DB_USER="u", DB_PASSWORD="p", DB_NAME="d",
+        DATABASE_URL="",
+        DB_HOST="h",
+        DB_PORT=3308,
+        DB_USER="u",
+        DB_PASSWORD="p",
+        DB_NAME="d",
     )
     assert s.database_url == "mysql+asyncmy://u:p@h:3308/d?charset=utf8mb4"
     assert not hasattr(s, "sync_database_url")
@@ -101,9 +106,7 @@ def test_foreign_keys_align_with_spec():
     assert {c.name for c in order.columns if c.foreign_keys} == {"space_id", "user_id"}
 
     message = Base.metadata.tables["notify_message"]
-    assert {c.name for c in message.columns if c.foreign_keys} == {
-        "receiver_id", "order_id"
-    }
+    assert {c.name for c in message.columns if c.foreign_keys} == {"receiver_id", "order_id"}
 
 
 #: §6.6 索引规范 → 该索引应声明在哪张表上。
@@ -154,9 +157,7 @@ def test_index_names_align_with_spec_6_6():
     在复验之前，不要把这行绿当成「云库已有索引」的证据。
     """
     declared = {
-        i.name: table.name
-        for table in Base.metadata.tables.values()
-        for i in table.indexes
+        i.name: table.name for table in Base.metadata.tables.values() for i in table.indexes
     }
     allowed = {**_SPEC_6_6_INDEXES, **_EXTRA_INDEXES}
     # 不多：规范之外、又没登记的 idx_* 一律拒绝（多出来的索引没人负责维护，
@@ -176,9 +177,7 @@ def test_index_names_align_with_spec_6_6():
 def test_username_unique_constraint_aligns_with_spec_6_6():
     """§6.6 的 `uk_username` 由列级 UNIQUE 约束表达（登录查询靠它）。"""
     sys_user = Base.metadata.tables["sys_user"]
-    unique_cols = {
-        c.name for c in sys_user.columns if c.unique
-    } | {
+    unique_cols = {c.name for c in sys_user.columns if c.unique} | {
         tuple(sorted(c.name for c in con.columns))
         for con in sys_user.constraints
         if con.__class__.__name__ == "UniqueConstraint"

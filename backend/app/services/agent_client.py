@@ -10,6 +10,7 @@
   避免与既有订单冲突（贴合「Agent 只调 Tool 查真实数据」§9.3）。
 - 本模块不直连 LangChain，统一经此入口 HTTP 调用队友 Agent 服务。
 """
+
 from datetime import datetime, timedelta
 
 from ..core.config import AGENT_URL
@@ -29,7 +30,10 @@ def _post_json(url: str, payload: dict, timeout: float = 5.0) -> dict | None:
         r = httpx.post(url, json=payload, timeout=timeout)
         r.raise_for_status()
         return r.json()
-    except Exception:
+    except Exception:  # noqa: BLE001 - 见下
+        # 这是**跨进程调用外部 Agent 服务**的边界：超时、连接被拒、非 2xx、响应不是 JSON
+        # 都属于同一个语义 ——「Agent 不可用」。调用方据此回落到内置 mock 调度器（§4.1），
+        # 枚举具体异常类型只会漏掉新出现的那几种，把 500 冒到用户面前。
         return None
 
 
@@ -54,12 +58,8 @@ def _fmt(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _mock_schedule(
-    requirement: str, occupied: list, space_name: str | None = None
-) -> dict:
-    base = (datetime.now() + timedelta(days=1)).replace(
-        hour=9, minute=0, second=0, microsecond=0
-    )
+def _mock_schedule(requirement: str, occupied: list, space_name: str | None = None) -> dict:
+    base = (datetime.now() + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
     start1 = _next_free(base, occupied)
     end1 = start1 + timedelta(hours=1)
     start2 = _next_free(end1, occupied)
@@ -137,9 +137,7 @@ def _mock_schedule(
     }
 
 
-def schedule(
-    requirement: str, occupied: list | None = None, space_name: str | None = None
-) -> dict:
+def schedule(requirement: str, occupied: list | None = None, space_name: str | None = None) -> dict:
     """提交需求，返回 {plan, backupPlan, trace, needConfirm}（团队冻结契约 §5.3 模块4）。
 
     occupied: [(start_time, end_time), ...] 已占用时段，用于 mock 避让。

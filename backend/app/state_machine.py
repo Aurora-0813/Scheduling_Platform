@@ -7,25 +7,25 @@
         │                │
         └──取消──▶ 3已取消 ◀──取消──┘
 """
+
 from enum import IntEnum
-from typing import Dict, Set
 
 from .core.exceptions import OrderStatusConflictError
 
 
 class OrderStatus(IntEnum):
-    PENDING = 1      # 待确认
-    CONFIRMED = 2    # 已确认
-    CANCELLED = 3    # 已取消
-    COMPLETED = 4    # 已完成
+    PENDING = 1  # 待确认
+    CONFIRMED = 2  # 已确认
+    CANCELLED = 3  # 已取消
+    COMPLETED = 4  # 已完成
 
 
 # 合法流转表：from -> {to ...}
-TRANSITIONS: Dict[int, Set[int]] = {
+TRANSITIONS: dict[int, set[int]] = {
     OrderStatus.PENDING: {OrderStatus.CONFIRMED, OrderStatus.CANCELLED},
     OrderStatus.CONFIRMED: {OrderStatus.COMPLETED, OrderStatus.CANCELLED},
-    OrderStatus.COMPLETED: set(),   # 终态
-    OrderStatus.CANCELLED: set(),   # 终态
+    OrderStatus.COMPLETED: set(),  # 终态
+    OrderStatus.CANCELLED: set(),  # 终态
 }
 
 

@@ -3,6 +3,7 @@
 覆盖对象：兼容用的旧路径、状态机不变量、统一异常兜底、身份兜底、连接串派生。
 这些分支平时不被主流程走到，但正是线上出问题时唯一生效的代码。
 """
+
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -24,10 +25,16 @@ UID = MOCK_USER_ID
 
 async def _create(client, space_id=1, days=1, hour=9, user_id=None):
     """建一条预约，返回 orderId。`user_id` 给定时以该用户的真实 JWT 发起。"""
-    r = await client.post("/api/v1/orders/create", json={
-        "spaceId": space_id, "deviceIds": [],
-        "startTime": time_str(days, hour), "endTime": time_str(days, hour + 1),
-    }, headers=None if user_id is None else auth_headers(user_id))
+    r = await client.post(
+        "/api/v1/orders/create",
+        json={
+            "spaceId": space_id,
+            "deviceIds": [],
+            "startTime": time_str(days, hour),
+            "endTime": time_str(days, hour + 1),
+        },
+        headers=None if user_id is None else auth_headers(user_id),
+    )
     assert r.status_code == 200, r.text
     return r.json()["data"]["orderId"]
 
@@ -41,11 +48,16 @@ async def test_legacy_user_orders_endpoint_is_scoped(client, db_session):
     mine_id = await _create(client)
 
     # 直插一条归属他人的订单（接口无法造出他人数据，故走会话）
-    db_session.add(ReserveOrder(
-        user_id=OTHER_USER_ID, space_id=2, device_ids=[],
-        start_time=parse_time(time_str(2, 14)), end_time=parse_time(time_str(2, 15)),
-        order_status=OrderStatus.PENDING.value,
-    ))
+    db_session.add(
+        ReserveOrder(
+            user_id=OTHER_USER_ID,
+            space_id=2,
+            device_ids=[],
+            start_time=parse_time(time_str(2, 14)),
+            end_time=parse_time(time_str(2, 15)),
+            order_status=OrderStatus.PENDING.value,
+        )
+    )
     await db_session.commit()
 
     # 本人：仍然可用（这是收紧后唯一保留的用法）
@@ -69,9 +81,7 @@ async def test_legacy_user_orders_endpoint_is_scoped(client, db_session):
 async def test_legacy_user_orders_endpoint_accepts_matching_path(client):
     """路径参数与**令牌身份**一致时照常返回 —— 收紧挡的是跨用户，不是旧客户端。"""
     oid = await _create(client)
-    r = await client.get(
-        f"/api/v1/orders/user/{UID}", headers=auth_headers(UID)
-    )
+    r = await client.get(f"/api/v1/orders/user/{UID}", headers=auth_headers(UID))
     assert r.status_code == 200
     assert [o["orderId"] for o in r.json()["data"]] == [oid]
 
@@ -143,9 +153,7 @@ async def test_cannot_confirm_others_order(client, db_session):
     order = await db_session.get(ReserveOrder, oid)
     assert order.order_status == OrderStatus.PENDING.value, "状态被越权改动了"
     # 通知不能发给原主人（以他人身份查未读数）
-    unread = await client.get(
-        "/api/v1/messages/unread", headers=auth_headers(OTHER_USER_ID)
-    )
+    unread = await client.get("/api/v1/messages/unread", headers=auth_headers(OTHER_USER_ID))
     assert unread.json()["data"]["count"] == 0
 
 
@@ -196,15 +204,18 @@ async def test_missing_token_is_rejected_not_defaulted(client):
 
     transport = httpx.ASGITransport(app=app)
     body = {
-        "spaceId": 1, "deviceIds": [],
-        "startTime": time_str(1, 9), "endTime": time_str(1, 10),
-        "userId": OTHER_USER_ID,          # 请求体里的 userId 也不作数
+        "spaceId": 1,
+        "deviceIds": [],
+        "startTime": time_str(1, 9),
+        "endTime": time_str(1, 10),
+        "userId": OTHER_USER_ID,  # 请求体里的 userId 也不作数
     }
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as bare:
         r = await bare.post("/api/v1/orders/create", json=body)
         stale = await bare.post(
-            "/api/v1/orders/create", json=body,
-            headers={"X-User-Id": str(OTHER_USER_ID)},   # 旧 mock 的身份来源
+            "/api/v1/orders/create",
+            json=body,
+            headers={"X-User-Id": str(OTHER_USER_ID)},  # 旧 mock 的身份来源
         )
 
     for resp in (r, stale):
@@ -220,12 +231,12 @@ def test_transition_rejects_illegal_and_raises():
     """绕过 can_transition 直接流转必须抛错——这是防非法写入的最后一道闸。"""
 
     class _Order:
-        order_status = OrderStatus.CANCELLED.value   # 终态
+        order_status = OrderStatus.CANCELLED.value  # 终态
 
     order = _Order()
     with pytest.raises(IllegalTransitionError):
         transition(order, OrderStatus.CONFIRMED)
-    assert order.order_status == OrderStatus.CANCELLED.value   # 未被改写
+    assert order.order_status == OrderStatus.CANCELLED.value  # 未被改写
 
     order.order_status = OrderStatus.PENDING.value
     transition(order, OrderStatus.CONFIRMED)
@@ -249,8 +260,9 @@ def _throwing_app(exc: Exception) -> FastAPI:
 
 async def test_unhandled_exception_becomes_500_envelope():
     """未捕获异常 → 500 + 统一响应体（5 位业务码），且不泄漏堆栈。"""
-    transport = httpx.ASGITransport(app=_throwing_app(RuntimeError("内部细节不应外泄")),
-                                    raise_app_exceptions=False)
+    transport = httpx.ASGITransport(
+        app=_throwing_app(RuntimeError("内部细节不应外泄")), raise_app_exceptions=False
+    )
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
         r = await c.get("/boom")
 
@@ -272,7 +284,8 @@ async def test_illegal_transition_becomes_409_envelope():
     """
     transport = httpx.ASGITransport(
         app=_throwing_app(IllegalTransitionError("非法状态流转: 3 -> 2")),
-        raise_app_exceptions=False)
+        raise_app_exceptions=False,
+    )
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
         r = await c.get("/boom")
 

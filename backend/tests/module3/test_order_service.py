@@ -11,6 +11,7 @@
 （对方模块的 Tool 直接依赖），参数名、顺序、关键字限定的任何变动都会让那个模块
 在运行时静默错位，而不是报错。
 """
+
 import asyncio
 from datetime import time
 from inspect import Parameter, signature
@@ -121,7 +122,9 @@ def test_frozen_signature_is_keyword_only():
     required = {"user_id", "space_id", "start_time", "end_time"}
     for p in params:
         assert p.annotation is not Parameter.empty, f"{p.name} 缺类型标注"
-        assert (p.default is Parameter.empty) is (p.name in required), f"{p.name} 默认值不符合冻结表"
+        assert (p.default is Parameter.empty) is (p.name in required), (
+            f"{p.name} 默认值不符合冻结表"
+        )
 
 
 async def test_result_keys_identical_on_success_and_failure():
@@ -161,8 +164,12 @@ async def test_create_success_persists_and_returns_order_id():
 async def test_order_status_defaults_to_pending_and_can_be_overridden():
     """order_status 默认 1（待确认）；调用方可显式传 2（Agent 的 needConfirm 为 false 时）。"""
     default = await _call()
-    explicit = await _call(space_id=2, start_time=time_str(2, 9), end_time=time_str(2, 10),
-                           order_status=OrderStatus.CONFIRMED.value)
+    explicit = await _call(
+        space_id=2,
+        start_time=time_str(2, 9),
+        end_time=time_str(2, 10),
+        order_status=OrderStatus.CONFIRMED.value,
+    )
 
     async with AsyncSessionLocal() as db:
         assert (await db.get(ReserveOrder, default["orderId"])).order_status == 1
@@ -229,7 +236,7 @@ async def test_device_time_overlap_is_rejected():
     情形见下面 AGENT-C-01/02 那一组。
     """
     await _call(space_id=1, device_ids=[1])
-    r = await _call(space_id=2, device_ids=[1])   # 换场地，但设备仍是 1
+    r = await _call(space_id=2, device_ids=[1])  # 换场地，但设备仍是 1
 
     assert r["ok"] is False
     assert r["conflictType"] == "device_conflict"
@@ -279,7 +286,7 @@ async def test_device_without_stock_rejected():
     assert r["conflictDetail"]["conflicts"] == [{"deviceId": did, "reason": "exhausted"}]
 
     async with AsyncSessionLocal() as db:
-        assert (await db.get(DeviceResource, did)).available_count == 0   # 未被扣减
+        assert (await db.get(DeviceResource, did)).available_count == 0  # 未被扣减
 
 
 # ------------------------------------------------ AGENT-C-01/02：设备容量（用时推导）
@@ -299,22 +306,20 @@ async def test_capacity_allows_up_to_available_count():
     did = await _add_device(total_count=2, available_count=2, device_name="双份投影仪")
     third_space = await _add_space()
 
-    first = await _call(space_id=1, device_ids=[did])                    # 判据 1
-    second = await _call(space_id=2, device_ids=[did])                   # 判据 2
+    first = await _call(space_id=1, device_ids=[did])  # 判据 1
+    second = await _call(space_id=2, device_ids=[did])  # 判据 2
 
     assert first["ok"] is True
     assert second["ok"] is True, "cap=2 时第 2 单必须成功（旧实现会误拒）"
 
-    third = await _call(space_id=third_space, device_ids=[did])          # 判据 3
+    third = await _call(space_id=third_space, device_ids=[did])  # 判据 3
     assert third["ok"] is False
     assert third["conflictType"] == "device_conflict"
 
     # 形状按 `docs/模块3-api.md` 里 `create_order` 的冻结契约：一单一条，列出占着这台
     # 设备的那些单（不是「一台一条」的计数条目 —— 改形状要走 §5.3）
     conflicts = third["conflictDetail"]["conflicts"]
-    assert sorted(c["orderId"] for c in conflicts) == sorted(
-        [first["orderId"], second["orderId"]]
-    )
+    assert sorted(c["orderId"] for c in conflicts) == sorted([first["orderId"], second["orderId"]])
     assert all(c["deviceIds"] == [did] for c in conflicts)
 
 
@@ -333,12 +338,12 @@ async def test_cancel_frees_a_slot_without_any_refund_code():
     await _call(space_id=2, device_ids=[did])
     assert (await _call(space_id=third_space, device_ids=[did]))["ok"] is False
 
-    async with AsyncSessionLocal() as db:                                # 判据 4
+    async with AsyncSessionLocal() as db:  # 判据 4
         order = await db.get(ReserveOrder, first["orderId"])
         order.order_status = OrderStatus.CANCELLED.value
         await db.commit()
 
-    after = await _call(space_id=third_space, device_ids=[did])          # 判据 5
+    after = await _call(space_id=third_space, device_ids=[did])  # 判据 5
     assert after["ok"] is True, "取消后名额必须回落"
 
 
@@ -407,7 +412,7 @@ async def test_time_check_runs_before_device_check():
     """
     await _call(space_id=1, device_ids=[1])
 
-    r = await _call(space_id=1, device_ids=[999])   # 同场地同时段 + 设备不存在
+    r = await _call(space_id=1, device_ids=[999])  # 同场地同时段 + 设备不存在
     assert r["conflictType"] == "time_conflict"
 
 
@@ -516,12 +521,12 @@ async def test_duplicate_device_ids_rejected():
 
 async def test_failed_creation_leaves_nothing_behind():
     """§5.5：校验失败必须 ROLLBACK —— 失败的几次调用不能在库里留下任何行。"""
-    await _call()                      # 1 条
+    await _call()  # 1 条
     before = await _count_orders()
 
-    await _call()                                  # 时间冲突
-    await _call(space_id=2, device_ids=[999])      # 设备不存在
-    await _call(space_id=999)                      # 场地不存在
+    await _call()  # 时间冲突
+    await _call(space_id=2, device_ids=[999])  # 设备不存在
+    await _call(space_id=999)  # 场地不存在
 
     assert await _count_orders() == before
 
@@ -536,7 +541,7 @@ def test_lock_is_emitted_on_mysql_and_compiled_away_on_sqlite():
     """
     from sqlalchemy.dialects import mysql, sqlite
 
-    stmt = order_service._lock_space_stmt(1)   # noqa: SLF001 - 冻结期的机械护栏
+    stmt = order_service._lock_space_stmt(1)
 
     mysql_sql = str(stmt.compile(dialect=mysql.dialect()))
     sqlite_sql = str(stmt.compile(dialect=sqlite.dialect()))
@@ -559,7 +564,7 @@ def test_device_lock_is_emitted_on_mysql_and_compiled_away_on_sqlite():
     """
     from sqlalchemy.dialects import mysql, sqlite
 
-    stmt = order_service._lock_devices_stmt([2, 1])   # noqa: SLF001 - 冻结期的机械护栏
+    stmt = order_service._lock_devices_stmt([2, 1])
 
     mysql_sql = str(stmt.compile(dialect=mysql.dialect()))
     sqlite_sql = str(stmt.compile(dialect=sqlite.dialect()))
@@ -645,9 +650,7 @@ async def test_concurrent_device_creation_does_not_oversell():
     刻意**跨三个场地**：同场地还有场地行锁兜着，串不到设备这一维；设备是全局资源，
     只有跨场地才会暴露「设备维度没有任何串行化」。
     """
-    device_id = await _add_device(
-        device_name="共享投影仪", total_count=2, available_count=2
-    )
+    device_id = await _add_device(device_name="共享投影仪", total_count=2, available_count=2)
     spaces = [await _add_space(space_name=f"并发场地{i}") for i in range(3)]
 
     async def _one(space_id: int):
@@ -682,9 +685,7 @@ async def _call_trace(**overrides):
     kwargs = {
         "order_id": 1,
         "user_id": MOCK_USER_ID,
-        "agent_trace": [
-            {"step": 1, "result": "解析需求", "timestamp": "2026-01-01 09:00:00"}
-        ],
+        "agent_trace": [{"step": 1, "result": "解析需求", "timestamp": "2026-01-01 09:00:00"}],
     }
     kwargs.update(overrides)
     return await order_service.update_agent_trace(**kwargs)

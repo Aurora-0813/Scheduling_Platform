@@ -1,4 +1,5 @@
 """Agent 联动与语音/图像占位入口（docs/模块3-test.md TC-23 ~ TC-28）。"""
+
 from app.core.error_codes import ErrorCode
 
 from .helpers import MOCK_USER_ID, time_str
@@ -20,17 +21,21 @@ async def test_tc23_schedule_returns_structured_plan(client):
 
     assert d["needConfirm"] is True
     # plan / backupPlan 的冻结字段集
-    assert set(d["plan"]) >= {
-        "spaceId", "spaceName", "deviceIds", "startTime", "endTime", "reason"
-    }
-    assert d["plan"]["spaceName"]                      # 场地名不能为空（前端直接渲染）
+    assert set(d["plan"]) >= {"spaceId", "spaceName", "deviceIds", "startTime", "endTime", "reason"}
+    assert d["plan"]["spaceName"]  # 场地名不能为空（前端直接渲染）
     assert d["backupPlan"]["startTime"]
 
     # §5.3：trace 必须是**对象数组**，元素为 TraceStep
     assert isinstance(d["trace"], list) and d["trace"]
     step = d["trace"][0]
     assert set(step) >= {
-        "step", "result", "timestamp", "thought", "action", "actionInput", "observation"
+        "step",
+        "result",
+        "timestamp",
+        "thought",
+        "action",
+        "actionInput",
+        "observation",
     }
     assert step["result"].startswith("解析需求")
 
@@ -64,34 +69,40 @@ async def test_mock_schedule_avoids_occupied_slots(client):
     occupied_end = time_str(1, 11)
     await client.post(
         "/api/v1/orders/create",
-        json={"spaceId": 1, "deviceIds": [], "startTime": occupied_start,
-              "endTime": occupied_end},
+        json={"spaceId": 1, "deviceIds": [], "startTime": occupied_start, "endTime": occupied_end},
     )
 
-    plan = (await client.post("/api/v1/agent/schedule",
-                              json={"text": "明天上午要个会议室"})).json()["data"]["plan"]
+    plan = (
+        await client.post("/api/v1/agent/schedule", json={"text": "明天上午要个会议室"})
+    ).json()["data"]["plan"]
     # 主方案不应落在已占用时段内
     assert not (plan["startTime"] < occupied_end and plan["endTime"] > occupied_start)
 
 
 async def test_tc25_confirm_plan_persists_order(client):
     """TC-25 方案确认落库：前端取 plan 调 orders/create。"""
-    plan = (await client.post("/api/v1/agent/schedule",
-                              json={"text": "明天上午要个会议室"})).json()["data"]["plan"]
+    plan = (
+        await client.post("/api/v1/agent/schedule", json={"text": "明天上午要个会议室"})
+    ).json()["data"]["plan"]
 
-    r = await client.post("/api/v1/orders/create", json={
-        "spaceId": plan["spaceId"],
-        "deviceIds": plan["deviceIds"],
-        "startTime": plan["startTime"],
-        "endTime": plan["endTime"],
-        "agentRequest": "明天上午要个会议室",
-        "agentTrace": [
-            {"step": 1, "result": "解析需求：明天上午要个会议室",
-             "timestamp": "2026-01-01 09:00:00"},
-            {"step": 2, "result": "生成主方案与备方案",
-             "timestamp": "2026-01-01 09:00:03"},
-        ],
-    })
+    r = await client.post(
+        "/api/v1/orders/create",
+        json={
+            "spaceId": plan["spaceId"],
+            "deviceIds": plan["deviceIds"],
+            "startTime": plan["startTime"],
+            "endTime": plan["endTime"],
+            "agentRequest": "明天上午要个会议室",
+            "agentTrace": [
+                {
+                    "step": 1,
+                    "result": "解析需求：明天上午要个会议室",
+                    "timestamp": "2026-01-01 09:00:00",
+                },
+                {"step": 2, "result": "生成主方案与备方案", "timestamp": "2026-01-01 09:00:03"},
+            ],
+        },
+    )
     assert r.status_code == 200
     assert r.json()["data"]["orderStatus"] == 1
 
@@ -102,31 +113,59 @@ async def test_tc26_agent_request_and_trace_persisted(client):
     agentTrace 的元素是 TraceStep 对象（团队冻结契约），落库为 JSON 数组、原样取回。
     """
     trace = [
-        {"step": 1, "result": "解析需求：40人展厅带双投影",
-         "timestamp": "2026-01-01 09:00:00", "thought": "先确认人数与预算约束",
-         "action": None, "actionInput": None, "observation": None},
-        {"step": 2, "result": "查询可用场地与设备资源",
-         "timestamp": "2026-01-01 09:00:03", "thought": "按 40 人容量检索",
-         "action": "query_spaces",
-         "actionInput": {"capacity": 40}, "observation": {"spaces": []}},
-        {"step": 3, "result": "检测时段冲突，进行方案权衡",
-         "timestamp": "2026-01-01 09:00:06", "thought": None,
-         "action": "check_conflict", "actionInput": None, "observation": None},
-        {"step": 4, "result": "生成主方案与备方案",
-         "timestamp": "2026-01-01 09:00:09", "thought": None,
-         "action": None, "actionInput": None, "observation": None},
+        {
+            "step": 1,
+            "result": "解析需求：40人展厅带双投影",
+            "timestamp": "2026-01-01 09:00:00",
+            "thought": "先确认人数与预算约束",
+            "action": None,
+            "actionInput": None,
+            "observation": None,
+        },
+        {
+            "step": 2,
+            "result": "查询可用场地与设备资源",
+            "timestamp": "2026-01-01 09:00:03",
+            "thought": "按 40 人容量检索",
+            "action": "query_spaces",
+            "actionInput": {"capacity": 40},
+            "observation": {"spaces": []},
+        },
+        {
+            "step": 3,
+            "result": "检测时段冲突，进行方案权衡",
+            "timestamp": "2026-01-01 09:00:06",
+            "thought": None,
+            "action": "check_conflict",
+            "actionInput": None,
+            "observation": None,
+        },
+        {
+            "step": 4,
+            "result": "生成主方案与备方案",
+            "timestamp": "2026-01-01 09:00:09",
+            "thought": None,
+            "action": None,
+            "actionInput": None,
+            "observation": None,
+        },
     ]
-    r = await client.post("/api/v1/orders/create", json={
-        "spaceId": 1, "deviceIds": [1],
-        "startTime": time_str(1, 9), "endTime": time_str(1, 10),
-        "agentRequest": "40人展厅带双投影，预算1000内",
-        "agentTrace": trace,
-    })
+    r = await client.post(
+        "/api/v1/orders/create",
+        json={
+            "spaceId": 1,
+            "deviceIds": [1],
+            "startTime": time_str(1, 9),
+            "endTime": time_str(1, 10),
+            "agentRequest": "40人展厅带双投影，预算1000内",
+            "agentTrace": trace,
+        },
+    )
     oid = r.json()["data"]["orderId"]
 
     d = (await client.get(f"/api/v1/orders/{oid}")).json()["data"]
     assert d["agentRequest"] == "40人展厅带双投影，预算1000内"
-    assert d["agentTrace"] == trace          # 数组原样落库
+    assert d["agentTrace"] == trace  # 数组原样落库
     assert len(d["agentTrace"]) == 4
     # 落库后仍是对象数组，前端可按字段取
     assert d["agentTrace"][0]["result"].startswith("解析需求")
@@ -159,11 +198,17 @@ async def test_agent_flow_end_to_end(client):
     body = r.json()["data"]
     plan, trace = body["plan"], body["trace"]
 
-    created = await client.post("/api/v1/orders/create", json={
-        "spaceId": plan["spaceId"], "deviceIds": plan["deviceIds"],
-        "startTime": plan["startTime"], "endTime": plan["endTime"],
-        "agentRequest": "周五下午要个40人展厅", "agentTrace": trace,
-    })
+    created = await client.post(
+        "/api/v1/orders/create",
+        json={
+            "spaceId": plan["spaceId"],
+            "deviceIds": plan["deviceIds"],
+            "startTime": plan["startTime"],
+            "endTime": plan["endTime"],
+            "agentRequest": "周五下午要个40人展厅",
+            "agentTrace": trace,
+        },
+    )
     assert created.status_code == 200
 
     oid = created.json()["data"]["orderId"]

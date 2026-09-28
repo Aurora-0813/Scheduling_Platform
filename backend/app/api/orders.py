@@ -11,6 +11,7 @@
   认证层只回答「你是谁」，回答不了「这单是不是你的」——只注入身份而不比对，
   等于任何人拿到别人的 orderId 就能读、能确认、能取消。越权一律 404，不泄露存在性。
 """
+
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -68,8 +69,8 @@ def _order_out(o: ReserveOrder) -> dict:
 #: `_STATUS_MESSAGES` 把 detail 覆盖成通用文案（`预约不存在` -> `接口或资源不存在`），
 #: 前端拿不到具体原因。
 _CONFLICT_ERRORS: dict[str, type[BizError]] = {
-    "invalid_param": ParamInvalidError,        # 400 / 40001
-    "time_conflict": ResourceConflictError,    # 409 / 40901
+    "invalid_param": ParamInvalidError,  # 400 / 40001
+    "time_conflict": ResourceConflictError,  # 409 / 40901
     "device_conflict": ResourceConflictError,  # 409 / 40901
 }
 
@@ -77,8 +78,8 @@ _CONFLICT_ERRORS: dict[str, type[BizError]] = {
 #: 业务码不同（40401 用户 / 40402 场地 / 40403 设备 / 40404 订单），
 #: 前端据此决定提示语与跳转，所以不能在路由层拍平成同一个 404。
 _NOT_FOUND_ERRORS: dict[str, type[BizError]] = {
-    "user": UserNotFoundError,      # 404 / 40401
-    "space": SpaceNotFoundError,    # 404 / 40402
+    "user": UserNotFoundError,  # 404 / 40401
+    "space": SpaceNotFoundError,  # 404 / 40402
     "device": DeviceNotFoundError,  # 404 / 40403
 }
 

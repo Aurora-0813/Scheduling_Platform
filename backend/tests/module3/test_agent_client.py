@@ -3,6 +3,7 @@
 `agent_client` 的设计是「配了 AGENT_URL 就优先走真实服务，不可用则降级 mock」，
 保证本模块能独立演示。这里把三条路径都钉住：成功透传、传输失败降级、HTTP 错误降级。
 """
+
 from datetime import datetime, timedelta
 
 import httpx
@@ -55,12 +56,16 @@ def test_post_json_returns_none_on_http_error(monkeypatch):
 def test_real_agent_url_takes_priority(monkeypatch):
     """配了 AGENT_URL 且服务可用时，原样透传远端结果（不叠加本地 mock）。"""
     remote = {
-        "plan": {"spaceId": 9, "spaceName": "远端展厅", "deviceIds": [3],
-                 "startTime": "2026-09-26 14:00:00",
-                 "endTime": "2026-09-26 15:00:00", "reason": "远端方案"},
+        "plan": {
+            "spaceId": 9,
+            "spaceName": "远端展厅",
+            "deviceIds": [3],
+            "startTime": "2026-09-26 14:00:00",
+            "endTime": "2026-09-26 15:00:00",
+            "reason": "远端方案",
+        },
         "backupPlan": {"spaceName": "远端备选"},
-        "trace": [{"step": 1, "result": "远端 Agent 思考",
-                   "timestamp": "2026-09-26 13:59:12"}],
+        "trace": [{"step": 1, "result": "远端 Agent 思考", "timestamp": "2026-09-26 13:59:12"}],
         "needConfirm": True,
     }
     monkeypatch.setattr(agent_client, "AGENT_URL", "http://agent.test/")
