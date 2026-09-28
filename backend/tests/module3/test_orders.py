@@ -1,7 +1,10 @@
 """预约创建 / 校验 / 状态机（docs/test.md TC-01 ~ TC-12）。"""
+from datetime import time
+
 import pytest
 
 from app.core.error_codes import ErrorCode
+from app.models import DeviceResource, SpaceResource
 
 from .helpers import MOCK_USER_ID, OTHER_USER_ID, auth_headers, time_str
 
@@ -18,6 +21,29 @@ async def _create(client, **overrides):
     r = await client.post("/api/v1/orders/create", json=body)
     data = r.json().get("data") or {}
     return r, data.get("orderId")
+
+
+async def _add_space(db, **overrides) -> int:
+    """加一个同时段开放的场地。
+
+    夹具只种了 2 个场地，而设备容量用例要在**同一时段的 3 个不同场地**下单 ——
+    第 3 步的时间冲突是按场地判的，同场地同时间根本走不到第 4 步的设备校验。
+    """
+    fields = {
+        "space_name": "备用场地",
+        "space_type": 1,
+        "capacity": 5,
+        "location": "9F",
+        "open_start_time": time(8, 0),
+        "open_end_time": time(22, 0),
+        "status": 1,
+    }
+    fields.update(overrides)
+    space = SpaceResource(**fields)
+    db.add(space)
+    await db.commit()
+    await db.refresh(space)
+    return space.id
 
 
 # ---------------------------------------------------------------- 创建与校验
@@ -197,6 +223,37 @@ async def test_cancelled_slot_can_be_reused(client):
 
     r, _ = await _create(client)  # 同场地同时段
     assert r.status_code == 200
+
+
+async def test_agent_c01_02_capacity_and_cancel_roundtrip(client, db_session):
+    """AGENT-C-01/02 判据 2~5 走真实 HTTP 全链路。
+
+    容量 2 的设备：同时段前两单都成功（判据 2）→ 第三单 `409` / `40901`（判据 3）
+    → `PUT /orders/{id}/cancel` 取消一单（判据 4）→ 第三单成功（判据 5）。
+
+    「名额回落」没有回补代码：`ACTIVE_ORDER_STATUSES` 只有 1/2，取消单离开该集合，
+    下一单算出来的占用自然少一。这条同时是**取消路由的回归位** —— 路由没注册
+    会在判据 4 直接 404，而不是静默通过。
+    """
+    device = await db_session.get(DeviceResource, 1)
+    device.total_count = device.available_count = 2
+    await db_session.commit()
+    third_space = await _add_space(db_session)
+
+    first, first_id = await _create(client, spaceId=1, deviceIds=[1])      # 判据 1、2
+    second, _ = await _create(client, spaceId=2, deviceIds=[1])
+    assert (first.status_code, second.status_code) == (200, 200), "cap=2 时前两单必须成功"
+
+    third, _ = await _create(client, spaceId=third_space, deviceIds=[1])   # 判据 3
+    assert third.status_code == 409
+    assert third.json()["code"] == ErrorCode.RESOURCE_CONFLICT
+
+    cancelled = await client.put(f"/api/v1/orders/{first_id}/cancel")      # 判据 4
+    assert cancelled.status_code == 200, "取消路由必须存在（404 = 路由没注册）"
+    assert cancelled.json()["data"]["orderStatus"] == 3
+
+    after, _ = await _create(client, spaceId=third_space, deviceIds=[1])   # 判据 5
+    assert after.status_code == 200, "取消后名额必须回落"
 
 
 # ---------------------------------------------------------------- 列表与详情

@@ -11,12 +11,13 @@
 （对方模块的 Tool 直接依赖），参数名、顺序、关键字限定的任何变动都会让那个模块
 在运行时静默错位，而不是报错。
 """
+from datetime import time
 from inspect import Parameter, signature
 
 from sqlalchemy import func, select
 
 from app.core.database import AsyncSessionLocal
-from app.models import DeviceResource, ReserveOrder
+from app.models import DeviceResource, ReserveOrder, SpaceResource
 from app.services import order_service
 from app.services.order_service import create_order
 from app.state_machine import OrderStatus
@@ -72,6 +73,31 @@ async def _add_device(**overrides) -> int:
         await db.commit()
         await db.refresh(device)
         return device.id
+
+
+async def _add_space(**overrides) -> int:
+    """插一个测试场地。
+
+    夹具只种了 2 个场地，而设备容量用例需要**同一时段、不同场地**的多张订单：
+    第 3 步的时间冲突是按场地判的，同场地同时间会在设备容量之前就拒掉，
+    测出来的就不是容量行为了。
+    """
+    fields = {
+        "space_name": "测试场地",
+        "space_type": 1,
+        "capacity": 5,
+        "location": "9F",
+        "open_start_time": time(8, 0),
+        "open_end_time": time(22, 0),
+        "status": 1,
+    }
+    fields.update(overrides)
+    async with AsyncSessionLocal() as db:
+        space = SpaceResource(**fields)
+        db.add(space)
+        await db.commit()
+        await db.refresh(space)
+        return space.id
 
 
 # ---------------------------------------------------------------- 冻结契约本身
@@ -195,13 +221,17 @@ async def test_cancelled_order_frees_the_slot():
 
 
 async def test_device_time_overlap_is_rejected():
-    """同一设备在重叠时段被另一订单占用 → device_conflict（换场地也一样）。"""
+    """同一设备在重叠时段被占满 → device_conflict（换场地也一样）。
+
+    夹具里的设备 `available_count=1`，所以「被占一次」就等于约满；容量 > 1 的
+    情形见下面 AGENT-C-01/02 那一组。
+    """
     await _call(space_id=1, device_ids=[1])
     r = await _call(space_id=2, device_ids=[1])   # 换场地，但设备仍是 1
 
     assert r["ok"] is False
     assert r["conflictType"] == "device_conflict"
-    assert r["reason"] == "该时段设备已被占用"
+    assert r["reason"] == "该时段设备已约满"
     assert r["conflictDetail"]["conflicts"][0]["deviceIds"] == [1]
 
 
@@ -235,8 +265,9 @@ async def test_device_with_abnormal_status_rejected():
 async def test_device_without_stock_rejected():
     """available_count 为 0 → 拒绝。
 
-    注意本函数**只读不写** available_count：§5.5 六步里没有扣减、也没有取消时回补，
-    单方面扣会造出第二份真值。扣减口径作为文档缺口另行上报。
+    0 在这里的含义是**可用上限为 0**（这台设备不参与预约），不是「恰好借光了」。
+    注意本函数**只读不写** available_count：它是上限不是余额，剩余量用时推导
+    （见 `_device_conflicts`），所以 §5.5 六步没有扣减、也没有第 7 步回补。
     """
     did = await _add_device(available_count=0, device_name="无库存音响")
     r = await _call(device_ids=[did])
@@ -247,6 +278,111 @@ async def test_device_without_stock_rejected():
 
     async with AsyncSessionLocal() as db:
         assert (await db.get(DeviceResource, did)).available_count == 0   # 未被扣减
+
+
+# ------------------------------------------------ AGENT-C-01/02：设备容量（用时推导）
+#
+# `device_resource.available_count` = **可用上限**，不是「还剩几台」。剩余量用时推导：
+#     该时段剩余量 = available_count − 该时段重叠单数
+# 因此容量的判据是计数比较（`重叠单数 >= available_count` 才拒），且**没有任何
+# 扣减/回补代码** —— 取消/完成让订单离开 `ACTIVE_ORDER_STATUSES`，名额自动回来。
+# 下面 7 条对应 `给徐川-available_count口径判据.md` §4 的判据表，供 AGENT-C-01/02 对齐。
+
+
+async def test_capacity_allows_up_to_available_count():
+    """判据 1~3：cap=2 时第 1、2 单成功，第 3 单才被拒（409 / 40901）。
+
+    判据 2 是这次改动的**核心**：旧实现「查到重叠就拒」会让第 2 单也失败。
+    """
+    did = await _add_device(total_count=2, available_count=2, device_name="双份投影仪")
+    third_space = await _add_space()
+
+    first = await _call(space_id=1, device_ids=[did])                    # 判据 1
+    second = await _call(space_id=2, device_ids=[did])                   # 判据 2
+
+    assert first["ok"] is True
+    assert second["ok"] is True, "cap=2 时第 2 单必须成功（旧实现会误拒）"
+
+    third = await _call(space_id=third_space, device_ids=[did])          # 判据 3
+    assert third["ok"] is False
+    assert third["conflictType"] == "device_conflict"
+
+    # 形状按 `docs/api.md` 里 `create_order` 的冻结契约：一单一条，列出占着这台
+    # 设备的那些单（不是「一台一条」的计数条目 —— 改形状要走 §5.3）
+    conflicts = third["conflictDetail"]["conflicts"]
+    assert sorted(c["orderId"] for c in conflicts) == sorted(
+        [first["orderId"], second["orderId"]]
+    )
+    assert all(c["deviceIds"] == [did] for c in conflicts)
+
+
+async def test_cancel_frees_a_slot_without_any_refund_code():
+    """判据 4、5：取消一单后名额自动回落，第 3 单可建。
+
+    「回落」不需要回补代码：`ACTIVE_ORDER_STATUSES` 只有 1/2（3已取消 / 4已完成
+    是终态），取消单离开该集合，下一单算出来的 used 自然少一。这正是「用时推导」
+    相对「写时扣减」的价值 —— 写时扣减必须在取消**和**完成两条路径上都记得回补，
+    漏一条就会单调递减到 0，而且不报错、不进日志。
+    """
+    did = await _add_device(total_count=2, available_count=2, device_name="双份投影仪")
+    third_space = await _add_space()
+
+    first = await _call(space_id=1, device_ids=[did])
+    await _call(space_id=2, device_ids=[did])
+    assert (await _call(space_id=third_space, device_ids=[did]))["ok"] is False
+
+    async with AsyncSessionLocal() as db:                                # 判据 4
+        order = await db.get(ReserveOrder, first["orderId"])
+        order.order_status = OrderStatus.CANCELLED.value
+        await db.commit()
+
+    after = await _call(space_id=third_space, device_ids=[did])          # 判据 5
+    assert after["ok"] is True, "取消后名额必须回落"
+
+
+async def test_adjacent_slot_does_not_consume_capacity():
+    """判据 6：首尾相接不算重叠（半开区间），名额不跨时段累计。"""
+    did = await _add_device(total_count=1, available_count=1, device_name="单份投影仪")
+    await _call(device_ids=[did], start_time=time_str(1, 9), end_time=time_str(1, 10))
+
+    r = await _call(device_ids=[did], start_time=time_str(1, 10), end_time=time_str(1, 11))
+    assert r["ok"] is True
+
+
+async def test_capacity_is_counted_per_device():
+    """判据 7：容量按设备各算各的 —— 设备 A 约满不影响设备 B。"""
+    a = await _add_device(total_count=1, available_count=1, device_name="设备A")
+    b = await _add_device(total_count=1, available_count=1, device_name="设备B")
+    await _call(space_id=1, device_ids=[a])
+
+    assert (await _call(space_id=2, device_ids=[b]))["ok"] is True
+
+
+async def test_error_detail_names_only_the_exhausted_device():
+    """一台约满、一台空闲时，detail 只报约满的那台（前端据此提示换哪台）。"""
+    a = await _add_device(total_count=1, available_count=1, device_name="设备A")
+    b = await _add_device(total_count=1, available_count=1, device_name="设备B")
+    first = await _call(space_id=1, device_ids=[a])
+
+    r = await _call(space_id=2, device_ids=[a, b])
+    assert r["conflictType"] == "device_conflict"
+
+    conflicts = r["conflictDetail"]["conflicts"]
+    assert [c["orderId"] for c in conflicts] == [first["orderId"]]
+    assert conflicts[0]["deviceIds"] == [a], "不得捎带只用到空闲设备 B 的单"
+
+
+async def test_successful_order_never_writes_available_count():
+    """下单一律不写 `available_count`：那列是上限，不是余额。
+
+    这条与 `test_device_without_stock_rejected` 一起把「不扣减」钉死 —— 哪天有人
+    往 `create_order` 里加了 `available_count -= 1`，两条会红，而串台要几周后才显形。
+    """
+    did = await _add_device(total_count=2, available_count=2, device_name="双份投影仪")
+    assert (await _call(device_ids=[did]))["ok"] is True
+
+    async with AsyncSessionLocal() as db:
+        assert (await db.get(DeviceResource, did)).available_count == 2
 
 
 def test_hit_device_ids_tolerates_dirty_json():

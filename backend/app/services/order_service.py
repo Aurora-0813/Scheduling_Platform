@@ -46,6 +46,11 @@ Agent 只能通过 Tool 调用 **`services/` 层的异步函数**访问业务数
                        或 {"conflicts": [{"deviceId", "reason": "status"|"exhausted"}]}
                        （设备本身不可用，与既有订单无关）
 
+> `device_conflict` 的**判据**在 2026-09-28 由「查到重叠就拒」改成**计数比较**
+> （`重叠单数 >= available_count` 才拒，见 `_device_conflicts`）。**形状与字段集
+> 未变** —— `docs/api.md` 里 `create_order` 的契约冻结了上面这张表，改形状要走
+> §5.3；变的只是列出来的单**都落在已约满的那几台设备上**。
+
 `not_found` 与 `device_conflict` 的分界是「东西不存在」还是「东西被占/不能用」——
 前者对 HTTP 是 404，后者是 409，归错类会把状态码整体带偏。
 
@@ -73,6 +78,8 @@ Tool 签名 `lock_resources(space_id, device_ids, start_time, end_time)`（`§5.
 由 `core/exceptions.py` 的统一异常处理器兜成 500 —— 那是故障，不是「方案不可行」，
 把它伪装成 `ok: False` 会让 Agent 把基础设施故障讲成业务建议。
 """
+from collections import Counter
+
 from sqlalchemy import select
 
 from ..core.database import AsyncSessionLocal
@@ -185,14 +192,33 @@ def _hit_device_ids(raw, wanted: set[int]) -> list[int]:
     return sorted(hit)
 
 
-async def _device_conflicts(db, device_ids: list[int], start, end) -> list[dict]:
-    """第 4 步的时间维度部分：这些设备是否已被同时段的其他订单占用。
+async def _device_conflicts(
+    db, device_ids: list[int], caps: dict[int, int], start, end
+) -> list[dict]:
+    """第 4 步的时间维度部分：这些设备在同时段是否已被**约满**。
 
     `§6.3` 没有「设备占用」表，设备的时段占用只存在 `reserve_order.device_ids`
-    （JSON 列）里，所以只能先捞重叠时段的订单、再在 Python 里做交集；`§6.6` 的
-    9 个 `idx_*` 云库尚未建，这一步没有可用索引。数据量上来后需要集成组给出
-    正式口径（占用表 / 生成列 / 多值索引），当前实现是**尽力而为**的正确性，
-    不做性能承诺。
+    （JSON 列）里，所以只能先捞重叠时段的订单、再在 Python 里按设备计数；`§6.6`
+    的 10 个 `idx_*` 里也没有设备维度的索引，这一步没有可用索引。数据量上来后
+    需要集成组给出正式口径（占用表 / 生成列 / 多值索引），当前实现是**尽力而为**
+    的正确性，不做性能承诺。
+
+    **判据是计数比较，不是「查到重叠就拒」**：`device_resource.available_count`
+    是**可用上限**（不是「还剩几台」），同一台设备在同时段允许多单共存，只要总数
+    没到上限。剩余量**用时推导**：
+
+        某设备在某时段的剩余量 = available_count − 该时段重叠单数
+
+    所以本函数不写任何列，`§5.5` 六步既没有扣减、也没有第 7 步回补 —— 订单一旦
+    离开 `ACTIVE_ORDER_STATUSES`（取消 / 完成），下一单算出来的剩余量自然就回来，
+    **回补不需要代码**。
+
+    参数：
+        caps: `{device_id: available_count}`，由 `_check_devices` 从设备行读出。
+            取不到时按 0 处理（= 约满），方向上是**保守拒绝**而不是静默放行。
+
+    返回：`docs/api.md` 里 `create_order` 冻结的形状（一单一条）。只列**碰到已约满
+    设备**的那些单 —— 不过滤的话，「A 满了」会把只用到空闲 B 的单也一并报出来。
     """
     wanted = set(device_ids)
     result = await db.execute(
@@ -207,14 +233,25 @@ async def _device_conflicts(db, device_ids: list[int], start, end) -> list[dict]
             ReserveOrder.start_time < end,
         )
     )
+    rows = result.all()
+
+    used: Counter[int] = Counter()
+    for row in rows:
+        for did in _hit_device_ids(row.device_ids, wanted):
+            used[did] += 1      # 一单里同一台设备只算一次（`_hit_device_ids` 去重）
+
+    full = {did for did in wanted if used[did] >= caps.get(did, 0)}
+    if not full:
+        return []
+
     conflicts = []
-    for row in result.all():
-        hit = _hit_device_ids(row.device_ids, wanted)
-        if hit:
+    for row in rows:
+        busy = sorted(set(_hit_device_ids(row.device_ids, wanted)) & full)
+        if busy:
             conflicts.append(
                 {
                     "orderId": row.id,
-                    "deviceIds": hit,
+                    "deviceIds": busy,
                     "startTime": format_time(row.start_time),
                     "endTime": format_time(row.end_time),
                 }
@@ -225,12 +262,17 @@ async def _device_conflicts(db, device_ids: list[int], start, end) -> list[dict]
 async def _check_devices(db, device_ids: list[int], start, end) -> None:
     """第 4 步：校验设备可用性。失败抛 `_Reject`。
 
-    四查：存在（`not_found`）→ 状态完好 → 还有可用库存 → 时段未被占用
+    四查：存在（`not_found`）→ 状态完好 → 还有可用上限 → 时段未被约满
     （后三者是 `device_conflict`，时间维度的检查见 `_device_conflicts`）。
 
-    注意 `available_count` **只读不写**：`§5.5` 六步里没有扣减、也没有取消时回补，
-    单方面扣会造出第二份真值（且取消路径不归本函数）。因此本函数只做校验，
-    扣减/回补的口径已作为文档缺口上报集成组。
+    注意 `available_count` **只读不写** —— 这不是「暂时不扣」而是**口径本身**：
+    它是**可用上限**（`total_count` 是物理台账数，留出备用机），「还剩几台」是
+    `available_count − 该时段重叠单数`，属于**用时推导**。写时扣减会让一个不带
+    时间维度的整数列去记「(设备, 时段)」的二维事实，必然串台：周一借走一台会
+    把周二的名额一起吃掉，且 `available_count` 单调递减、没有任何自然事件能把
+    它救回来。因此 `§5.5` 六步不加第 7 步「回补库存」，取消/完成靠
+    `ACTIVE_ORDER_STATUSES` 自动生效。口径判据与 AGENT-C-01/02 的对照表见
+    `docs/available_count口径判据.md`。
     """
     if not device_ids:
         return
@@ -264,9 +306,12 @@ async def _check_devices(db, device_ids: list[int], start, end) -> None:
                 {"conflicts": [{"deviceId": did, "reason": "exhausted"}]},
             )
 
-    busy = await _device_conflicts(db, device_ids, start, end)
+    caps = {did: (devices[did].available_count or 0) for did in device_ids}
+    busy = await _device_conflicts(db, device_ids, caps, start, end)
     if busy:
-        raise _Reject("device_conflict", "该时段设备已被占用", {"conflicts": busy})
+        # 「已约满」而不是「已被占用」：容量 > 1 时，重叠单数没到上限本来就不算冲突，
+        # 走到这里的都是**这台设备的名额用光了**，沿用旧文案会让人以为「只要没人用就行」。
+        raise _Reject("device_conflict", "该时段设备已约满", {"conflicts": busy})
 
 
 async def create_order(
