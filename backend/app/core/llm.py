@@ -19,7 +19,6 @@
     本项目明确不引入向量库 / RAG，模型调用为「单轮多模态推理」，无检索环节。
 """
 import logging
-
 from functools import lru_cache
 
 from langchain_core.language_models import BaseChatModel

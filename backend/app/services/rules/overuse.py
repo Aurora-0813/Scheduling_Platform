@@ -5,7 +5,8 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time as dt_time, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as dt_time
 
 from app.services.rules.base import (
     AUDIENCE_ADMIN_ONLY,

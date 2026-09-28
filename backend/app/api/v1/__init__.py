@@ -12,6 +12,7 @@ API v1 路由汇总
 | `/api/v1/image`            | 2    | `image.py`      |
 | `/api/v1/orders` 等        | 3    | `app/api/*.py`（见下） |
 | `/api/v1/agent`            | 4    | `agent.py`      |
+| `/api/v1/conflicts`、`/notify` | 7 | `conflict.py`、`notify.py` |
 | `/api/v1/dashboard`        | 8    | `dashboard.py`  |
 | `/api/v1/auth`             | 9    | `auth.py`       |
 | `/api/v1/health`、`/ready` | 10   | `health.py`     |
@@ -54,8 +55,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api import conflicts, messages, orders, resources
-from app.api.v1 import agent, auth, dashboard, health, image, monitor, voice
+from app.api import messages, orders, resources
+from app.api.v1 import agent, auth, conflict, dashboard, health, image, monitor, notify, voice
 
 __all__ = ["api_router", "API_V1_PREFIX"]
 
@@ -80,3 +81,9 @@ api_router.include_router(messages.router)
 
 api_router.include_router(agent.router)  # 模块 4 核心调度 Agent
 api_router.include_router(dashboard.router)  # 模块 8 AI 数据洞察面板
+
+# 模块 7 AI 冲突预警与智能通知（路由文件在 v1/ 下，前缀写在各自 router 上）
+# ⚠️ 模块 3 的 app/api/conflicts.py 也定义了 /conflicts/scan，**不注册**：
+#    模块 7 的 conflict.py 是同一路径的正式实现（含 ruleCode 与后台扫描）。
+api_router.include_router(conflict.router)
+api_router.include_router(notify.router)

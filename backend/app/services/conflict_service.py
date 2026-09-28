@@ -35,9 +35,9 @@ from app.services.notify_service import (
 )
 from app.services.rules.base import (
     ACTIVE_ORDER_STATUSES,
+    HISTORY_ORDER_STATUSES,
     ConflictRuleConfig,
     DeviceView,
-    HISTORY_ORDER_STATUSES,
     OrderView,
     RuleContext,
     RuleHit,

@@ -8,13 +8,13 @@ from datetime import datetime, time, timedelta
 from sqlalchemy import bindparam, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.reservation import ReserveOrder
-from app.models.resource import SpaceResource, DeviceResource
 from app.models.inspection import RepairTicket
+from app.models.reservation import ReserveOrder
+from app.models.resource import DeviceResource, SpaceResource
+
 # 统计窗口默认值从请求契约处导入，保证「默认 7 天」只有一个定义处
 # （app/schemas/dashboard.py 同时定义 MIN_DAYS / MAX_DAYS 供路由校验）
 from app.schemas.dashboard import DEFAULT_DAYS  # noqa: F401  （对外仍可从本模块取）
-
 
 # ============ 常量 ============
 # 场地开放时段的**兜底**时长（小时/天）。
