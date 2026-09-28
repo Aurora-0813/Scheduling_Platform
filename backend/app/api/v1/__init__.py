@@ -10,6 +10,7 @@ API v1 路由汇总
 | -------------------------- | ---- | --------------- |
 | `/api/v1/voice`            | 1    | `voice.py`      |
 | `/api/v1/image`            | 2    | `image.py`      |
+| `/api/v1/dashboard`        | 8    | `dashboard.py`  |
 | `/api/v1/auth`             | 9    | `auth.py`       |
 | `/api/v1/health`、`/ready` | 10   | `health.py`     |
 | `/api/v1/monitor`          | 10   | `monitor.py`    |
@@ -24,7 +25,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import auth, health, image, monitor, voice
+from app.api.v1 import auth, dashboard, health, image, monitor, voice
 
 __all__ = ["api_router", "API_V1_PREFIX"]
 
@@ -37,3 +38,4 @@ api_router.include_router(auth.router)
 api_router.include_router(monitor.router)
 api_router.include_router(voice.router)  # 模块 1 语音输入
 api_router.include_router(image.router)  # 模块 2 摄像头空间感知
+api_router.include_router(dashboard.router)  # 模块 8 AI 数据洞察面板
