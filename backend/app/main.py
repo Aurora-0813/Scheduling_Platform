@@ -61,13 +61,17 @@ from app.api.deps import reset_token_store
 from app.api.v1 import API_V1_PREFIX, api_router
 from app.core.config import MIN_JWT_SECRET_LENGTH, settings
 from app.core.database import Base, async_engine
+from app.core.events import bus
 from app.core.exceptions import BizError
 from app.core.logging import get_logger, setup_logging
 from app.core.metrics import reset_metric_store
 from app.core.redis import check_health as redis_check_health
 from app.core.response import register_exception_handlers
+from app.core.scheduler import PeriodicScanner
 from app.core.security import TokenType, decode_token
 from app.middlewares import AgentMetricsMiddleware, RequestContextMiddleware
+from app.services.conflict_service import scan_and_notify_job
+from app.services.notify_events import subscribe_notify_events
 from app.websocket import manager
 
 __all__ = ["app", "create_app", "lifespan"]
@@ -195,11 +199,42 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     await _ensure_schema()
 
+    # ---- 模块 7：事件订阅 + 周期冲突扫描 ----
+    # 订阅是幂等的；扫描器可按 CONFLICT_SCAN_ENABLED 关闭（演示/测试期常见）。
+    subscribe_notify_events(bus)
+
+    scanner: PeriodicScanner | None = None
+    if settings.CONFLICT_SCAN_ENABLED:
+        scanner = PeriodicScanner(
+            scan_and_notify_job,
+            interval_seconds=settings.CONFLICT_SCAN_INTERVAL_SECONDS,
+            initial_delay_seconds=settings.CONFLICT_SCAN_INITIAL_DELAY_SECONDS,
+            name="conflict-scan",
+        )
+        scanner.start()
+    else:
+        logger.info("周期扫描已关闭（CONFLICT_SCAN_ENABLED=False），仅保留手动接口")
+    # 挂到 app.state 上，便于运维与测试观察后台任务状态
+    app.state.conflict_scanner = scanner
+
     try:
         yield
     finally:
         # 关闭阶段**不能抛异常**：抛了会让 uvicorn 打印一堆与真实问题无关的
         # 关闭错误，掩盖真正的退出原因。每个资源各自兜住自己的异常。
+        # ⚠️ 顺序有讲究：先停扫描器（它可能正拿着连接写库），再收敛事件总线，
+        #    最后才释放连接池（在 _shutdown 里）。反过来会让仍在跑的扫描任务
+        #    抛 MissingGreenlet，污染关闭日志。
+        if scanner is not None:
+            try:
+                await scanner.stop()
+            except Exception as exc:  # noqa: BLE001 - 关闭路径不能抛
+                logger.warning("停止周期扫描器出错: %s: %s", type(exc).__name__, exc)
+        app.state.conflict_scanner = None
+        try:
+            await bus.aclose()
+        except Exception as exc:  # noqa: BLE001 - 关闭路径不能抛
+            logger.warning("关闭事件总线出错: %s: %s", type(exc).__name__, exc)
         await _shutdown()
 
 

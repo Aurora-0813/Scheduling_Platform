@@ -203,6 +203,39 @@ def _format_validation_error(err: dict[str, Any]) -> dict[str, str]:
 
 
 # ==========================================================================
+# 兼容层：模块 7 的旧异常名
+# ==========================================================================
+class ApiError(Exception):
+    """模块 7 旧名：业务异常（`notify_templates.py` 与两个测试在 import）。
+
+    ⚠️ 刻意**不**继承 `app.core.exceptions.BizError`：`exceptions.py` 在模块顶部
+    `from app.core.error_codes import ...` / 与 response.py 有既有依赖方向，
+    反向 import 会成环，且在 `main.py` 的导入顺序下会直接 ImportError。
+    因此独立成类，由 `register_exception_handlers` 单独挂处理器 ——
+    保证它抛出来同样是统一响应体，而不是 FastAPI 默认的 `{"detail": ...}`。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: int = 400,
+        http_status: int | None = None,
+        data: Any = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        # HTTP 状态码默认由业务码推出（本项目约定 HTTP = code // 100）；
+        # 推不出合法状态码时退回 400。显式传 http_status 则以其为准。
+        derived = code // 100
+        self.http_status = (
+            http_status if http_status is not None else (derived if 400 <= derived <= 599 else 400)
+        )
+        self.data = data
+
+
+# ==========================================================================
 # 异常处理器注册
 # ==========================================================================
 def register_exception_handlers(app: FastAPI) -> None:
@@ -215,6 +248,21 @@ def register_exception_handlers(app: FastAPI) -> None:
         log = logger.error if exc.http_status >= 500 else logger.info
         log(
             "业务异常: %s %s -> code=%s http=%s message=%s",
+            request.method,
+            request.url.path,
+            exc.code,
+            exc.http_status,
+            exc.message,
+            extra={"extra_fields": {"code": exc.code, "httpStatus": exc.http_status}},
+        )
+        return _json_response(error_payload(exc.code, exc.message, exc.data), exc.http_status)
+
+    @app.exception_handler(ApiError)
+    async def _handle_api_error(request: Request, exc: ApiError) -> JSONResponse:
+        """模块 7 兼容层的 `ApiError`：与 `BizError` 同一套信封，不穿透成 `{"detail": ...}`。"""
+        log = logger.error if exc.http_status >= 500 else logger.info
+        log(
+            "业务异常(ApiError): %s %s -> code=%s http=%s message=%s",
             request.method,
             request.url.path,
             exc.code,

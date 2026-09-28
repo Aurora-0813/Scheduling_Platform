@@ -18,6 +18,11 @@
 
 `AGENT_TOOLS` 是给 `create_agent` 的挂载清单。顺序即 Prompt 里的呈现顺序——
 按「先查后锁」的调用先后排，减少模型跳步。
+
+（模块 7 补充）本目录另含 `notify_tools.py`：模块 7 提供的通知文案生成 Tool，
+签名为 `generate_notification(order_id, notify_type, reason)`，与上表模块 4 的**同名
+Tool 签名不同**。当前 `AGENT_TOOLS` 仍挂上表这 5 个；是否换用/并存需模块 4 与模块 7
+双方确认后再改这一处。
 """
 
 from app.agent.tools.generate_notification import generate_notification

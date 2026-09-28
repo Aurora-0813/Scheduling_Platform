@@ -5,4 +5,7 @@
 - trace.py    LangGraph messages → TraceStep 的映射
 
 主文档 3.3 已明确「以 create_agent 封装为准，不直接操作底层 State」。
+
+（模块 7）本目录同时承担「链与 LLM 调用层」——extract_chain / notify_chain 等
+文本链的装配与调用入口都在这里。
 """

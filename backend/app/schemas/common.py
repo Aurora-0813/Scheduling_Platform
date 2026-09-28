@@ -12,7 +12,7 @@ from __future__ import annotations
 from app.core.camel import CamelModel
 from app.core.response import ApiResponse, ok
 
-__all__ = ["ApiResponse", "ErrorResponse", "FieldError", "ok"]
+__all__ = ["ApiResponse", "ErrorResponse", "FieldError", "CamelModel", "ok"]
 
 
 class FieldError(CamelModel):

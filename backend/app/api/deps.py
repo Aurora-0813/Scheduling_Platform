@@ -41,8 +41,10 @@ from typing import Any
 
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from langchain_core.language_models import BaseChatModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.chains.llm import build_llm
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.exceptions import (
@@ -68,6 +70,7 @@ __all__ = [
     "get_current_user",
     "require_role",
     "require_permission",
+    "get_llm",
 ]
 
 logger = get_logger(__name__)
@@ -292,3 +295,16 @@ def require_role(*roles: str) -> Callable[..., Coroutine[Any, Any, CurrentUser]]
         return current
 
     return _dependency
+
+
+# ==========================================================================
+# 文本 LLM 依赖（模块 7 的通知 / 抽取链）
+# ==========================================================================
+async def get_llm() -> BaseChatModel:
+    """模块 7 注入用：文本 LLM（通知 / 抽取链）；视觉 LLM 见 `app/core/llm.py`。
+
+    做成 FastAPI 依赖而不是在业务里直接 `build_llm()`，是为了让接口测试能用
+    `app.dependency_overrides[get_llm]` 换成假模型，不真调外部 API
+    （见 `tests/api/conftest.py` 与 `tests/api/test_notify_api.py`）。
+    """
+    return build_llm()

@@ -99,6 +99,7 @@ os.environ["SQL_ECHO"] = "false"
 from collections.abc import AsyncGenerator, Callable, Iterator
 from pathlib import Path
 from typing import Any
+from datetime import datetime
 
 import httpx
 import pytest
@@ -116,6 +117,14 @@ from app.api.deps import get_token_store, reset_token_store
 from app.core.config import settings
 from app.core.database import Base, get_db
 from app.core.metrics import InMemoryMetricStore, configure_metric_store, reset_metric_store
+from app.services.rules.base import (
+    ConflictRuleConfig,
+    DeviceView,
+    OrderView,
+    RuleContext,
+    SpaceView,
+    UserView,
+)
 
 # 上面那段的顺序是**功能性**的，不是排版问题，所以在这里把它变成会失败的自检 ——
 # 只用注释约束的话，下一个人把 import 挪到 os.environ 之前（IDE 的「优化导入」
@@ -998,3 +1007,204 @@ def seed() -> dict[str, Any]:
 def slots() -> dict[str, tuple[str, str]]:
     """被占用 / 空闲的两个时段。"""
     return {"occupied": OCCUPIED_SLOT, "free": FREE_SLOT}
+
+
+
+# ===========================================================================
+# 模块 7 冲突预警与通知（feat 侧夹具，原样保留）
+# ===========================================================================
+
+
+@pytest.fixture
+def now() -> datetime:
+    return NOW
+
+
+@pytest.fixture
+def rule_config() -> ConflictRuleConfig:
+    """固定阈值，让测试不依赖 .env"""
+    return ConflictRuleConfig()
+
+
+@pytest.fixture
+def spaces() -> dict[int, SpaceView]:
+    return {
+        1: SpaceView(id=1, space_name="A栋301会议室", space_type=1, capacity=20),
+        2: SpaceView(id=2, space_name="A栋3楼展厅", space_type=2, capacity=40),
+        3: SpaceView(id=3, space_name="B栋多功能厅", space_type=3, capacity=80),
+    }
+
+
+@pytest.fixture
+def devices() -> dict[int, DeviceView]:
+    return {
+        1: DeviceView(id=1, device_name="投影仪-1", device_type="投影仪"),
+        2: DeviceView(id=2, device_name="无人机-1", device_type="无人机"),
+        3: DeviceView(id=3, device_name="音响-1", device_type="音响"),
+    }
+
+
+@pytest.fixture
+def users() -> dict[int, UserView]:
+    return {
+        1: UserView(id=1, username="张三", role_id=1, role_name="普通使用者"),
+        2: UserView(id=2, username="李管理", role_id=2, role_name="资源管理员"),
+    }
+
+
+@pytest.fixture
+def make_order(now):
+    """订单快照构造器，未指定的字段走合理默认值"""
+
+    def _make(
+        order_id: int = 1,
+        *,
+        user_id: int = 1,
+        space_id: int = 1,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        status: int = 2,
+        device_ids: tuple[int, ...] = (),
+        agent_request: str | None = None,
+        attendee_count: int | None = None,
+    ) -> OrderView:
+        start_time = start if start is not None else now + timedelta(hours=2)
+        end_time = end if end is not None else start_time + timedelta(hours=1)
+        return OrderView(
+            id=order_id,
+            user_id=user_id,
+            space_id=space_id,
+            start_time=start_time,
+            end_time=end_time,
+            order_status=status,
+            device_ids=device_ids,
+            agent_request=agent_request,
+            attendee_count=attendee_count,
+        )
+
+    return _make
+
+
+@pytest.fixture
+def make_context(spaces, devices, users, rule_config, now):
+    """规则上下文构造器"""
+
+    def _make(
+        orders: tuple[OrderView, ...] | list[OrderView] = (),
+        *,
+        space_last_order_at: dict[int, datetime] | None = None,
+        config: ConflictRuleConfig | None = None,
+        current: datetime | None = None,
+    ) -> RuleContext:
+        return RuleContext(
+            orders=tuple(orders),
+            spaces=spaces,
+            devices=devices,
+            users=users,
+            now=current if current is not None else now,
+            config=config if config is not None else rule_config,
+            space_last_order_at=space_last_order_at or {},
+        )
+
+    return _make
+
+
+# ---------- 假 LLM 夹具 ----------
+
+
+@pytest.fixture
+def fake_llm_json():
+    """返回合法 JSON 的假模型 → 应命中第一级（ai_json）"""
+    from app.agent.chains.llm import build_fake_llm
+
+    return build_fake_llm(
+        ['{"title": "【预约提醒】A栋3楼展厅 14:00", "content": "AI 生成的正文内容。"}']
+    )
+
+
+@pytest.fixture
+def fake_llm_prose():
+    """返回自然语言散文的假模型 → 应命中第二级（ai_text）"""
+    from app.agent.chains.llm import build_fake_llm
+
+    return build_fake_llm(
+        ["您好，您预约的场地即将开始使用，请提前十分钟到场完成布置工作，如需调整请联系资源管理员。"]
+    )
+
+
+@pytest.fixture
+def fake_llm_broken():
+    """返回破损 JSON 的假模型 → 应命中第三级（template）"""
+    from app.agent.chains.llm import build_fake_llm
+
+    return build_fake_llm(['{"title": "缺引号的正文", content: }'])
+
+
+@pytest.fixture
+def slow_llm():
+    """
+    调用会阻塞的假模型。
+
+    配合极小的 timeout 参数，可真实走通 asyncio.wait_for 超时分支
+    （而不是把超时逻辑 mock 掉），这是覆盖降级代码的关键。
+
+    注意 FakeMessagesListChatModel 只实现了同步的 _generate（内部 time.sleep），
+    异步调用走 BaseChatModel._agenerate 的默认实现 —— 把 _generate 丢进线程池。
+    因此 wait_for 取消的是等待方，超时分支照常触发，但后台线程会继续睡完。
+    sleep 取 0.6s 而非数秒，避免拖慢每次用例的收尾。
+    """
+    from app.agent.chains.llm import build_fake_llm
+
+    return build_fake_llm(['{"title": "太慢", "content": "这条不该被用上。"}'], sleep=0.6)
+
+
+@pytest.fixture
+def raising_llm():
+    """
+    调用即抛异常的假模型 → 覆盖「外部 API 失败」降级分支。
+
+    必须覆盖 _generate 而不是 _call：BaseChatModel 上并不存在 _call，
+    覆盖它只是死代码，异常永远不会抛出。
+    """
+    from langchain_core.language_models.fake_chat_models import (
+        FakeMessagesListChatModel,
+    )
+    from langchain_core.messages import AIMessage
+
+    from app.agent.chains.llm import FAKE_NOTIFY_JSON
+
+    class RaisingChatModel(FakeMessagesListChatModel):
+        """继承假模型，让底层生成直接抛错"""
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # type: ignore[override]
+            raise RuntimeError("模拟外部 API 调用失败")
+
+    return RaisingChatModel(responses=[AIMessage(content=FAKE_NOTIFY_JSON)] * 3)
+
+
+@pytest.fixture
+def empty_llm():
+    """返回空内容的假模型 → 覆盖「空响应」降级分支"""
+    from app.agent.chains.llm import build_fake_llm
+
+    return build_fake_llm(["   "])
+
+
+@pytest.fixture
+def multimodal_llm():
+    """
+    返回分段 content 的假模型。
+
+    langchain-openai 1.x 会把 content 返回成 [{"type": "text", ...}] 列表，
+    直接 .strip() 会 AttributeError —— 这个夹具专门盯住那处回归。
+    """
+    from langchain_core.language_models.fake_chat_models import (
+        FakeMessagesListChatModel,
+    )
+    from langchain_core.messages import AIMessage
+
+    blocks = [
+        {"type": "text", "text": '{"title": "分段标题", '},
+        {"type": "text", "text": '"content": "分段正文内容。"}'},
+    ]
+    return FakeMessagesListChatModel(responses=[AIMessage(content=blocks)] * 3)

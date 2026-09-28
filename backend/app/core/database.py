@@ -34,7 +34,10 @@ INTEGER（见 `tests/conftest.py` 的 `SQLiteTypeCompiler` 垫片），因此模
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+import functools
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from typing import Any, TypeVar
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
@@ -191,3 +194,43 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.rollback()
             raise
         # 此处刻意没有 commit，见上方说明。
+
+
+@asynccontextmanager
+async def session_scope() -> AsyncIterator[AsyncSession]:
+    """
+    后台任务 / LangChain Tool 用的独立会话（模块 7 的定时扫描与通知链在用）。
+
+    它们不在请求上下文里，拿不到 `get_db`，必须自建会话；同时避免在
+    函数签名上暴露 `AsyncSession`（开发流程.md 9.3：Tool 不直接操作数据库）。
+
+    与 `get_db` 的差别：这里**由调用方自己 commit**，本函数只负责异常回滚与关闭。
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def with_session(fn: F) -> F:
+    """
+    让同一个 service 函数既能被请求复用外部会话，也能被 Tool / 后台任务调用。
+
+    满足开发流程.md 9.3「Agent 只能通过 Tool 调用 services 层」且
+    「Tool 不直接操作数据库」：Tool 只把 session 写成可选参数，
+    由本装饰器决定是自建会话还是复用调用方传入的会话。
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, session: AsyncSession | None = None, **kwargs: Any) -> Any:
+        if session is not None:
+            return await fn(*args, session=session, **kwargs)
+        async with session_scope() as own_session:
+            return await fn(*args, session=own_session, **kwargs)
+
+    return wrapper  # type: ignore[return-value]

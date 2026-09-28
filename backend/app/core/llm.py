@@ -18,6 +18,7 @@
     §9.3  Agent 只能通过 Tool 调用 services/ 层访问业务数据（本模块不含 Tool，直接调用）
     本项目明确不引入向量库 / RAG，模型调用为「单轮多模态推理」，无检索环节。
 """
+import logging
 
 from functools import lru_cache
 
@@ -26,6 +27,8 @@ from langchain_openai import ChatOpenAI
 
 from app.core.config import settings
 from app.core.exceptions import BusinessError
+
+logger = logging.getLogger(__name__)
 
 # 模型配置缺失时的错误码（与 §4.5 错误码表保持一致：属于「识别服务不可用」）
 _CODE_MODEL_UNAVAILABLE = 41003
@@ -89,3 +92,70 @@ def reset_vision_llm_cache() -> None:
         2. 将来若支持「运行时热切换模型」，切换后调用本函数让新配置生效
     """
     get_vision_llm.cache_clear()
+
+
+# ===========================================================================
+# 文本 LLM（模块 7）—— 通知生成 / 信息抽取
+# 与上文 get_vision_llm 并列：视觉与文本是两条独立链路，各有各的模型配置。
+# 注意：主干另有 services/format_service.py 的 DEEPSEEK_* 文本链路，
+#       与本段的 LLM_* 是【同类不同路】，本次不动它（见勘误 E18）。
+# ===========================================================================
+# 假 LLM 的默认响应：一条合法的通知文案 JSON
+FAKE_NOTIFY_JSON = (
+    '{"title": "【预约提醒】您的预约即将开始", '
+    '"content": "您好，您在 A栋3楼展厅 的预约即将开始，请提前 10 分钟到场布置。'
+    '如需调整，请在预约记录中发起变更。"}'
+)
+
+
+def build_fake_llm(
+    responses: list[str] | None = None,
+    *,
+    sleep: float | None = None,
+) -> BaseChatModel:
+    """
+    假 LLM 夹具。文档 10.2 要求「Agent 层测试使用假 LLM 夹具，保证离线可跑」。
+
+    :param responses: 依次返回的内容，缺省为一条合法通知 JSON
+    :param sleep: 每次调用阻塞的秒数，用于测试超时降级分支
+    """
+    from langchain_core.language_models.fake_chat_models import (
+        FakeMessagesListChatModel,
+    )
+    from langchain_core.messages import AIMessage
+
+    payloads = responses or [FAKE_NOTIFY_JSON]
+    # 多备几份，避免夹具在连续多次调用时耗尽响应
+    return FakeMessagesListChatModel(
+        responses=[AIMessage(content=text) for text in payloads] * 3,
+        sleep=sleep,
+    )
+
+
+def build_llm(*, temperature: float = 0.4, timeout: float | None = None) -> BaseChatModel:
+    """
+    构造文本大模型客户端（模块 7 的通知生成 / 信息抽取）。
+
+    AI_ENABLED=False 或 AI_USE_FAKE_LLM=True 时返回假 LLM，
+    调用方（notify_chain）会因 AI_ENABLED 判断直接走模板，不会真的调用它。
+    """
+    if settings.AI_USE_FAKE_LLM or not settings.AI_ENABLED:
+        logger.info(
+            "使用假 LLM 夹具（AI_ENABLED=%s, AI_USE_FAKE_LLM=%s）",
+            settings.AI_ENABLED,
+            settings.AI_USE_FAKE_LLM,
+        )
+        return build_fake_llm()
+
+    from langchain_openai import ChatOpenAI
+
+    return ChatOpenAI(
+        model=settings.LLM_MODEL_NAME,
+        # 未配置 Key 时给个占位值，让构造成功、调用失败，
+        # 从而落到统一的降级链路，而不是在构造期抛出难懂的异常
+        api_key=settings.LLM_API_KEY or "NOT_CONFIGURED",
+        base_url=settings.LLM_BASE_URL,
+        timeout=timeout or settings.LLM_TIMEOUT,     # ← C2 并名后的结果
+        max_retries=1,
+        temperature=temperature,
+    )
