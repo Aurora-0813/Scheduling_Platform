@@ -459,9 +459,19 @@ async def test_generate_notification_mapped_type_succeeds() -> None:
 async def test_generate_notification_unmapped_type_fails_closed() -> None:
     """「延期致歉」在 6.3 的 INT 字典内没有值 → `ok=false`，**不擅自映射**。
 
-    未决 #6（黄嵩 + 集成组）。映射到 2(变更致歉) 会让落库类型与前端文案错配；
-    新增 4 要先改字典。所以这里必须**失败并说明原因**，不能猜一个数字顶上。
-    等未决 #6 拍板后，本用例的期望值要跟着改。
+    未决 #6 **已裁定（2026-09-28，黄嵩）：不扩字典，「延期致歉」映射到既有值 2
+    （变更致歉）**；模块 7 已按此实现（`notify_templates.py` 的
+    `ToneSpec(key="延期致歉", notify_type=2)`）。本分支的 service **仍是桩**，
+    所以这里**继续断言失败**——桩就是按「字典外取值一律失败并说明原因」写的，
+    这不是缺陷，是桩期的预期行为（硬卡点 #13）。
+
+    ⚠️ TODO（**等模块 7 落 `main`、service 层映射生效后**改本用例）：
+      1. 断言改为 **Tool 返回值的** `result["notifyType"] == 2`
+         —— 键名是**驼峰 `notifyType`**，不是 DB 列名 `notify_type`；
+      2. 用例名与本文档字符串一并改（不再叫 `..._fails_closed`）；
+      3. 顺带核 `app/agent/tools/generate_notification.py:71` 的 `result.get("notifyType")`
+         在真实 service 上取得到值——若对方返回的是 `notify_type`，这里会**静默拿到
+         `None`**（`ok=True` 但文案为空，不报错）。
     """
     result = await generate_notification.coroutine(order_info=OrderInfo(notifyType="延期致歉"))
 
