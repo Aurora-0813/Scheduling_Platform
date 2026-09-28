@@ -228,15 +228,19 @@ rebase 后实测：merge-base = `2fd726e`、落后 main 0 / 领先 62、`git sta
   ——**库里的索引还在**，但模型不再声明它，`alembic revision --autogenerate` 之后会**反过来
   提议 `DROP INDEX`**；顺带丢掉 `PK_TYPE`（模块 3 对团队版的唯一偏离，见 `core/database.py`）
   与两处 `list` 标注。**没有测试会拦住这些**。
-- **正确做法**：**三方合并**，最终版本须同时含：
-  1. **`ACTIVE_ORDER_STATUSES`**（蔡的写法，用 `OrderStatus.PENDING/CONFIRMED` 枚举成员，不写字面量）
-     —— 本轮收敛的唯一真值，见第 10 条；
-  2. **main 的四条 `Index` 声明**；
-  3. `PK_TYPE` 主键与 `device_ids` / `agent_trace` 的 **`list`** 标注（这两项**本来就是 main 版的**，
-     不是蔡带来的 —— 杨的更正里把它们记成「蔡的」，此处按实测更正归属，**要求本身不变：最终必须有**）；
-  4. **删掉** `OCCUPYING_STATUS` 定义及其整段注释（注释里已写好这三步，见杨睿坤 `fd6910d`）。
-  **最省事的等价做法**：直接取 `origin/integrate/module3` 那一版（它是 main 的超集，四条索引
-  与 `PK_TYPE` 都在），再把 `space_service.py` / `test_space_service.py` 改用名（见下）。
+- **正确做法（2026-09-28 裁定，更正先前写的「三方合并」）**：
+  **直接取 `origin/integrate/module3` 的那一版** —— 实测它是 `main` 的**干净超集**
+  （`git diff --stat origin/main origin/integrate/module3 -- backend/app/models/reservation.py`
+  = **+21 / −0**：只在 main 版之上加了 `ACTIVE_ORDER_STATUSES`），四条 `Index`、`PK_TYPE`、
+  两处 `list` 标注**都在里面**。比手工三方合并简单，也不可能漏项。
+  ⚠️ 先前那句「**三方合并**」**作废**：那是在**没注意到 `integrate/module3` 也是「蔡玉礼的版本」**
+  时给的折中说法——两个 ref 差得很远（见上表），措辞含糊会让人真去手工合。
+  取完之后只剩两件手工活：
+  1. **删掉** `OCCUPYING_STATUS` 定义及其整段注释（杨 `fd6910d` 的注释里写的就是这几步）；
+  2. 改 2 处用名（`space_service.py` / `test_space_service.py`，见下）。
+- **最终版本的验收点**（取完 `integrate/module3` 版后逐条核，第 1~3 条来自上表「须含」）：
+  ① `ACTIVE_ORDER_STATUSES` 在、且用枚举成员表达；② 四条 `Index(...)` 俱在；
+  ③ `PK_TYPE` 与两处 `list` 标注俱在；④ `OCCUPYING_STATUS` 全仓 0 命中。
 - **然后改 2 处**：
   1. **`app/services/space_service.py`**：`from app.models.reservation import OCCUPYING_STATUS, ...`
      → 取 `ACTIVE_ORDER_STATUSES`；查询里的 `ReserveOrder.order_status.in_(OCCUPYING_STATUS)`
@@ -262,11 +266,11 @@ rebase 后实测：merge-base = `2fd726e`、落后 main 0 / 领先 62、`git sta
 
 ## 10. 占用口径常量：四处并存，收敛到蔡玉礼的 `ACTIVE_ORDER_STATUSES`
 
-**（2026-09-28 裁定：本次不预先改名，合并时一次性收敛。）**
+**（2026-09-28 裁定：本次不预先改名；合并时**收敛到 `ACTIVE_ORDER_STATUSES` 单点**。）**
 
 | # | 位置 | 名字 | 取值 | 谁能钉住它 |
 | --- | --- | --- | --- | --- |
-| 1 | 本分支 `app/services/order_service.py:47` | `OCCUPYING_STATUS = (1, 2)` | 字面量 | 杨的护栏钉的是第 2 处 vs **本处** |
+| 1 | 本分支 `app/services/order_service.py:47`（**模块 3 的文件，物理上只在本分支**） | `OCCUPYING_STATUS = (1, 2)` | 字面量 | 杨的护栏钉的是第 2 处 vs **本处** |
 | 2 | 杨分支 `app/models/reservation.py:49` | `OCCUPYING_STATUS = (1, 2)` | 字面量 | 上面那条护栏的另一端 |
 | 3 | 模块 7 `app/services/rules/base.py:46` | `ACTIVE_ORDER_STATUSES = (1, 2)` | 字面量 | **无人钉**（模块 7 自己一份） |
 | 4 | **蔡玉礼 `app/models/reservation.py:34`（`integrate/module3` `:29`）** | `ACTIVE_ORDER_STATUSES` | `(OrderStatus.PENDING.value, OrderStatus.CONFIRMED.value)` | 蔡自己的注释即权威 |
@@ -274,11 +278,17 @@ rebase 后实测：merge-base = `2fd726e`、落后 main 0 / 领先 62、`git sta
 - **三处值是否都等于 `(1, 2)`**：**是**（第 4 处用枚举成员表达，值同为 `(1, 2)`；
   其定义处注释明写「这里是当前**唯一**的占用口径真值」，`order_service` §5.5 第 3/4 步、
   `api/conflicts.py`、`api/agent.py` 四处共用）。
-- **命名建议（收敛方向）**：**统一到 `ACTIVE_ORDER_STATUSES`**，落地在
-  `app/models/reservation.py` 一条定义，其余三处改 import——理由：① 蔡那份是唯一
-  在**模型层**、且已声明为真值的；② 用枚举成员比字面量 `(1, 2)` 抗漂移；
-  ③ `OCCUPYING_STATUS` 与 `_ALLOWED_CREATE_STATUS`（`order_service.py`，含义是
-  「创建时允许传入的状态」）语义不同，**别合并**——蔡的注释专门警告过这一点。
+- **收敛方案（2026-09-28 已裁定：收敛到 `ACTIVE_ORDER_STATUSES` 单点）**：
+  - **四处 → 只留一条定义**：`app/models/reservation.py` 的 `ACTIVE_ORDER_STATUSES`
+    （蔡那份的写法，`OrderStatus.PENDING.value` / `OrderStatus.CONFIRMED.value`）。
+    另外三处——本分支 `order_service.py:47`、杨的 `models/reservation.py:49`、
+    模块 7 `services/rules/base.py:46`——**一律改成 import 它，不再各自定义**。
+  - ⚠️ **别与 `_ALLOWED_CREATE_STATUS` 合并**：今天值相同但**含义不同**——那是
+    「**创建时允许传入**的 `order_status`」（创建即完成/取消属非法输入），
+    占用口径一变两者立刻分叉。蔡的注释专门警告过这一点。
+  - 理由：① 蔡那份是唯一在**模型层**、且已被声明为真值的；② 用枚举成员比字面量 `(1, 2)`
+    抗漂移；③ 四处并存时**没有任何单条护栏能覆盖全部**（杨的护栏只钉第 1、2 两处，
+    模块 7 那份**无人钉**）。
 - **⚠️ 一处需在群里更正的既有说法**：先前流传的「模块 4 `space_service.py`（桩）里有
   `OCCUPYING_STATUS`」**不实**——实测 `space_service.py` 里**没有**该常量（桩不按时段过滤，
   只筛 `status / space_type / capacity`），定义在 **`order_service.py:47`**。四处的位置以上表为准。
@@ -331,6 +341,22 @@ rebase 后实测：merge-base = `2fd726e`、落后 main 0 / 领先 62、`git sta
   cd backend && python -c "import app.services"                                       # 不报 ImportError
   ```
 
+### 12.1 模块 7 的文件落在**模块 4 的目录**里 → 合 `feat` 时还要冲突 3 个 `__init__.py`
+
+- **实测**（`git merge-tree --write-tree HEAD origin/feat/module7-conflict-notify`）：
+  共 **27 条冲突**，其中**本模块目录下 3 条**——
+  `backend/app/agent/__init__.py`、`backend/app/agent/prompts/__init__.py`、
+  `backend/app/agent/tools/__init__.py`。
+  （对 `origin/integ/module7-into-main` 只剩 `app/agent/tools/__init__.py` 一条。）
+- **原因**：黄嵩的真实实现放在 `app/agent/chains/` 与 `app/agent/prompts/`
+  ——**那是模块 4 的目录**（`app/agent/**` 由本模块负责），两边都在同层的 `__init__.py`
+  里声明导出，于是同址相撞。
+- **处置**：这 3 个 `__init__.py` 取**并集**（保留本模块既有导出 + 并入他的新导出）；
+  ⚠️ **整段取对方会打掉本模块 `prompts` / `tools` 的现有导出**（与第 2 条的
+  `services/__init__.py` 同一个坑）。
+- **怎么核**：合完 `cd backend && python -c "import app.agent.tools, app.agent.prompts"`
+  不报错，且 `pytest tests/test_agent_tools.py tests/test_agent_schedule.py -q --no-cov` 全绿。
+
 ## 13. 「3 处」与「17 处」是两个问题，**别互相套**
 
 | 数 | 是什么 | 基点 | 复现命令 |
@@ -363,5 +389,6 @@ rebase 后实测：merge-base = `2fd726e`、落后 main 0 / 领先 62、`git sta
 | 占用口径四处定义、`services/` 结构表（第 8.1、10 条） | 本节 §8.1 / §10 的 `git grep -n`、`git ls-tree` 原始输出 |
 | 四条 `Index` 声明与各 ref 对照（第 9 条更正） | 本节 §9 的 `git show <ref>:...reservation.py \| grep -c 'Index('` 输出；`git diff --stat origin/main origin/integrate/module3 -- backend/app/models/reservation.py` = **+21 / −0** |
 | 「3 处 / 17 处」复现（第 13 条） | 本节 §13 的 `git merge-tree --write-tree` 输出 |
+| 合 `feat/module7` 的 27 条冲突与其中 3 条落在本模块（第 12.1 条） | `git merge-tree --write-tree HEAD origin/feat/module7-conflict-notify` 输出 |
 | `order_service.py` 的 ruff 现状（第 11 条） | `ruff 0.16.9`（conda 环境 `smart_dev`）在本分支实测：check 通过、format 不过 |
 | 本分支 rebase 到 `main` 的实测（第 7 节） | 本节 §7 的 rebase 输出；回滚点 `backup/pre-rebase-3-20260928` |
