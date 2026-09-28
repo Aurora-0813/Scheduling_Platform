@@ -3,9 +3,9 @@
 这两条是本模块契约里最容易被「看起来对」蒙过去的部分：`TraceStep` 的七个字段
 只要有一个填错，前端屏 3 的渲染就崩或者缺东西，而**后端不会报任何错**。
 """
+
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 
 import pytest
@@ -27,7 +27,9 @@ def _ai(text: str = "", calls: list[dict] | None = None, msg_id: str = "m") -> A
     return AIMessage(**kwargs)
 
 
-def _tool(content: str, name: str = "query_spaces", call_id: str = "c1", msg_id: str = "t") -> ToolMessage:
+def _tool(
+    content: str, name: str = "query_spaces", call_id: str = "c1", msg_id: str = "t"
+) -> ToolMessage:
     return ToolMessage(content=content, name=name, tool_call_id=call_id, id=msg_id)
 
 
@@ -45,7 +47,10 @@ def test_u04_ai_and_tool_merge_into_one_step() -> None:
     「只有动作没有结果」的卡片。
     """
     stamped = [
-        (_ai("先查展厅。", [_call("query_spaces", {"capacity": 40, "space_type": 2})]), "2026-09-25 14:00:00"),
+        (
+            _ai("先查展厅。", [_call("query_spaces", {"capacity": 40, "space_type": 2})]),
+            "2026-09-25 14:00:00",
+        ),
         (_tool('{"ok": true, "count": 2, "spaces": []}'), "2026-09-25 14:00:04"),
     ]
 
@@ -58,19 +63,23 @@ def test_u04_ai_and_tool_merge_into_one_step() -> None:
     assert step.action == "query_spaces"
     assert step.actionInput == {"capacity": 40, "space_type": 2}
     assert step.observation == {"ok": True, "count": 2, "spaces": []}
-    assert step.result                                    # 中文结论非空
-    assert step.timestamp == "2026-09-25 14:00:00"        # 打点时刻取**发起**那一步
+    assert step.result  # 中文结论非空
+    assert step.timestamp == "2026-09-25 14:00:00"  # 打点时刻取**发起**那一步
 
 
 def test_u04_step_numbers_start_at_one_and_are_dense() -> None:
     """`step` 从 1 开始、连续无空缺。前端按它排序与显示「第 N 步」。"""
     stamped = []
     for index in range(4):
-        stamped.append((
-            _ai(f"第{index}步", [_call(f"tool_{index}", {}, f"c{index}")], f"m{index}"),
-            f"2026-09-25 14:00:0{index}",
-        ))
-        stamped.append((_tool("{}", f"tool_{index}", f"c{index}", f"t{index}"), f"2026-09-25 14:00:1{index}"))
+        stamped.append(
+            (
+                _ai(f"第{index}步", [_call(f"tool_{index}", {}, f"c{index}")], f"m{index}"),
+                f"2026-09-25 14:00:0{index}",
+            )
+        )
+        stamped.append(
+            (_tool("{}", f"tool_{index}", f"c{index}", f"t{index}"), f"2026-09-25 14:00:1{index}")
+        )
 
     steps = build_trace(stamped)
 
@@ -79,8 +88,13 @@ def test_u04_step_numbers_start_at_one_and_are_dense() -> None:
 
 def test_u04_every_step_has_non_empty_result(seed: dict) -> None:
     """`result` 是主文档 5.3 明文要求的必需项，**任何一步都不能空**。"""
-    for action in ("query_spaces", "query_devices", "lock_resources",
-                   "generate_notification", "submit_plan"):
+    for action in (
+        "query_spaces",
+        "query_devices",
+        "lock_resources",
+        "generate_notification",
+        "submit_plan",
+    ):
         steps = build_trace([(_ai("想", [_call(action, {})]), "2026-09-25 14:00:00")])
         assert steps[0].result, f"{action} 这一步的 result 为空"
 
@@ -103,10 +117,16 @@ def test_u04_parallel_tool_calls_each_become_a_step() -> None:
     actionInput / observation 丢失。
     """
     stamped = [
-        (_ai("同时查场地和设备。", [
-            _call("query_spaces", {"capacity": 40}, "c1"),
-            _call("query_devices", {"device_type": "投影仪"}, "c2"),
-        ]), "2026-09-25 14:00:00"),
+        (
+            _ai(
+                "同时查场地和设备。",
+                [
+                    _call("query_spaces", {"capacity": 40}, "c1"),
+                    _call("query_devices", {"device_type": "投影仪"}, "c2"),
+                ],
+            ),
+            "2026-09-25 14:00:00",
+        ),
         (_tool('{"ok": true, "count": 1}', "query_spaces", "c1", "t1"), "2026-09-25 14:00:01"),
         (_tool('{"ok": true, "count": 4}', "query_devices", "c2", "t2"), "2026-09-25 14:00:02"),
     ]
@@ -153,40 +173,72 @@ def test_u04_generate_notification_failure_is_not_silently_labeled_success() -> 
     `ok=False`，而 `_summarize` 早期只认 `title`，取不到就退回标签「生成通知文案」，
     看 trace 完全看不出这一步其实失败了。
     """
-    failed = _tool('{"ok": false, "title": null, "content": null, "reason": "未知的通知类型"}',
-                   "generate_notification")
-    steps = build_trace([(_ai("发通知", [_call("generate_notification", {})]), "2026-09-25 14:00:00"), (failed, "2026-09-25 14:00:01")])
+    failed = _tool(
+        '{"ok": false, "title": null, "content": null, "reason": "未知的通知类型"}',
+        "generate_notification",
+    )
+    steps = build_trace(
+        [
+            (_ai("发通知", [_call("generate_notification", {})]), "2026-09-25 14:00:00"),
+            (failed, "2026-09-25 14:00:01"),
+        ]
+    )
 
     assert "失败" in steps[0].result
     assert "未知的通知类型" in steps[0].result
 
     ok = _tool('{"ok": true, "title": "预约成功提醒"}', "generate_notification")
-    steps = build_trace([(_ai("发通知", [_call("generate_notification", {})]), "2026-09-25 14:00:00"), (ok, "2026-09-25 14:00:01")])
+    steps = build_trace(
+        [
+            (_ai("发通知", [_call("generate_notification", {})]), "2026-09-25 14:00:00"),
+            (ok, "2026-09-25 14:00:01"),
+        ]
+    )
     assert "预约成功提醒" in steps[0].result
 
 
 def test_u04_lock_resources_distinguishes_persisted_from_stub() -> None:
     """有订单号与没落库要能一眼分辨（桩期 `orderId` 恒为 None）。"""
     persisted = _tool('{"ok": true, "orderId": 12}', "lock_resources")
-    steps = build_trace([(_ai("锁定", [_call("lock_resources", {})]), "2026-09-25 14:00:00"), (persisted, "2026-09-25 14:00:01")])
+    steps = build_trace(
+        [
+            (_ai("锁定", [_call("lock_resources", {})]), "2026-09-25 14:00:00"),
+            (persisted, "2026-09-25 14:00:01"),
+        ]
+    )
     assert "订单 12" in steps[0].result
 
     stub = _tool('{"ok": true, "orderId": null}', "lock_resources")
-    steps = build_trace([(_ai("锁定", [_call("lock_resources", {})]), "2026-09-25 14:00:00"), (stub, "2026-09-25 14:00:01")])
+    steps = build_trace(
+        [
+            (_ai("锁定", [_call("lock_resources", {})]), "2026-09-25 14:00:00"),
+            (stub, "2026-09-25 14:00:01"),
+        ]
+    )
     assert "未落库" in steps[0].result, "桩期必须自证未落库，否则看不出这是假预约"
 
     conflicted = _tool('{"ok": false, "conflictType": "time_conflict"}', "lock_resources")
-    steps = build_trace([(_ai("锁定", [_call("lock_resources", {})]), "2026-09-25 14:00:00"), (conflicted, "2026-09-25 14:00:01")])
+    steps = build_trace(
+        [
+            (_ai("锁定", [_call("lock_resources", {})]), "2026-09-25 14:00:00"),
+            (conflicted, "2026-09-25 14:00:01"),
+        ]
+    )
     assert "time_conflict" in steps[0].result
 
 
 def test_u04_result_is_clipped() -> None:
     """`result` 有长度上限——前端卡片放不下长文本。"""
     long_reason = "很长的原因" * 40
-    steps = build_trace([(
-        _ai("想", [_call("query_spaces", {})]),
-        "2026-09-25 14:00:00",
-    ), (_tool(f'{{"ok": false, "reason": "{long_reason}"}}'), "2026-09-25 14:00:01")])
+    steps = build_trace(
+        [
+            (
+                _ai("想", [_call("query_spaces", {})]),
+                "2026-09-25 14:00:00",
+            ),
+            (_tool(f'{{"ok": false, "reason": "{long_reason}"}}'), "2026-09-25 14:00:01"),
+        ]
+    )
 
     assert len(steps[0].result) <= trace_mod._RESULT_MAX_LEN
 
@@ -223,7 +275,9 @@ def test_u05_timestamps_are_unique_and_strictly_increasing() -> None:
     assert len(set(stamps)) == len(stamps), f"时间戳有重复：{stamps}"
 
     parsed = [datetime.strptime(s, TIMESTAMP_FORMAT) for s in stamps]
-    assert parsed == sorted(parsed) and len(set(parsed)) == len(parsed), f"时间戳未严格递增：{stamps}"
+    assert parsed == sorted(parsed) and len(set(parsed)) == len(parsed), (
+        f"时间戳未严格递增：{stamps}"
+    )
 
 
 def test_u05_out_of_order_timestamps_are_forced_forward() -> None:
@@ -276,8 +330,8 @@ def test_u05_every_step_matches_the_frozen_format() -> None:
 @pytest.mark.parametrize(
     "content",
     [
-        '{"ok": true, "count": 2}',              # json.dumps（双引号）
-        "{'ok': True, 'count': 2}",              # str()（Python 字面量、单引号、True 大写）
+        '{"ok": true, "count": 2}',  # json.dumps（双引号）
+        "{'ok': True, 'count': 2}",  # str()（Python 字面量、单引号、True 大写）
     ],
 )
 def test_observation_parses_both_serialization_styles(content: str) -> None:
@@ -307,27 +361,32 @@ def test_observation_never_drops_the_field() -> None:
 class _FakeAgent:
     """`collect_stamped_messages` 的最小替身：只实现它用到的两个方法。"""
 
-    def __init__(self, chunks: list | None = None, *, raise_type_error: bool = False,
-                 result: dict | None = None) -> None:
+    def __init__(
+        self,
+        chunks: list | None = None,
+        *,
+        raise_type_error: bool = False,
+        result: dict | None = None,
+    ) -> None:
         self._chunks = chunks or []
         self._raise = raise_type_error
         self._result = result or {"messages": []}
         self.astream_called = False
         self.ainvoke_called = False
 
-    async def astream(self, inputs, stream_mode=None, config=None):  # noqa: ANN001, ANN201
+    async def astream(self, inputs, stream_mode=None, config=None):
         self.astream_called = True
         if self._raise:
             raise TypeError("stream_mode 'updates' 不被支持")
         for chunk in self._chunks:
             yield chunk
 
-    async def ainvoke(self, inputs, config=None):  # noqa: ANN001, ANN201
+    async def ainvoke(self, inputs, config=None):
         self.ainvoke_called = True
         return self._result
 
 
-async def test_collect_uses_astream_and_stamps_each_message(monkeypatch) -> None:  # noqa: ANN001
+async def test_collect_uses_astream_and_stamps_each_message(monkeypatch) -> None:
     """正常路径走 `astream(stream_mode="updates")`，**每条消息收到时就地打点**。
 
     这是「时间轴是真的」的全部机制。若某天退化成「跑完统一打点」，
@@ -337,22 +396,26 @@ async def test_collect_uses_astream_and_stamps_each_message(monkeypatch) -> None
     ticks = iter([f"2026-09-25 14:00:0{i}" for i in range(10)])
     monkeypatch.setattr(trace_mod, "now_str", lambda: next(ticks))
 
-    agent = _FakeAgent([
-        {"model": {"messages": [_ai("第一步", [_call("query_spaces", {})], "m1")]}},
-        {"tools": {"messages": [_tool("{}", "query_spaces", "c1", "t1")]}},
-        {"model": {"messages": [_ai("第二步", [_call("query_devices", {})], "m2")]}},
-    ])
+    agent = _FakeAgent(
+        [
+            {"model": {"messages": [_ai("第一步", [_call("query_spaces", {})], "m1")]}},
+            {"tools": {"messages": [_tool("{}", "query_spaces", "c1", "t1")]}},
+            {"model": {"messages": [_ai("第二步", [_call("query_devices", {})], "m2")]}},
+        ]
+    )
 
     stamped = await collect_stamped_messages(agent, {"messages": []})
 
     assert agent.astream_called and not agent.ainvoke_called
     assert [ts for _, ts in stamped] == [
-        "2026-09-25 14:00:00", "2026-09-25 14:00:01", "2026-09-25 14:00:02",
+        "2026-09-25 14:00:00",
+        "2026-09-25 14:00:01",
+        "2026-09-25 14:00:02",
     ], "打点必须是「收到那一刻」，不是事后统一"
     assert len(build_trace(stamped)) == 2
 
 
-async def test_collect_deduplicates_replayed_messages(monkeypatch) -> None:  # noqa: ANN001
+async def test_collect_deduplicates_replayed_messages(monkeypatch) -> None:
     """同一对象被重放（部分 LangGraph 小版本在流式收尾时会重放最后一条 state）→ 只记一次。
 
     不去重的话 trace 尾部会出现重复步骤，前端时间轴多出两个节点。
@@ -360,11 +423,13 @@ async def test_collect_deduplicates_replayed_messages(monkeypatch) -> None:  # n
     monkeypatch.setattr(trace_mod, "now_str", lambda: "2026-09-25 14:00:00")
 
     first = _ai("第一步", [_call("query_spaces", {})], "m1")
-    agent = _FakeAgent([
-        {"model": {"messages": [first]}},
-        {"model": {"messages": [first]}},   # 同一条被重放
-        {"model": {"messages": [first]}},
-    ])
+    agent = _FakeAgent(
+        [
+            {"model": {"messages": [first]}},
+            {"model": {"messages": [first]}},  # 同一条被重放
+            {"model": {"messages": [first]}},
+        ]
+    )
 
     stamped = await collect_stamped_messages(agent, {"messages": []})
 
@@ -372,7 +437,7 @@ async def test_collect_deduplicates_replayed_messages(monkeypatch) -> None:  # n
     assert len(build_trace(stamped)) == 1
 
 
-async def test_collect_falls_back_to_ainvoke_on_type_error(monkeypatch) -> None:  # noqa: ANN001
+async def test_collect_falls_back_to_ainvoke_on_type_error(monkeypatch) -> None:
     """`updates` 形状不被支持时退回 `ainvoke()`，**但时间标签退化成保序顺延**。
 
     这是**有意接受的降级**：宁可「时间轴被拉开」，也不要静默地全部同秒。
@@ -382,11 +447,13 @@ async def test_collect_falls_back_to_ainvoke_on_type_error(monkeypatch) -> None:
 
     agent = _FakeAgent(
         raise_type_error=True,
-        result={"messages": [
-            _ai("第一步", [_call("query_spaces", {})], "m1"),
-            _tool("{}", "query_spaces", "c1", "t1"),
-            _ai("第二步", [_call("query_devices", {"device_type": "投影仪"})], "m2"),
-        ]},
+        result={
+            "messages": [
+                _ai("第一步", [_call("query_spaces", {})], "m1"),
+                _tool("{}", "query_spaces", "c1", "t1"),
+                _ai("第二步", [_call("query_devices", {"device_type": "投影仪"})], "m2"),
+            ]
+        },
     )
 
     stamped = await collect_stamped_messages(agent, {"messages": []})
@@ -399,7 +466,7 @@ async def test_collect_falls_back_to_ainvoke_on_type_error(monkeypatch) -> None:
     assert [s.timestamp for s in steps] == ["2026-09-25 14:00:00", "2026-09-25 14:00:01"]
 
 
-async def test_collect_keeps_existing_sink_content_on_fallback(monkeypatch) -> None:  # noqa: ANN001
+async def test_collect_keeps_existing_sink_content_on_fallback(monkeypatch) -> None:
     """退回 `ainvoke` 时，sink 里**已有的**步骤不能被重复一遍。
 
     超时路径会带着一个已经装了几步的 sink 进来；不清理本次尝试新增的部分再重来，
@@ -414,8 +481,9 @@ async def test_collect_keeps_existing_sink_content_on_fallback(monkeypatch) -> N
         chunks=[{"model": {"messages": [_ai("半截", [_call("query_devices", {})], "half")]}}],
         raise_type_error=False,
     )
+
     # 让 astream 先吐一条、再抛 TypeError，模拟「流到一半形状不对」
-    async def _astream(inputs, stream_mode=None, config=None):  # noqa: ANN001, ANN201
+    async def _astream(inputs, stream_mode=None, config=None):
         yield {"model": {"messages": [_ai("半截", [_call("query_devices", {})], "half")]}}
         raise TypeError("流中途形状不对")
 

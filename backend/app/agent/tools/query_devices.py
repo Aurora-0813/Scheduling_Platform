@@ -18,6 +18,7 @@
 若把过滤下沉到 service，那个用例会变成假绿——结果里永远不会有坏设备，
 分不清是 Tool 真的在滤，还是数据本来就没有。
 """
+
 from __future__ import annotations
 
 from langchain_core.tools import tool
@@ -78,7 +79,8 @@ async def query_devices(device_type: str) -> dict:
 
     # ---- 可用性过滤：本条是阶段 4 的完成判定之一，改动前先看本文件顶部说明 ----
     devices = [
-        d for d in result.get("devices", [])
+        d
+        for d in result.get("devices", [])
         if d.get("deviceStatus") == DEVICE_STATUS_OK and (d.get("availableCount") or 0) > 0
     ]
 
@@ -90,12 +92,14 @@ async def query_devices(device_type: str) -> dict:
             return fail(
                 f"「{device_type}」共 {raw_total} 台，但当前**没有一台可借用**"
                 "（损坏或库存为 0）。建议改用替代设备类型，或与用户确认是否接受替代。",
-                count=0, devices=[],
+                count=0,
+                devices=[],
             )
         return fail(
             f"未找到类型为「{device_type}」的设备。可用的类型为："
             f"{'、'.join(KNOWN_DEVICE_TYPES)}。请用库中原文重新查询。",
-            count=0, devices=[],
+            count=0,
+            devices=[],
         )
 
     return {"ok": True, "count": len(devices), "devices": devices}

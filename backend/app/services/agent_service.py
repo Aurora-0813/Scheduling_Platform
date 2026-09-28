@@ -30,6 +30,7 @@
 自建表等于绕开流程；而进程内计数零依赖、零 DDL，替换点收在这一个文件里——
 四个函数（`record_call` / `snapshot` / `reset`）就是全部对外接口。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -18,6 +18,7 @@
 本 Tool **只产出标题与正文**，不发送、不落库、不改任何业务状态——
 真正写 `notify_message` 是模块 7 的事，走 `notify_service`。
 """
+
 from __future__ import annotations
 
 from langchain_core.tools import tool

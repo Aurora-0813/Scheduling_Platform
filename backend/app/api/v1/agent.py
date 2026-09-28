@@ -16,6 +16,7 @@
 `uvicorn` 单 worker 下并发能力直接归零——第二个请求要等第一个跑完 30 秒才被受理。
 `run_schedule` 内部走 `astream()`，本文件 `await` 它，不阻塞任何人。
 """
+
 from __future__ import annotations
 
 import logging
@@ -75,9 +76,7 @@ async def schedule(
         # 里已映射到 503，码表与 HTTP 语义都是现成的，不必再造一份。
         # 2026-09-28 合并前这里用的是模块 4 自建的 `core.response.ApiError`，
         # 正式版把异常体系收敛到了 `core/exceptions.py`，该名字已不存在。
-        raise BusinessError(
-            code=ErrorCode.AI_MODEL_UNAVAILABLE, message=str(exc)
-        ) from exc
+        raise BusinessError(code=ErrorCode.AI_MODEL_UNAVAILABLE, message=str(exc)) from exc
 
     # 埋点**必须**在返回之前，且不能因为埋点失败而改变响应。
     record_call(outcome)
@@ -87,7 +86,7 @@ async def schedule(
     return ok(outcome.data, message=outcome.message)
 
 
-async def _persist_trace(request_text: str, user_id: int, outcome) -> None:  # noqa: ANN001
+async def _persist_trace(request_text: str, user_id: int, outcome) -> None:
     """把完整思考链补写进 `reserve_order.agent_trace`（时序方案 (a)）。
 
     **失败只记日志，绝不影响响应。** trace 是答辩溯源用的附加值；
@@ -105,7 +104,7 @@ async def _persist_trace(request_text: str, user_id: int, outcome) -> None:  # n
             request_text=request_text,
             outcome=outcome,
         )
-    except Exception:  # noqa: BLE001 - 补写失败不许穿透成 500
+    except Exception:
         logger.exception("agent_trace 补写异常 order_id=%s", outcome.locked_order_id)
         return
 

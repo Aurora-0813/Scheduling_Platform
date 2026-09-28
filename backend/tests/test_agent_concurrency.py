@@ -40,12 +40,12 @@
 | --- | --- | --- | --- |
 | 1 | 无重叠订单，建第 1 单占用该设备 → 成功，`order_status=1` | `test_assert_1_...` | 6 / 8 |
 | 2 | 已有 1 单占用 T，建第 2 单同设备同 T → 成功（2 ≤ cap） | `test_assert_2_...` | 7 / 8 |
-| 3 | 已有 2 单占用 T，建第 3 单同设备同 T → **拒绝，409 + `code=40901`** | `test_assert_3_...` | 8 / 8 |
-| 3b | （并发版，保留原 C-01 的行锁语义）并发 3 单 → 恰好 2 单成功 | `test_assert_3b_...` | 6/7/8 / 8 |
+| 3 | 已有 2 单占用 T，建第 3 单同设备同 T → **拒绝：409 + `40901`** | `test_assert_3_...` | 8 / 8 |
+| 3b | （并发版，保留 C-01 行锁语义）并发 3 单 → 恰好 2 单成功 | `test_assert_3b_...` | 6/7/8 / 8 |
 | 4 | 已有 2 单占用 T，把其中一单 cancel（→3）→ 成功 | `test_assert_4_...` | 6 / 8 |
 | 5 | 承上，再建第 3 单同设备同 T → 成功（回落到 1 < 2） | `test_assert_5_...` | 8 / 8 |
 | 6 | 已有 2 单占用 T，与 T 相邻但不重叠的 T' → 成功（**半开区间**） | `test_assert_6_...` | 6 / 8 |
-| 7 | 已有 2 单占用 T，第 3 单用**不同设备**同一 T → 成功（容量按设备各算） | `test_assert_7_...` | 8 / 7 |
+| 7 | 已占 T×2，第 3 单换**不同设备**同 T → 成功（容量按设备各算） | `test_assert_7_...` | 8 / 7 |
 
 **两次「场地」的选择不是随手写的**：`create_order` 的 §5.5 第 2 步先查**场地**时段
 重叠，同一场地同一 T 的第二单会先撞 `CONFLICT_TIME`——那样测的是场地冲突，
@@ -83,6 +83,7 @@
 在此之前，**不得声称 `AGENT-C-01` / `AGENT-C-02` 已通过**——阶段 7 的通过标准里有它们。
 口径全文见 `docs/spec/done/README.md` 的《附录：`available_count` 口径》与 `docs/test.md` §3.5。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -126,7 +127,7 @@ _XFAIL_REASON = (
 )
 
 
-async def _lock(space_id: int, start: str, end: str, *, user_id: int, device_ids=None):  # noqa: ANN001, ANN202
+async def _lock(space_id: int, start: str, end: str, *, user_id: int, device_ids=None):
     """一次锁定尝试。身份**显式传参**——不得从请求体或模型那里取（主文档 5.1 / 9.1）。"""
     return await create_order(
         user_id=user_id,
@@ -137,7 +138,7 @@ async def _lock(space_id: int, start: str, end: str, *, user_id: int, device_ids
     )
 
 
-async def _order_status(session, order_id: int) -> int | None:  # noqa: ANN001
+async def _order_status(session, order_id: int) -> int | None:
     """读订单状态。
 
     ⚠️ **必须先 `rollback()` 结束本会话可能已开启的事务**：MySQL 默认隔离级别是
@@ -150,7 +151,7 @@ async def _order_status(session, order_id: int) -> int | None:  # noqa: ANN001
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def _available_count(session, device_id: int) -> int:  # noqa: ANN001
+async def _available_count(session, device_id: int) -> int:
     """读设备的 `available_count`（静态上限）。同样先结束事务，理由见 `_order_status`。"""
     await session.rollback()
     stmt = select(DeviceResource.available_count).where(DeviceResource.id == device_id)
@@ -170,7 +171,7 @@ async def _seed_two_orders_on_the_same_device() -> list[int]:
     return [first["orderId"], second["orderId"]]
 
 
-async def _cancel(client, order_id: int, auth: dict[str, str]):  # noqa: ANN001, ANN202
+async def _cancel(client, order_id: int, auth: dict[str, str]):
     """走模块 3 的取消入口 `PUT /api/v1/orders/{orderId}/cancel`。
 
     该路径取自 `开发流程.md:381` 的冻结接口清单，与 `Permission.ORDER_CANCEL`、
@@ -229,7 +230,7 @@ def test_resource_conflict_is_409_on_both_exception_paths() -> None:
 # 断言 1~7（蔡玉礼的口径判据）
 # --------------------------------------------------------------------------
 @pytest.mark.xfail(strict=True, reason=_XFAIL_REASON)
-async def test_assert_1_first_order_on_free_slot_succeeds_and_is_persisted(dev_db_session) -> None:  # noqa: ANN001
+async def test_assert_1_first_order_on_free_slot_succeeds_and_is_persisted(dev_db_session) -> None:
     """**断言 1**：无重叠订单时建第 1 单占用该设备 → 成功，`order_status=1`。
 
     `order_status=1`（待确认）是 §5.5 第 3 步的校验范围决定的：Agent 建的待确认单
@@ -293,10 +294,12 @@ async def test_assert_3b_three_concurrent_orders_on_a_cap_two_device_exactly_two
 
     **不要写成顺序三次调用**：那是在验重叠检测，不是在验锁。
     """
-    results = await asyncio.gather(*(
-        _lock(space, *_SLOT, user_id=user_id, device_ids=[_DEV_CAP2])
-        for user_id, space in enumerate(_SPACES, start=1)
-    ))
+    results = await asyncio.gather(
+        *(
+            _lock(space, *_SLOT, user_id=user_id, device_ids=[_DEV_CAP2])
+            for user_id, space in enumerate(_SPACES, start=1)
+        )
+    )
 
     succeeded = [r for r in results if r.get("ok")]
     rejected = [r for r in results if not r.get("ok")]
@@ -309,7 +312,9 @@ async def test_assert_3b_three_concurrent_orders_on_a_cap_two_device_exactly_two
 
 
 @pytest.mark.xfail(strict=True, reason=_XFAIL_REASON)
-async def test_assert_4_cancel_one_of_two_frees_the_device_slot(dev_client, dev_db_session, auth) -> None:  # noqa: ANN001
+async def test_assert_4_cancel_one_of_two_frees_the_device_slot(
+    dev_client, dev_db_session, auth
+) -> None:
     """**断言 4**：已有 2 单占用 T，把其中一单 cancel（→3）→ 成功。
 
     这一条是「用时推导」与「扣减 + 回补」的分水岭：扣减方案下，取消必须**另有**
@@ -325,12 +330,20 @@ async def test_assert_4_cancel_one_of_two_frees_the_device_slot(dev_client, dev_
 
 
 @pytest.mark.xfail(strict=True, reason=_XFAIL_REASON)
-async def test_assert_5_after_cancel_third_order_succeeds_capacity_is_derived(dev_client) -> None:  # noqa: ANN001
+async def test_assert_5_after_cancel_third_order_succeeds_capacity_is_derived(
+    dev_client, auth
+) -> None:
     """**断言 5**：承上，再建第 3 单同设备同 T → 成功（回落到 `1 < 2`）。
 
     这是 4 个规则里第 ②④ 条的联合验证：剩余量是**算出来的**，取消后自动回落，
     **不需要任何回补代码**。若实现走了「扣减 + 回补」而回补漏了，
     断言 4 可能照样绿，这一条会红——这正是两条要分开写的原因。
+
+    ⚠️ 2026-09-28 修一处**自己埋的坑**（ruff `F821` 报出来的）：本用例下一行要用
+    `auth`（`_cancel` 的第 3 个参数），但签名里**漏了这个夹具** —— 于是它每次都死在
+    `NameError` 上。因为挂了 `xfail(strict=True)`，NameError 也算「如期失败」，
+    **看板上一直是绿的**，而真实断言从来没跑到过；等模块 3 落地、本该转为通过时，
+    它仍然会 NameError，**永远验不到真行为**。夹具名取自 `conftest.py` 的同名 fixture。
     """
     order_ids = await _seed_two_orders_on_the_same_device()
     resp = await _cancel(dev_client, order_ids[0], auth)
@@ -391,7 +404,7 @@ async def test_assert_7_other_device_same_slot_succeeds_capacity_is_per_device()
 # --------------------------------------------------------------------------
 # 桩期实录（**能过**，不挂 xfail；真实现落地后按下面 docstring 处理）
 # --------------------------------------------------------------------------
-async def test_stub_state_is_recorded_not_glossed_over(dev_db_session, slots, seed) -> None:  # noqa: ANN001
+async def test_stub_state_is_recorded_not_glossed_over(dev_db_session, slots, seed) -> None:
     """记录桩期的真实状态，让「`AGENT-C-01` 未通过」这件事在测试输出里看得见。
 
     ⚠️ **本条是桩期临时用例**（断言 `stub` 键、`orderId is None`）。

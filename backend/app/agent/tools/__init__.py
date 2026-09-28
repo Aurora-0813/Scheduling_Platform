@@ -19,6 +19,7 @@
 `AGENT_TOOLS` 是给 `create_agent` 的挂载清单。顺序即 Prompt 里的呈现顺序——
 按「先查后锁」的调用先后排，减少模型跳步。
 """
+
 from app.agent.tools.generate_notification import generate_notification
 from app.agent.tools.lock_resources import lock_resources
 from app.agent.tools.query_devices import query_devices

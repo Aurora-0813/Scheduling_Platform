@@ -43,12 +43,14 @@ step 2 是 `query_spaces` 带全 actionInput 与 observation。
 时间轴上被略微拉开。**反过来不做**（保留同秒）会让前端在演示当天出现重叠节点，
 那才是真问题。
 """
+
 from __future__ import annotations
 
 import ast
 import json
+from collections.abc import Iterable
 from datetime import datetime, timedelta
-from typing import Any, Iterable
+from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 
@@ -250,8 +252,10 @@ def _merge_steps(stamped: Iterable[tuple[BaseMessage, str]]) -> list[dict[str, A
             # 从后往前找最近一个「有 action、还没有 observation」的步骤。
             # 从后往前是因为并行工具调用时，多条 ToolMessage 会依次补回同一批步骤。
             for step in reversed(steps):
-                if step["action"] and step["observation"] is None and (
-                    tool_name is None or step["action"] == tool_name
+                if (
+                    step["action"]
+                    and step["observation"] is None
+                    and (tool_name is None or step["action"] == tool_name)
                 ):
                     step["observation"] = parse_observation(msg.content)
                     break
@@ -266,21 +270,29 @@ def _merge_steps(stamped: Iterable[tuple[BaseMessage, str]]) -> list[dict[str, A
         tool_calls = getattr(msg, "tool_calls", None) or []
 
         if not tool_calls:
-            steps.append({
-                "timestamp": ts, "thought": thought,
-                "action": None, "actionInput": None, "observation": None,
-            })
+            steps.append(
+                {
+                    "timestamp": ts,
+                    "thought": thought,
+                    "action": None,
+                    "actionInput": None,
+                    "observation": None,
+                }
+            )
             continue
 
         for call in tool_calls:
             args = call.get("args") if isinstance(call, dict) else getattr(call, "args", None)
             name = call.get("name") if isinstance(call, dict) else getattr(call, "name", None)
-            steps.append({
-                "timestamp": ts, "thought": thought,
-                "action": name,
-                "actionInput": args if isinstance(args, dict) else None,
-                "observation": None,
-            })
+            steps.append(
+                {
+                    "timestamp": ts,
+                    "thought": thought,
+                    "action": name,
+                    "actionInput": args if isinstance(args, dict) else None,
+                    "observation": None,
+                }
+            )
 
     return steps
 

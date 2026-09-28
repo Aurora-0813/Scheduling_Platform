@@ -1,7 +1,8 @@
 """Tool 3/5：`lock_resources` —— 锁定场地与设备，落预约订单。
 
 对应主文档 5.3 模块 4 冻结签名：
-    async def lock_resources(space_id: int, device_ids: list[int], start_time: str, end_time: str) -> dict
+    async def lock_resources(space_id: int, device_ids: list[int],
+                             start_time: str, end_time: str) -> dict
 
 ## 本 Tool 只做三件事
 
@@ -20,6 +21,7 @@
 主文档 4.4 的场景 B（场地拆分）就是靠这条链路成立的——模型收到 `conflictType=time_conflict`
 才可能想到「换个场地或拆成两场」，收到一个 TypeError 则只能宣布失败。
 """
+
 from __future__ import annotations
 
 from langchain_core.tools import tool
@@ -72,7 +74,7 @@ class LockResourcesArgs(BaseModel):
         default_factory=list,
         description=(
             "要一并锁定的设备 ID 列表，必须来自 query_devices 的返回值。"
-            "**必须是数组**，例如 [1, 2]；不要传字符串 \"1\"。不需要设备时传 [] 或省略。"
+            '**必须是数组**，例如 [1, 2]；不要传字符串 "1"。不需要设备时传 [] 或省略。'
         ),
     )
     start_time: str = Field(..., description="开始时间，格式 YYYY-MM-DD HH:mm:ss")
@@ -115,7 +117,9 @@ async def lock_resources(
         return fail(
             "调用上下文缺少用户身份，无法创建预约。这是服务端的身份注入问题，"
             "请勿重试本工具；请改为直接向用户说明。",
-            conflictType="invalid_param", retryable=False, actionHint=None,
+            conflictType="invalid_param",
+            retryable=False,
+            actionHint=None,
         )
 
     # ---- 2. 参数校验（服务层还会再校验一次，这里先挡一道，省一次往返）----
@@ -127,8 +131,9 @@ async def lock_resources(
     if device_ids is not None and not isinstance(device_ids, (list, tuple)):
         return fail(
             f"device_ids 必须是数组，收到 {type(device_ids).__name__}（{device_ids!r}）。"
-            "传字符串会被逐字符迭代成错误的 ID 列表，例如 \"12\" → [1, 2]。",
-            conflictType="invalid_param", retryable=False,
+            '传字符串会被逐字符迭代成错误的 ID 列表，例如 "12" → [1, 2]。',
+            conflictType="invalid_param",
+            retryable=False,
             actionHint=_ACTION_HINT["invalid_param"],
         )
 
@@ -138,13 +143,15 @@ async def lock_resources(
         return fail(
             f"时间格式无法解析：start_time={start_time!r}、end_time={end_time!r}，"
             "期望 YYYY-MM-DD HH:mm:ss。",
-            conflictType="invalid_param", retryable=False,
+            conflictType="invalid_param",
+            retryable=False,
             actionHint=_ACTION_HINT["invalid_param"],
         )
     if end_dt <= start_dt:
         return fail(
             f"结束时间({end_time})不晚于开始时间({start_time})，时段倒置。",
-            conflictType="invalid_param", retryable=False,
+            conflictType="invalid_param",
+            retryable=False,
             actionHint=_ACTION_HINT["invalid_param"],
         )
 

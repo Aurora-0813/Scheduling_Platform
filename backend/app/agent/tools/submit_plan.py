@@ -29,6 +29,7 @@
 `asyncio.gather()` 跑的，子任务里的 `ContextVar.set()` 回不到父 context。详见
 `app/agent/context.py` 的说明。
 """
+
 from __future__ import annotations
 
 from langchain_core.tools import tool
@@ -46,9 +47,7 @@ class PlanPayload(BaseModel):
 
     spaceId: int | None = Field(None, description="场地 ID；无方案时留空")
     spaceName: str | None = Field(None, description="场地名称")
-    deviceIds: list[int] = Field(
-        default_factory=list, description="设备 ID 数组；无设备传 []"
-    )
+    deviceIds: list[int] = Field(default_factory=list, description="设备 ID 数组；无设备传 []")
     startTime: str | None = Field(None, description="开始时间，格式 YYYY-MM-DD HH:mm:ss")
     endTime: str | None = Field(None, description="结束时间，格式 YYYY-MM-DD HH:mm:ss")
     reason: str | None = Field(
@@ -61,16 +60,14 @@ class SubmitPlanArgs(BaseModel):
     """`submit_plan` 的入参 schema（阶段 4 §3.4 冻结签名的落地形状）。"""
 
     plan: PlanPayload = Field(..., description="主方案。无可行方案时不要调用本工具")
-    backup_plan: PlanPayload | None = Field(
-        None, description="备选方案；没有就省略，不要编一个"
-    )
-    reason: str = Field(
-        ..., description="整体说明：为什么选这个方案、若做过降级/替代则说明理由"
-    )
+    backup_plan: PlanPayload | None = Field(None, description="备选方案；没有就省略，不要编一个")
+    reason: str = Field(..., description="整体说明：为什么选这个方案、若做过降级/替代则说明理由")
 
 
 @tool("submit_plan", args_schema=SubmitPlanArgs)
-async def submit_plan(plan: PlanPayload, backup_plan: PlanPayload | None = None, reason: str = "") -> dict:
+async def submit_plan(
+    plan: PlanPayload, backup_plan: PlanPayload | None = None, reason: str = ""
+) -> dict:
     """交出最终调度方案。**方案确定后必须调用本工具**，这是交付方案的正规出口。
 
     什么时候用：已经查过场地与设备、权衡完毕、确定了主方案之后调用，每次运行**只调一次**。

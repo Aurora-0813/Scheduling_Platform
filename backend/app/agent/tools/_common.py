@@ -2,6 +2,7 @@
 
 放这里的都是**纯函数**——不碰库、不碰网络，因此不违反「Tool 不直接使用 AsyncSession」。
 """
+
 from __future__ import annotations
 
 from datetime import datetime

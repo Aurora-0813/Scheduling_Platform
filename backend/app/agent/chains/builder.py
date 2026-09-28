@@ -13,6 +13,7 @@
 第 3 条是主文档 7.4 明文要求的「大模型输出必须做 JSON 解析容错，异常时返回自然语言文本」，
 也是主文档 10.2 要求必须测的两类降级之一。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -138,7 +139,7 @@ def extract_plan_from_text(text: str | None) -> dict[str, Any] | None:
     candidates.extend(fenced)
     start, end = text.find("{"), text.rfind("}")
     if start != -1 and end > start:
-        candidates.append(text[start: end + 1])
+        candidates.append(text[start : end + 1])
 
     for raw in candidates:
         try:
@@ -152,7 +153,9 @@ def extract_plan_from_text(text: str | None) -> dict[str, Any] | None:
         if isinstance(inner, dict):
             return {
                 "plan": inner,
-                "backupPlan": parsed.get("backupPlan") if isinstance(parsed.get("backupPlan"), dict) else None,
+                "backupPlan": parsed.get("backupPlan")
+                if isinstance(parsed.get("backupPlan"), dict)
+                else None,
                 "reason": parsed.get("reason") or inner.get("reason"),
             }
         if any(k in parsed for k in ("spaceId", "spaceName", "deviceIds")):
@@ -352,10 +355,12 @@ async def run_schedule(
     agent = build_agent(model, now=now)
 
     inputs = {
-        "messages": [{
-            "role": "user",
-            "content": _compose_user_message(text, image_context or {}),
-        }]
+        "messages": [
+            {
+                "role": "user",
+                "content": _compose_user_message(text, image_context or {}),
+            }
+        ]
     }
     config = {"recursion_limit": settings.AGENT_RECURSION_LIMIT}
 
@@ -397,7 +402,7 @@ async def run_schedule(
                 collect_stamped_messages(agent, inputs, config=config, sink=stamped),
                 timeout=settings.AGENT_TIMEOUT,
             )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return _degrade(
             (
                 f"AI 思考超时（超过 {settings.AGENT_TIMEOUT:g} 秒），"

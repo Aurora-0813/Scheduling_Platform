@@ -5,6 +5,7 @@
 
 **签名不得改动**——阶段 3 的桩、阶段 7 的用例都以它为基准（阶段 4 §3.1）。
 """
+
 from __future__ import annotations
 
 from langchain_core.tools import tool
@@ -26,7 +27,9 @@ class QuerySpacesArgs(BaseModel):
 
     capacity: int = Field(..., gt=0, le=10000, description="所需容量下限（人数），必须为正整数")
     space_type: int = Field(
-        ..., ge=1, le=4,
+        ...,
+        ge=1,
+        le=4,
         description="场地类型：1=会议室 2=展厅 3=多功能厅 4=户外场地",
     )
     start_time: str = Field(..., description="需求开始时间，格式 YYYY-MM-DD HH:mm:ss")
@@ -58,13 +61,14 @@ async def query_spaces(capacity: int, space_type: int, start_time: str, end_time
     if capacity <= 0:
         return fail(
             f"capacity 必须为正整数，收到 {capacity}。请按用户口述的实际人数重传。",
-            count=0, spaces=[],
+            count=0,
+            spaces=[],
         )
     if space_type not in SPACE_TYPE_LABELS:
         return fail(
-            f"space_type 必须是 1~4 之一（1会议室 2展厅 3多功能厅 4户外场地），"
-            f"收到 {space_type}。",
-            count=0, spaces=[],
+            f"space_type 必须是 1~4 之一（1会议室 2展厅 3多功能厅 4户外场地），收到 {space_type}。",
+            count=0,
+            spaces=[],
         )
 
     start_dt = parse_time(start_time)
@@ -73,12 +77,14 @@ async def query_spaces(capacity: int, space_type: int, start_time: str, end_time
         return fail(
             f"时间格式无法解析：start_time={start_time!r}、end_time={end_time!r}，"
             "期望 YYYY-MM-DD HH:mm:ss。",
-            count=0, spaces=[],
+            count=0,
+            spaces=[],
         )
     if end_dt <= start_dt:
         return fail(
             f"结束时间({end_time})不晚于开始时间({start_time})，时段倒置。请修正后重试。",
-            count=0, spaces=[],
+            count=0,
+            spaces=[],
         )
 
     # ---- 经 service 层查询：Tool 不直接碰库（主文档 3.4 / 7.4 / 9.3）----

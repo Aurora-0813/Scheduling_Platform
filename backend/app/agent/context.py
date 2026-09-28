@@ -34,11 +34,12 @@ LangGraph 的 `ToolNode` 用 `asyncio.gather()` 并发跑工具，`gather` 内�
 那是框架的正式状态载体，跨 context 拷贝、跨版本都成立。
 提取逻辑见 `app/agent/chains/builder.py`。
 """
+
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Iterator
 
 __all__ = ["get_agent_user_id", "get_raw_request", "agent_run_context"]
 

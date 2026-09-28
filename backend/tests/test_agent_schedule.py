@@ -25,6 +25,7 @@
 会重复最后一条，所以末尾必须是纯文本——否则会一直重复最后一次工具调用直到
 撞上 `AGENT_RECURSION_LIMIT`，用例表现为「无端降级」。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -58,34 +59,57 @@ def _ai(text: str = "", calls: list[dict] | None = None) -> AIMessage:
     return AIMessage(**kwargs)
 
 
-def _spaces_call(capacity: int, space_type: int, slots: dict, call_id: str = "c-spaces") -> AIMessage:
+def _spaces_call(
+    capacity: int, space_type: int, slots: dict, call_id: str = "c-spaces"
+) -> AIMessage:
     start, end = slots["free"]
     return _ai(
         f"先查 {capacity} 人的场地。",
-        [_call("query_spaces", {
-            "capacity": capacity, "space_type": space_type,
-            "start_time": start, "end_time": end,
-        }, call_id)],
+        [
+            _call(
+                "query_spaces",
+                {
+                    "capacity": capacity,
+                    "space_type": space_type,
+                    "start_time": start,
+                    "end_time": end,
+                },
+                call_id,
+            )
+        ],
     )
 
 
 def _devices_call(device_type: str, call_id: str = "c-devices") -> AIMessage:
-    return _ai(f"查一下{device_type}。", [_call("query_devices", {"device_type": device_type}, call_id)])
-
-
-def _lock_call(space_id: int, device_ids: list[int], slots: dict, call_id: str = "c-lock") -> AIMessage:
-    start, end = slots["free"]
     return _ai(
-        "锁定资源。",
-        [_call("lock_resources", {
-            "space_id": space_id, "device_ids": device_ids,
-            "start_time": start, "end_time": end,
-        }, call_id)],
+        f"查一下{device_type}。", [_call("query_devices", {"device_type": device_type}, call_id)]
     )
 
 
-def _submit_call(plan: dict, *, backup: dict | None = None, reason: str = "",
-                 call_id: str = "c-submit") -> AIMessage:
+def _lock_call(
+    space_id: int, device_ids: list[int], slots: dict, call_id: str = "c-lock"
+) -> AIMessage:
+    start, end = slots["free"]
+    return _ai(
+        "锁定资源。",
+        [
+            _call(
+                "lock_resources",
+                {
+                    "space_id": space_id,
+                    "device_ids": device_ids,
+                    "start_time": start,
+                    "end_time": end,
+                },
+                call_id,
+            )
+        ],
+    )
+
+
+def _submit_call(
+    plan: dict, *, backup: dict | None = None, reason: str = "", call_id: str = "c-submit"
+) -> AIMessage:
     args: dict = {"plan": plan, "reason": reason}
     if backup is not None:
         args["backup_plan"] = backup
@@ -95,8 +119,12 @@ def _submit_call(plan: dict, *, backup: dict | None = None, reason: str = "",
 def _plan(space_id: int, name: str, devices: list[int], slots: dict, reason: str) -> dict:
     start, end = slots["free"]
     return {
-        "spaceId": space_id, "spaceName": name, "deviceIds": devices,
-        "startTime": start, "endTime": end, "reason": reason,
+        "spaceId": space_id,
+        "spaceName": name,
+        "deviceIds": devices,
+        "startTime": start,
+        "endTime": end,
+        "reason": reason,
     }
 
 
@@ -117,13 +145,14 @@ def _stub_outcome(message: str = "操作成功", *, success: bool = False) -> bu
 
 
 @pytest.fixture
-def use_model(monkeypatch):  # noqa: ANN001, ANN201
+def use_model(monkeypatch):
     """把假模型接到流水线上。
 
     只换 `build_model`，**不换 `run_schedule`**——换后者等于把被测的那一段（工具执行、
     trace 提取、降级判定）整个跳过，用例会变成「我调了一个假函数，它返回了我预设的值」。
     """
-    def _use(model) -> None:  # noqa: ANN001
+
+    def _use(model) -> None:
         monkeypatch.setattr(builder, "build_model", lambda: model)
 
     return _use
@@ -147,7 +176,9 @@ async def test_seed_supports_the_five_scenarios(seed: dict, slots: dict) -> None
     halls = await query_spaces.ainvoke({"capacity": 40, "space_type": 2, **window})
     assert halls["count"] >= 1, "40 人展厅没了，场景 A 无从谈起"
     cheap = [s for s in halls["spaces"] if s["id"] == seed["space_hall_40"]]
-    assert cheap and cheap[0]["budget"] == 800.0, "A栋3楼展厅的预算不是 800，场景 A 的降级动因消失了"
+    assert cheap and cheap[0]["budget"] == 800.0, (
+        "A栋3楼展厅的预算不是 800，场景 A 的降级动因消失了"
+    )
 
     # A 的前提之二：投影仪可借（模型才有「从两台降到一台」这个选项）
     projectors = await query_devices.ainvoke({"device_type": "投影仪"})
@@ -182,7 +213,9 @@ async def test_seed_supports_the_degradation_case(seed: dict) -> None:
     live_ids = [d["id"] for d in live["devices"]]
     assert live["count"] == 1, f"直播设备可借数不是 1（{live_ids}），场景六的降级动因消失了"
     assert live_ids == [seed["live_ok"]], "可借的不是直播设备01"
-    assert seed["live_exhausted"] not in live_ids, "available_count=0 的设备没被滤掉——「可用数」分支失效"
+    assert seed["live_exhausted"] not in live_ids, (
+        "available_count=0 的设备没被滤掉——「可用数」分支失效"
+    )
 
     # 用户要两台 → 库里只有一台能借，这是**真降级**，不依赖任何时段或扣减口径。
     assert live["count"] < 2, "能借满两台，降级就无从谈起"
@@ -197,7 +230,7 @@ async def test_seed_supports_the_degradation_case(seed: dict) -> None:
 # --------------------------------------------------------------------------
 # AGENT-S：五个决策场景
 # --------------------------------------------------------------------------
-async def test_s01_budget_keeps_space_and_explains_no_downgrade(use_model, scripted, slots) -> None:  # noqa: ANN001
+async def test_s01_budget_keeps_space_and_explains_no_downgrade(use_model, scripted, slots) -> None:
     """A 预算 / 设备（800 元 / 40 人 + 双投影）→ **保住场地，并说明为何无需降级**。
 
     ## 标准为什么从「设备降级为单投影」改成这一条
@@ -220,12 +253,16 @@ async def test_s01_budget_keeps_space_and_explains_no_downgrade(use_model, scrip
     main = _plan(4, "A栋3楼展厅", [1, 2], slots, no_downgrade_reason)
     backup = _plan(5, "C栋1楼展厅", [2], slots, "备选：35 人展厅，预算再省 200 元。")
 
-    use_model(scripted([
-        _spaces_call(40, 2, slots),
-        _devices_call("投影仪"),
-        _submit_call(main, backup=backup, reason="预算内保场地，设备无需降级。"),
-        _ai("已提交方案。"),
-    ]))
+    use_model(
+        scripted(
+            [
+                _spaces_call(40, 2, slots),
+                _devices_call("投影仪"),
+                _submit_call(main, backup=backup, reason="预算内保场地，设备无需降级。"),
+                _ai("已提交方案。"),
+            ]
+        )
+    )
 
     outcome = await builder.run_schedule(text="40人展厅，预算800，要两台投影", user_id=1)
 
@@ -249,20 +286,26 @@ async def test_s02_split_request_is_carried_through(use_model, scripted, slots) 
     main = _plan(6, "综合楼大礼堂", [], slots, "拆分为两个时段对齐的场地。")
     backup = _plan(7, "综合楼小多功能厅", [], slots, "备用半场。")
 
-    use_model(scripted([
-        _spaces_call(40, 1, slots, "c1"),
-        _lock_call(6, [], slots, "c2"),
-        _lock_call(7, [], slots, "c3"),
-        _submit_call(main, backup=backup, reason="拆成两场，分两批入场。"),
-        _ai("已提交拆分方案。"),
-    ]))
+    use_model(
+        scripted(
+            [
+                _spaces_call(40, 1, slots, "c1"),
+                _lock_call(6, [], slots, "c2"),
+                _lock_call(7, [], slots, "c3"),
+                _submit_call(main, backup=backup, reason="拆成两场，分两批入场。"),
+                _ai("已提交拆分方案。"),
+            ]
+        )
+    )
 
     outcome = await builder.run_schedule(text="40人，两间会议室也行", user_id=1)
 
     assert outcome.success
     locks = [s for s in outcome.data.trace if s.action == "lock_resources"]
     assert len(locks) == 2, "两次锁定没有各自成步"
-    assert locks[0].actionInput["space_id"] != locks[1].actionInput["space_id"], "两次锁的是同一场地"
+    assert locks[0].actionInput["space_id"] != locks[1].actionInput["space_id"], (
+        "两次锁的是同一场地"
+    )
     assert outcome.data.backupPlan.spaceId == 7
 
 
@@ -275,24 +318,33 @@ async def test_s03_device_substitution_replaces_type(use_model, scripted, slots)
     """
     substitute_reason = "投影仪已全数占用，改推荐显示屏 9，可满足放映需求。"
 
-    use_model(scripted([
-        _devices_call("投影仪", "c1"),
-        _devices_call("显示屏", "c2"),
-        _submit_call(_plan(4, "A栋3楼展厅", [9], slots, substitute_reason),
-                     reason="设备替代。"),
-        _ai("已提交替代方案。"),
-    ]))
+    use_model(
+        scripted(
+            [
+                _devices_call("投影仪", "c1"),
+                _devices_call("显示屏", "c2"),
+                _submit_call(
+                    _plan(4, "A栋3楼展厅", [9], slots, substitute_reason), reason="设备替代。"
+                ),
+                _ai("已提交替代方案。"),
+            ]
+        )
+    )
 
     outcome = await builder.run_schedule(text="要投影仪", user_id=1)
 
     assert outcome.success
-    queried = [s.actionInput["device_type"] for s in outcome.data.trace if s.action == "query_devices"]
+    queried = [
+        s.actionInput["device_type"] for s in outcome.data.trace if s.action == "query_devices"
+    ]
     assert queried == ["投影仪", "显示屏"], f"替代路径没留痕：{queried}"
     assert outcome.data.plan.deviceIds == [9]
     assert outcome.data.plan.reason == substitute_reason
 
 
-async def test_s04_contradictory_request_returns_null_plan_with_suggestions(use_model, scripted, slots) -> None:  # noqa: ANN001
+async def test_s04_contradictory_request_returns_null_plan_with_suggestions(
+    use_model, scripted, slots
+) -> None:
     """D 需求矛盾（40 人 / 500 元）→ `plan=null`，`message` 含至少 3 条修改建议。
 
     **验**：模型判为矛盾、不调 `submit_plan` 时，系统**不编造方案**（`plan` 与
@@ -328,12 +380,16 @@ async def test_s05_merged_activity_keeps_the_saving_in_reason(use_model, scripte
     """
     saving = "两场合并为一场，节省一个场地与 2 小时时段，投影仪由 4 台减为 2 台。"
 
-    use_model(scripted([
-        _spaces_call(30, 3, slots, "c1"),
-        _lock_call(6, [1, 2], slots, "c2"),
-        _submit_call(_plan(6, "综合楼大礼堂", [1, 2], slots, saving), reason="合并两场。"),
-        _ai("已提交合并方案。"),
-    ]))
+    use_model(
+        scripted(
+            [
+                _spaces_call(30, 3, slots, "c1"),
+                _lock_call(6, [1, 2], slots, "c2"),
+                _submit_call(_plan(6, "综合楼大礼堂", [1, 2], slots, saving), reason="合并两场。"),
+                _ai("已提交合并方案。"),
+            ]
+        )
+    )
 
     outcome = await builder.run_schedule(text="上午下午各一场，同一个团队", user_id=1)
 
@@ -343,7 +399,9 @@ async def test_s05_merged_activity_keeps_the_saving_in_reason(use_model, scripte
     assert len(locks) == 1, "合并后仍锁了多个场地"
 
 
-async def test_s06_insufficient_devices_degrades_to_what_is_available(use_model, scripted, slots) -> None:
+async def test_s06_insufficient_devices_degrades_to_what_is_available(
+    use_model, scripted, slots
+) -> None:
     """`AGENT-S-06` 设备**数量不足**（要两台直播设备，库里只有 1 台可借）→ 降级为可借数。
 
     ## 与 `AGENT-S-01` 的分工
@@ -369,11 +427,18 @@ async def test_s06_insufficient_devices_degrades_to_what_is_available(use_model,
         "若必须两台，建议改用无人机或调整使用日期。"
     )
 
-    use_model(scripted([
-        _devices_call("直播设备", "c1"),
-        _submit_call(_plan(8, "中心广场", [14], slots, degrade_reason), reason="设备数量不足，按可借数降级。"),
-        _ai("已提交降级方案。"),
-    ]))
+    use_model(
+        scripted(
+            [
+                _devices_call("直播设备", "c1"),
+                _submit_call(
+                    _plan(8, "中心广场", [14], slots, degrade_reason),
+                    reason="设备数量不足，按可借数降级。",
+                ),
+                _ai("已提交降级方案。"),
+            ]
+        )
+    )
 
     outcome = await builder.run_schedule(text="户外活动，要两台直播设备", user_id=1)
 
@@ -384,7 +449,9 @@ async def test_s06_insufficient_devices_degrades_to_what_is_available(use_model,
     assert outcome.data.plan.reason == degrade_reason, "降级理由没有原样透传"
 
     # 可溯源：用户要能看出「为什么只给一台」，所以查询这一步必须在 trace 里。
-    queried = [s.actionInput["device_type"] for s in outcome.data.trace if s.action == "query_devices"]
+    queried = [
+        s.actionInput["device_type"] for s in outcome.data.trace if s.action == "query_devices"
+    ]
     assert queried == ["直播设备"], f"降级依据没留痕：{queried}"
     assert outcome.data.needConfirm is True
 
@@ -392,14 +459,18 @@ async def test_s06_insufficient_devices_degrades_to_what_is_available(use_model,
 # --------------------------------------------------------------------------
 # AGENT-E：异常与降级（全部返回 HTTP 200）
 # --------------------------------------------------------------------------
-async def test_e01_non_json_reply_degrades_with_model_text(use_model, scripted, dev_client, auth) -> None:  # noqa: ANN001
+async def test_e01_non_json_reply_degrades_with_model_text(
+    use_model, scripted, dev_client, auth
+) -> None:
     """`AGENT-E-01` 模型返回非 JSON：200、`plan=null`、`needConfirm=true`、
     `message` 为模型原文（主文档 10.2 明文要求）。"""
     prose = "抱歉，我暂时无法给出方案，请补充日期与预算后重试。"
 
     use_model(scripted([_ai(prose)]))
 
-    resp = await dev_client.post("/api/v1/agent/schedule", json={"text": "帮我排一下"}, headers=auth)
+    resp = await dev_client.post(
+        "/api/v1/agent/schedule", json={"text": "帮我排一下"}, headers=auth
+    )
 
     assert resp.status_code == 200, "契约内降级不是异常，不能给非 200"
     body = resp.json()
@@ -408,7 +479,9 @@ async def test_e01_non_json_reply_degrades_with_model_text(use_model, scripted, 
     assert body["message"] == prose
 
 
-async def test_e01_fenced_json_in_text_is_salvaged(use_model, scripted, slots, dev_client, auth) -> None:  # noqa: ANN001
+async def test_e01_fenced_json_in_text_is_salvaged(
+    use_model, scripted, slots, dev_client, auth
+) -> None:
     """主文档 7.4 的 JSON 解析容错：模型不调工具、但正文里贴了 JSON → **捞出来当成方案**。
 
     这条与上一条合起来才是完整的 E-01：容错**优先**，容错也失败才降级。
@@ -416,11 +489,20 @@ async def test_e01_fenced_json_in_text_is_salvaged(use_model, scripted, slots, d
     start, end = slots["free"]
     fenced = (
         "这是我的方案：\n```json\n"
-        + json.dumps({
-            "plan": {"spaceId": 4, "spaceName": "A栋3楼展厅", "deviceIds": [1],
-                     "startTime": start, "endTime": end, "reason": "预算内方案"},
-            "reason": "正文 JSON 提交",
-        }, ensure_ascii=False)
+        + json.dumps(
+            {
+                "plan": {
+                    "spaceId": 4,
+                    "spaceName": "A栋3楼展厅",
+                    "deviceIds": [1],
+                    "startTime": start,
+                    "endTime": end,
+                    "reason": "预算内方案",
+                },
+                "reason": "正文 JSON 提交",
+            },
+            ensure_ascii=False,
+        )
         + "\n```\n请确认。"
     )
 
@@ -433,7 +515,9 @@ async def test_e01_fenced_json_in_text_is_salvaged(use_model, scripted, slots, d
     assert body["data"]["plan"]["spaceId"] == 4, "正文里的 JSON 方案没被捞出来"
 
 
-async def test_e02_slow_model_degrades_on_timeout(use_model, scripted, dev_client, auth, monkeypatch) -> None:  # noqa: ANN001
+async def test_e02_slow_model_degrades_on_timeout(
+    use_model, scripted, dev_client, auth, monkeypatch
+) -> None:
     """`AGENT-E-02` 模型调用超时：200 + 友好提示（不是 500、不是挂住）。
 
     超时阈值改为 0.05 秒、模型延迟 0.3 秒——**不改阈值的话本用例要跑满 30 秒**。
@@ -450,7 +534,9 @@ async def test_e02_slow_model_degrades_on_timeout(use_model, scripted, dev_clien
     assert body["data"]["needConfirm"] is True
 
 
-async def test_e02_timeout_keeps_the_steps_already_collected(monkeypatch, use_model, scripted) -> None:  # noqa: ANN001
+async def test_e02_timeout_keeps_the_steps_already_collected(
+    monkeypatch, use_model, scripted
+) -> None:
     """超时时 **trace 保留中断前的步骤**，且提示里报出「已思考到第几步」。
 
     这正是 `run_schedule` 把 `stamped` 提在 `wait_for` 外面、以 sink 形式传进去的
@@ -464,15 +550,27 @@ async def test_e02_timeout_keeps_the_steps_already_collected(monkeypatch, use_mo
     monkeypatch.setattr(settings, "AGENT_TIMEOUT", 0.05)
     use_model(scripted([_ai("占位")]))
 
-    async def _sink_then_hang(agent, inputs, *, config=None, sink=None):  # noqa: ANN001, ANN202
+    async def _sink_then_hang(agent, inputs, *, config=None, sink=None):
         # 三步 = **两步** trace（带 tool_calls 的 AIMessage 与其 ToolMessage 合并成一步，
         # 这是契约要求的形状）。所以要凑出「第 2 步」得放三条。
-        sink.append((AIMessage(content="第一步", tool_calls=[_call("query_spaces", {}, "x1")]),
-                     "2026-09-25 14:00:00"))
-        sink.append((ToolMessage(content="{}", name="query_spaces", tool_call_id="x1"),
-                     "2026-09-25 14:00:01"))
-        sink.append((AIMessage(content="第二步", tool_calls=[_call("query_devices", {}, "x2")]),
-                     "2026-09-25 14:00:02"))
+        sink.append(
+            (
+                AIMessage(content="第一步", tool_calls=[_call("query_spaces", {}, "x1")]),
+                "2026-09-25 14:00:00",
+            )
+        )
+        sink.append(
+            (
+                ToolMessage(content="{}", name="query_spaces", tool_call_id="x1"),
+                "2026-09-25 14:00:01",
+            )
+        )
+        sink.append(
+            (
+                AIMessage(content="第二步", tool_calls=[_call("query_devices", {}, "x2")]),
+                "2026-09-25 14:00:02",
+            )
+        )
         await asyncio.sleep(5)
 
     monkeypatch.setattr(builder, "collect_stamped_messages", _sink_then_hang)
@@ -485,7 +583,9 @@ async def test_e02_timeout_keeps_the_steps_already_collected(monkeypatch, use_mo
     assert "已思考到第 2 步" in outcome.message
 
 
-async def test_e03_empty_query_result_yields_no_plan(use_model, scripted, dev_client, auth, slots) -> None:  # noqa: ANN001
+async def test_e03_empty_query_result_yields_no_plan(
+    use_model, scripted, dev_client, auth, slots
+) -> None:
     """`AGENT-E-03` 无可用资源：`plan` 与 `backupPlan` 都为 `null`，并明确说明无方案。
 
     用 10000 人的户外场地当「必然查不到」的需求——上限是 `QuerySpacesArgs` 的 `le=10000`，
@@ -493,14 +593,32 @@ async def test_e03_empty_query_result_yields_no_plan(use_model, scripted, dev_cl
     """
     start, end = slots["free"]
 
-    use_model(scripted([
-        _ai("查一下超大户外场地。", [_call("query_spaces", {
-            "capacity": 10000, "space_type": 4, "start_time": start, "end_time": end,
-        }, "c1")]),
-        _ai("当前没有能容纳 10000 人的场地，无法生成方案。建议降低人数或改为线上举办。"),
-    ]))
+    use_model(
+        scripted(
+            [
+                _ai(
+                    "查一下超大户外场地。",
+                    [
+                        _call(
+                            "query_spaces",
+                            {
+                                "capacity": 10000,
+                                "space_type": 4,
+                                "start_time": start,
+                                "end_time": end,
+                            },
+                            "c1",
+                        )
+                    ],
+                ),
+                _ai("当前没有能容纳 10000 人的场地，无法生成方案。建议降低人数或改为线上举办。"),
+            ]
+        )
+    )
 
-    resp = await dev_client.post("/api/v1/agent/schedule", json={"text": "一万人户外"}, headers=auth)
+    resp = await dev_client.post(
+        "/api/v1/agent/schedule", json={"text": "一万人户外"}, headers=auth
+    )
 
     body = resp.json()
     assert resp.status_code == 200
@@ -509,7 +627,9 @@ async def test_e03_empty_query_result_yields_no_plan(use_model, scripted, dev_cl
     assert "无法生成方案" in body["message"]
 
 
-async def test_e04_tool_exception_is_not_a_500(monkeypatch, use_model, scripted, dev_client, auth, slots) -> None:  # noqa: ANN001
+async def test_e04_tool_exception_is_not_a_500(
+    monkeypatch, use_model, scripted, dev_client, auth, slots
+) -> None:
     """`AGENT-E-04` 工具抛异常：不 500，走降级提示。
 
     这里让 `query_spaces` 的 service 抛错。**LangGraph 的 ToolNode 默认会把工具异常
@@ -517,7 +637,8 @@ async def test_e04_tool_exception_is_not_a_500(monkeypatch, use_model, scripted,
     模型会收到「这个工具报错了」并自行改道——本例里假模型直接放弃，于是走降级。
     这条与下面那条（流本身抛错）合起来覆盖 `run_schedule` 的两层兜底。
     """
-    def _boom(**kwargs):  # noqa: ANN003, ANN202
+
+    def _boom(**kwargs):
         raise RuntimeError("service 桩爆炸")
 
     # ⚠️ 目标必须取**模块本体**。写字符串路径 `"app.agent.tools.query_spaces._query_spaces_service"`
@@ -529,10 +650,14 @@ async def test_e04_tool_exception_is_not_a_500(monkeypatch, use_model, scripted,
     spaces_mod = importlib.import_module("app.agent.tools.query_spaces")
     monkeypatch.setattr(spaces_mod, "_query_spaces_service", _boom)
 
-    use_model(scripted([
-        _spaces_call(40, 2, slots),
-        _ai("查询场地时出错，本次无法给出方案，请稍后重试。"),
-    ]))
+    use_model(
+        scripted(
+            [
+                _spaces_call(40, 2, slots),
+                _ai("查询场地时出错，本次无法给出方案，请稍后重试。"),
+            ]
+        )
+    )
 
     resp = await dev_client.post("/api/v1/agent/schedule", json={"text": "排一下"}, headers=auth)
 
@@ -542,7 +667,9 @@ async def test_e04_tool_exception_is_not_a_500(monkeypatch, use_model, scripted,
     assert "错误" in body["message"] or "重试" in body["message"]
 
 
-async def test_e04_runtime_error_in_the_stream_degrades_not_500(monkeypatch, use_model, scripted) -> None:  # noqa: ANN001
+async def test_e04_runtime_error_in_the_stream_degrades_not_500(
+    monkeypatch, use_model, scripted
+) -> None:
     """整条流自己抛错时也不许穿透成 500。
 
     `run_schedule` 里那个宽 `except Exception` 是**刻意宽**的：LangGraph 会把工具内的
@@ -550,7 +677,7 @@ async def test_e04_runtime_error_in_the_stream_degrades_not_500(monkeypatch, use
     """
     use_model(scripted([_ai("占位")]))
 
-    async def _boom(agent, inputs, *, config=None, sink=None):  # noqa: ANN001, ANN202
+    async def _boom(agent, inputs, *, config=None, sink=None):
         raise RuntimeError("流炸了")
 
     monkeypatch.setattr(builder, "collect_stamped_messages", _boom)
@@ -566,16 +693,27 @@ async def test_e04_runtime_error_in_the_stream_degrades_not_500(monkeypatch, use
 # --------------------------------------------------------------------------
 # AGENT-I：接口
 # --------------------------------------------------------------------------
-async def test_i01_normal_call_returns_full_unified_body(use_model, scripted, slots, dev_client, auth) -> None:  # noqa: ANN001
+async def test_i01_normal_call_returns_full_unified_body(
+    use_model, scripted, slots, dev_client, auth
+) -> None:
     """`AGENT-I-01` 正常调用：200、统一响应体、`data.trace` 非空且字段齐全。"""
-    use_model(scripted([
-        _spaces_call(40, 2, slots, "c1"),
-        _devices_call("投影仪", "c2"),
-        _submit_call(_plan(4, "A栋3楼展厅", [1, 2], slots, "满足 40 人与双投影。"), reason="直接满足。"),
-        _ai("已完成。"),
-    ]))
+    use_model(
+        scripted(
+            [
+                _spaces_call(40, 2, slots, "c1"),
+                _devices_call("投影仪", "c2"),
+                _submit_call(
+                    _plan(4, "A栋3楼展厅", [1, 2], slots, "满足 40 人与双投影。"),
+                    reason="直接满足。",
+                ),
+                _ai("已完成。"),
+            ]
+        )
+    )
 
-    resp = await dev_client.post("/api/v1/agent/schedule", json={"text": "40人展厅+双投影"}, headers=auth)
+    resp = await dev_client.post(
+        "/api/v1/agent/schedule", json={"text": "40人展厅+双投影"}, headers=auth
+    )
 
     assert resp.status_code == 200
     body = resp.json()
@@ -587,14 +725,21 @@ async def test_i01_normal_call_returns_full_unified_body(use_model, scripted, sl
     assert set(data) == {"plan", "backupPlan", "orderId", "trace", "needConfirm"}
     assert data["trace"], "trace 为空——屏 3 没有东西可回放"
     for step in data["trace"]:
-        assert set(step) == {"step", "result", "timestamp", "thought", "action",
-                             "actionInput", "observation"}
+        assert set(step) == {
+            "step",
+            "result",
+            "timestamp",
+            "thought",
+            "action",
+            "actionInput",
+            "observation",
+        }
         assert step["step"] >= 1 and step["result"] and step["timestamp"]
     assert data["trace"][0]["action"] == "query_spaces"
     assert data["trace"][0]["observation"] is not None, "工具结果没进 observation"
 
 
-async def test_i02_missing_authorization_is_401(dev_client) -> None:  # noqa: ANN001
+async def test_i02_missing_authorization_is_401(dev_client) -> None:
     """`AGENT-I-02` 无 `Authorization` 头：401，且响应体仍是统一结构。"""
     resp = await dev_client.post("/api/v1/agent/schedule", json={"text": "排一下"})
 
@@ -603,7 +748,7 @@ async def test_i02_missing_authorization_is_401(dev_client) -> None:  # noqa: AN
     assert set(body) == {"code", "message", "data"}, "401 也必须是统一响应体"
 
 
-async def test_i02b_refresh_token_cannot_be_used_as_access(dev_client) -> None:  # noqa: ANN001
+async def test_i02b_refresh_token_cannot_be_used_as_access(dev_client) -> None:
     """refreshToken 不能当 accessToken 用：HTTP 401 + 业务码 40104。
 
     `AGENT-I-02` 只验了「没带头」，验不出「带错了头」。两种 Token 用**同一个密钥**签发，
@@ -640,7 +785,7 @@ async def test_i02b_refresh_token_cannot_be_used_as_access(dev_client) -> None: 
     assert body["code"] == ErrorCode.TOKEN_TYPE_INVALID
 
 
-async def test_api_deps_rejects_refresh_token(monkeypatch, dev_db_session) -> None:  # noqa: ANN001
+async def test_api_deps_rejects_refresh_token(monkeypatch, dev_db_session) -> None:
     """`api/deps.py::get_current_user` —— 全应用唯一的身份依赖 —— 必须把 refreshToken 拦下。
 
     本条与上面那条接口用例验的是同一段代码；留着是因为它**不经过路由**，
@@ -680,7 +825,7 @@ async def test_api_deps_rejects_refresh_token(monkeypatch, dev_db_session) -> No
         await get_current_user(credentials=_creds(refresh), db=dev_db_session)
 
 
-async def test_api_deps_rejects_token_without_type_claim(monkeypatch, dev_db_session) -> None:  # noqa: ANN001
+async def test_api_deps_rejects_token_without_type_claim(monkeypatch, dev_db_session) -> None:
     """`api/deps.py` 走的是**严格**口径：`type` 缺失的令牌一律拒（40102）。
 
     这条**刻意钉住一个选择**，因为口径在 2026-09-28 合并时**反过来了**：
@@ -698,11 +843,11 @@ async def test_api_deps_rejects_token_without_type_claim(monkeypatch, dev_db_ses
     import datetime as dt
 
     import jwt as _jwt
+    from fastapi.security import HTTPAuthorizationCredentials
 
     from app.api.deps import get_current_user
     from app.core.config import settings
     from app.core.exceptions import TokenInvalidError
-    from fastapi.security import HTTPAuthorizationCredentials
 
     monkeypatch.setattr(settings, "AUTH_BYPASS", False)
 
@@ -712,7 +857,7 @@ async def test_api_deps_rejects_token_without_type_claim(monkeypatch, dev_db_ses
             "userId": 1,
             "username": "user01",
             "role": "user",
-            "exp": dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5),
+            "exp": dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5),
         },
         settings.JWT_SECRET_KEY,
         algorithm=settings.JWT_ALGORITHM,
@@ -725,7 +870,9 @@ async def test_api_deps_rejects_token_without_type_claim(monkeypatch, dev_db_ses
         )
 
 
-async def test_i03_empty_text_is_rejected_without_calling_the_model(dev_client, auth, monkeypatch) -> None:  # noqa: ANN001
+async def test_i03_empty_text_is_rejected_without_calling_the_model(
+    dev_client, auth, monkeypatch
+) -> None:
     """`AGENT-I-03` `text` 为空串：被参数校验挡下，**且不空跑模型**（`min_length=1` 生效）。
 
     ⚠️ 口径是 **HTTP 400 + `code=40001`**（`ErrorCode.PARAM_INVALID`），不是框架默认的 422。
@@ -743,7 +890,7 @@ async def test_i03_empty_text_is_rejected_without_calling_the_model(dev_client, 
     """
     called = False
 
-    async def _spy(**kwargs):  # noqa: ANN003, ANN202
+    async def _spy(**kwargs):
         nonlocal called
         called = True
         return _stub_outcome()
@@ -759,12 +906,15 @@ async def test_i03_empty_text_is_rejected_without_calling_the_model(dev_client, 
     assert not called, "空文本仍然跑了一遍模型"
 
 
-@pytest.mark.parametrize("payload", [
-    {"text": "排一下", "userId": 999},
-    {"text": "排一下", "user_id": 999},
-    {"text": "排一下", "userId": 999, "role": "admin"},
-])
-async def test_i04_identity_comes_only_from_jwt(payload, dev_client, auth, monkeypatch) -> None:  # noqa: ANN001
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"text": "排一下", "userId": 999},
+        {"text": "排一下", "user_id": 999},
+        {"text": "排一下", "userId": 999, "role": "admin"},
+    ],
+)
+async def test_i04_identity_comes_only_from_jwt(payload, dev_client, auth, monkeypatch) -> None:
     """`AGENT-I-04` 请求体夹带 `userId` / `role`：被**忽略**，实际用 JWT 里的用户。
 
     观察点不是「返回了 200」——那证明不了用的是谁。这里截住 `run_schedule` 的实参：
@@ -772,7 +922,7 @@ async def test_i04_identity_comes_only_from_jwt(payload, dev_client, auth, monke
     """
     seen: dict = {}
 
-    async def _spy(*, text, user_id, image_context=None):  # noqa: ANN001, ANN202
+    async def _spy(*, text, user_id, image_context=None):
         seen["user_id"] = user_id
         seen["text"] = text
         return _stub_outcome()
@@ -783,10 +933,14 @@ async def test_i04_identity_comes_only_from_jwt(payload, dev_client, auth, monke
 
     assert resp.status_code == 200, "夹带 userId 应当是「被忽略」，不是校验失败也不是 500"
     assert seen["user_id"] == 1, f"身份不是从 JWT 取的：{seen.get('user_id')}"
-    assert "userId" not in seen["text"] and "user_id" not in seen["text"], "请求体的身份字段混进了需求原文"
+    assert "userId" not in seen["text"] and "user_id" not in seen["text"], (
+        "请求体的身份字段混进了需求原文"
+    )
 
 
-async def test_i05_response_carries_no_secrets(use_model, scripted, slots, dev_client, auth) -> None:  # noqa: ANN001
+async def test_i05_response_carries_no_secrets(
+    use_model, scripted, slots, dev_client, auth
+) -> None:
     """`AGENT-I-05` 响应体不含敏感信息（主文档 9.2）。"""
     secrets = {
         "LLM_API_KEY": settings.LLM_API_KEY,
@@ -794,10 +948,14 @@ async def test_i05_response_carries_no_secrets(use_model, scripted, slots, dev_c
         "JWT_SECRET_KEY": settings.JWT_SECRET_KEY,
     }
 
-    use_model(scripted([
-        _submit_call(_plan(4, "A栋3楼展厅", [1], slots, "方案"), reason="直接满足。"),
-        _ai("完成。"),
-    ]))
+    use_model(
+        scripted(
+            [
+                _submit_call(_plan(4, "A栋3楼展厅", [1], slots, "方案"), reason="直接满足。"),
+                _ai("完成。"),
+            ]
+        )
+    )
 
     resp = await dev_client.post("/api/v1/agent/schedule", json={"text": "排一下"}, headers=auth)
     text = resp.text
@@ -808,7 +966,9 @@ async def test_i05_response_carries_no_secrets(use_model, scripted, slots, dev_c
         assert value not in text, f"响应体里出现了 {name} 的值"
 
 
-async def test_i05_unavailable_llm_returns_503_naming_fields_not_values(dev_client, auth, monkeypatch) -> None:  # noqa: ANN001
+async def test_i05_unavailable_llm_returns_503_naming_fields_not_values(
+    dev_client, auth, monkeypatch
+) -> None:
     """`.env` 缺 LLM 配置时的唯一非 200 路径：503，且**只报字段名、不回显值**。
 
     这是「服务端配置问题」与「AI 没想出方案」的分界：后者是 HTTP 200 的契约内降级
@@ -816,7 +976,7 @@ async def test_i05_unavailable_llm_returns_503_naming_fields_not_values(dev_clie
     """
     from app.agent.chains.builder import AgentUnavailableError
 
-    async def _raise(**kwargs):  # noqa: ANN003, ANN202
+    async def _raise(**kwargs):
         raise AgentUnavailableError(
             "大模型未配置：请在 backend/.env 中填好 LLM_MODEL_NAME / LLM_API_KEY / LLM_BASE_URL。"
         )
@@ -833,7 +993,7 @@ async def test_i05_unavailable_llm_returns_503_naming_fields_not_values(dev_clie
         assert settings.LLM_API_KEY not in body["message"], "把 Key 的值回显了"
 
 
-async def test_i05_build_model_gate_and_no_implicit_key(monkeypatch) -> None:  # noqa: ANN001
+async def test_i05_build_model_gate_and_no_implicit_key(monkeypatch) -> None:
     """`build_model()` 的两段式行为：缺配置**明确报错**，配齐则**显式传参**。
 
     第二段是本条的重点：`ChatOpenAI` 会隐式读取环境变量 `OPENAI_API_KEY`，
@@ -851,18 +1011,25 @@ async def test_i05_build_model_gate_and_no_implicit_key(monkeypatch) -> None:  #
     model = builder.build_model()
 
     assert model.model_name == "qwen-plus"
-    assert model.openai_api_key.get_secret_value() == "sk-测试用假值", "api_key 没显式传，落到了隐式环境变量路径"
+    assert model.openai_api_key.get_secret_value() == "sk-测试用假值", (
+        "api_key 没显式传，落到了隐式环境变量路径"
+    )
     assert str(model.openai_api_base) == "https://example.invalid/v1"
 
 
-async def test_i05_never_registers_tool_routes(dev_client) -> None:  # noqa: ANN001
+async def test_i05_never_registers_tool_routes(dev_client) -> None:
     """`/api/v1/tools/*` 全仓不存在（主文档 5.3 / 9.3）。
 
     工具是给模型用的函数，不是给人用的接口——注册出去等于把「查库 + 锁资源」暴露成
     无鉴权或弱鉴权的 HTTP 端点。
     """
-    for name in ("query_spaces", "query_devices", "lock_resources",
-                 "generate_notification", "submit_plan"):
+    for name in (
+        "query_spaces",
+        "query_devices",
+        "lock_resources",
+        "generate_notification",
+        "submit_plan",
+    ):
         resp = await dev_client.post(f"/api/v1/tools/{name}", json={})
         assert resp.status_code == 404, f"/api/v1/tools/{name} 被注册了"
 
@@ -886,7 +1053,7 @@ async def test_guard_offline_is_actually_armed() -> None:
     sock.close()
 
 
-async def test_guard_db_writes_are_actually_blocked(dev_db_session) -> None:  # noqa: ANN001
+async def test_guard_db_writes_are_actually_blocked(dev_db_session) -> None:
     """写语句会被前置拒绝。**这是「没写正式表」的证据**（主文档 6.8 红线）。
 
     用一条**只改自己**的 UPDATE 来触发：它即使真被执行也几乎不改变数据，

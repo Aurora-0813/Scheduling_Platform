@@ -4,6 +4,7 @@
 的注释就只是注释）：`lock_resources` 的 `conflictType` 枚举、`submit_plan` 的字段集、
 `/api/v1/tools/*` 的存在性。它们各自守着一条**跨文件的一致性**，靠人读注释守不住。
 """
+
 from __future__ import annotations
 
 import importlib
@@ -29,8 +30,10 @@ async def test_u01_query_spaces_rejects_zero_capacity() -> None:
     ——模型给的数字不保证合理，函数自己也得挡。
     """
     result = await query_spaces.coroutine(
-        capacity=0, space_type=2,
-        start_time="2026-10-15 09:00:00", end_time="2026-10-15 11:00:00",
+        capacity=0,
+        space_type=2,
+        start_time="2026-10-15 09:00:00",
+        end_time="2026-10-15 11:00:00",
     )
 
     assert result["ok"] is False
@@ -43,8 +46,10 @@ async def test_u01_query_spaces_rejects_zero_capacity() -> None:
 async def test_u01_query_spaces_rejects_reversed_time() -> None:
     """时段倒置：结束早于开始。"""
     result = await query_spaces.coroutine(
-        capacity=40, space_type=2,
-        start_time="2026-10-15 16:00:00", end_time="2026-10-15 11:00:00",
+        capacity=40,
+        space_type=2,
+        start_time="2026-10-15 16:00:00",
+        end_time="2026-10-15 11:00:00",
     )
 
     assert result["ok"] is False
@@ -55,8 +60,10 @@ async def test_u01_query_spaces_rejects_reversed_time() -> None:
 async def test_u01_query_spaces_rejects_unparsable_time() -> None:
     """时间格式无法解析。模型给的格式不保证唯一，解不出要明确说，不要猜。"""
     result = await query_spaces.coroutine(
-        capacity=40, space_type=2,
-        start_time="下周五下午", end_time="2026-10-15 17:00:00",
+        capacity=40,
+        space_type=2,
+        start_time="下周五下午",
+        end_time="2026-10-15 17:00:00",
     )
 
     assert result["ok"] is False
@@ -66,8 +73,10 @@ async def test_u01_query_spaces_rejects_unparsable_time() -> None:
 async def test_u01_query_spaces_rejects_out_of_range_space_type() -> None:
     """`space_type=9` 不在 1~4，返回失败而不是静默查空。"""
     result = await query_spaces.coroutine(
-        capacity=40, space_type=9,
-        start_time="2026-10-15 09:00:00", end_time="2026-10-15 11:00:00",
+        capacity=40,
+        space_type=9,
+        start_time="2026-10-15 09:00:00",
+        end_time="2026-10-15 11:00:00",
     )
 
     assert result["ok"] is False
@@ -81,13 +90,38 @@ async def test_u01_query_spaces_bad_inputs_never_raise(seed: dict) -> None:
     「返回业务错误而非抛异常」，那是个**全称**命题，得用一组输入去逼。
     """
     bad_cases = [
-        {"capacity": 0, "space_type": 2, "start_time": "2026-10-15 09:00:00", "end_time": "2026-10-15 11:00:00"},
-        {"capacity": -5, "space_type": 2, "start_time": "2026-10-15 09:00:00", "end_time": "2026-10-15 11:00:00"},
-        {"capacity": 40, "space_type": 0, "start_time": "2026-10-15 09:00:00", "end_time": "2026-10-15 11:00:00"},
-        {"capacity": 40, "space_type": 5, "start_time": "2026-10-15 09:00:00", "end_time": "2026-10-15 11:00:00"},
+        {
+            "capacity": 0,
+            "space_type": 2,
+            "start_time": "2026-10-15 09:00:00",
+            "end_time": "2026-10-15 11:00:00",
+        },
+        {
+            "capacity": -5,
+            "space_type": 2,
+            "start_time": "2026-10-15 09:00:00",
+            "end_time": "2026-10-15 11:00:00",
+        },
+        {
+            "capacity": 40,
+            "space_type": 0,
+            "start_time": "2026-10-15 09:00:00",
+            "end_time": "2026-10-15 11:00:00",
+        },
+        {
+            "capacity": 40,
+            "space_type": 5,
+            "start_time": "2026-10-15 09:00:00",
+            "end_time": "2026-10-15 11:00:00",
+        },
         {"capacity": 40, "space_type": 2, "start_time": "", "end_time": ""},
         {"capacity": 40, "space_type": 2, "start_time": "not-a-time", "end_time": "also-not"},
-        {"capacity": 40, "space_type": 2, "start_time": "2026-10-15 12:00:00", "end_time": "2026-10-15 12:00:00"},
+        {
+            "capacity": 40,
+            "space_type": 2,
+            "start_time": "2026-10-15 12:00:00",
+            "end_time": "2026-10-15 12:00:00",
+        },
     ]
     for case in bad_cases:
         result = await query_spaces.coroutine(**case)  # 抛异常则用例失败
@@ -218,8 +252,10 @@ async def test_u03_hall_maps_to_type_2_end_to_end(seed: dict) -> None:
     assert space_type_no == 2
 
     result = await query_spaces.coroutine(
-        capacity=35, space_type=space_type_no,
-        start_time="2026-10-15 09:00:00", end_time="2026-10-15 11:00:00",
+        capacity=35,
+        space_type=space_type_no,
+        start_time="2026-10-15 09:00:00",
+        end_time="2026-10-15 11:00:00",
     )
 
     assert result["ok"] is True
@@ -231,16 +267,20 @@ async def test_u03_hall_maps_to_type_2_end_to_end(seed: dict) -> None:
 async def test_u03_capacity_is_a_lower_bound(seed: dict) -> None:
     """容量取「≥」：要 40 人的展厅，50 人的那个要在结果里。"""
     result = await query_spaces.coroutine(
-        capacity=40, space_type=2,
-        start_time="2026-10-15 09:00:00", end_time="2026-10-15 11:00:00",
+        capacity=40,
+        space_type=2,
+        start_time="2026-10-15 09:00:00",
+        end_time="2026-10-15 11:00:00",
     )
     ids = {s["id"] for s in result["spaces"]}
-    assert seed["space_hall_40"] in ids          # cap=50 ≥ 40
-    assert seed["space_hall_35"] not in ids      # cap=35 < 40
+    assert seed["space_hall_40"] in ids  # cap=50 ≥ 40
+    assert seed["space_hall_35"] not in ids  # cap=35 < 40
 
     result = await query_spaces.coroutine(
-        capacity=30, space_type=2,
-        start_time="2026-10-15 09:00:00", end_time="2026-10-15 11:00:00",
+        capacity=30,
+        space_type=2,
+        start_time="2026-10-15 09:00:00",
+        end_time="2026-10-15 11:00:00",
     )
     assert {s["id"] for s in result["spaces"]} == {seed["space_hall_40"], seed["space_hall_35"]}
 
@@ -255,8 +295,10 @@ async def test_lock_resources_fails_closed_without_identity() -> None:
     任何绕过 API 层直接调 Tool 的路径都能替人下单。
     """
     result = await lock_resources.coroutine(
-        space_id=4, device_ids=[],
-        start_time="2026-10-15 09:00:00", end_time="2026-10-15 11:00:00",
+        space_id=4,
+        device_ids=[],
+        start_time="2026-10-15 09:00:00",
+        end_time="2026-10-15 11:00:00",
     )
 
     assert result["ok"] is False
@@ -275,7 +317,10 @@ async def test_lock_resources_time_conflict_is_retryable(seed: dict, slots: dict
     start, end = slots["occupied"]
     with agent_run_context(user_id=1, raw_request="测试：时段冲突"):
         result = await lock_resources.coroutine(
-            space_id=seed["space_hall_40"], device_ids=[], start_time=start, end_time=end,
+            space_id=seed["space_hall_40"],
+            device_ids=[],
+            start_time=start,
+            end_time=end,
         )
 
     assert result["ok"] is False
@@ -289,8 +334,10 @@ async def test_lock_resources_time_conflict_is_retryable(seed: dict, slots: dict
 async def test_lock_resources_device_not_found_is_retryable(seed: dict) -> None:
     with agent_run_context(user_id=1, raw_request="测试：设备不存在"):
         result = await lock_resources.coroutine(
-            space_id=seed["space_hall_40"], device_ids=[999_999],
-            start_time="2026-10-15 09:00:00", end_time="2026-10-15 11:00:00",
+            space_id=seed["space_hall_40"],
+            device_ids=[999_999],
+            start_time="2026-10-15 09:00:00",
+            end_time="2026-10-15 11:00:00",
         )
 
     assert result["ok"] is False
@@ -306,8 +353,10 @@ async def test_lock_resources_damaged_device_is_device_conflict(seed: dict) -> N
     """
     with agent_run_context(user_id=1, raw_request="测试：损坏设备"):
         result = await lock_resources.coroutine(
-            space_id=seed["space_hall_40"], device_ids=[seed["drone_broken"]],
-            start_time="2026-10-15 09:00:00", end_time="2026-10-15 11:00:00",
+            space_id=seed["space_hall_40"],
+            device_ids=[seed["drone_broken"]],
+            start_time="2026-10-15 09:00:00",
+            end_time="2026-10-15 11:00:00",
         )
 
     assert result["ok"] is False
@@ -319,8 +368,10 @@ async def test_lock_resources_exhausted_device_is_device_conflict(seed: dict) ->
     """借零库存设备（id=15）：同 `device_conflict`，但 reason 是 `exhausted`。"""
     with agent_run_context(user_id=1, raw_request="测试：零库存设备"):
         result = await lock_resources.coroutine(
-            space_id=seed["space_hall_40"], device_ids=[seed["live_exhausted"]],
-            start_time="2026-10-15 09:00:00", end_time="2026-10-15 11:00:00",
+            space_id=seed["space_hall_40"],
+            device_ids=[seed["live_exhausted"]],
+            start_time="2026-10-15 09:00:00",
+            end_time="2026-10-15 11:00:00",
         )
 
     assert result["ok"] is False
@@ -332,8 +383,10 @@ async def test_lock_resources_reversed_time_is_not_retryable(seed: dict) -> None
     """参数本身非法 → `retryable=false`，因为「原样重发」不可能变好。"""
     with agent_run_context(user_id=1, raw_request="测试：时段倒置"):
         result = await lock_resources.coroutine(
-            space_id=seed["space_hall_40"], device_ids=[],
-            start_time="2026-10-15 17:00:00", end_time="2026-10-15 13:00:00",
+            space_id=seed["space_hall_40"],
+            device_ids=[],
+            start_time="2026-10-15 17:00:00",
+            end_time="2026-10-15 13:00:00",
         )
 
     assert result["ok"] is False
@@ -351,13 +404,15 @@ async def test_lock_resources_free_slot_passes_validation(seed: dict, slots: dic
     start, end = slots["free"]
     with agent_run_context(user_id=1, raw_request="测试：空时段成功"):
         result = await lock_resources.coroutine(
-            space_id=seed["space_hall_40"], device_ids=seed["projectors"][:2],
-            start_time=start, end_time=end,
+            space_id=seed["space_hall_40"],
+            device_ids=seed["projectors"][:2],
+            start_time=start,
+            end_time=end,
         )
 
     assert result["ok"] is True
-    assert result["orderId"] is None          # 桩不落库
-    assert result["stub"] is True             # ← 桩期临时断言，替换真实实现时删除
+    assert result["orderId"] is None  # 桩不落库
+    assert result["stub"] is True  # ← 桩期临时断言，替换真实实现时删除
 
 
 async def test_lock_resources_rejects_string_device_ids(seed: dict) -> None:
@@ -368,8 +423,10 @@ async def test_lock_resources_rejects_string_device_ids(seed: dict) -> None:
     """
     with agent_run_context(user_id=1, raw_request="测试：字符串设备 ID"):
         result = await lock_resources.coroutine(
-            space_id=seed["space_hall_40"], device_ids="1",  # type: ignore[arg-type]
-            start_time="2026-10-15 09:00:00", end_time="2026-10-15 11:00:00",
+            space_id=seed["space_hall_40"],
+            device_ids="1",  # type: ignore[arg-type]
+            start_time="2026-10-15 09:00:00",
+            end_time="2026-10-15 11:00:00",
         )
 
     assert result["ok"] is False
@@ -384,10 +441,14 @@ async def test_generate_notification_mapped_type_succeeds() -> None:
     # 传 `OrderInfo` 实例而不是裸 dict：`args_schema` 把模型交来的参数**转成模型**
     # 之后才调本函数（Agent 路径实测如此），所以这里必须按生产形状传，
     # 否则用例在验一个生产上不存在的调用方式。
-    result = await generate_notification.coroutine(order_info=OrderInfo(
-        notifyType="预约提醒", spaceName="A栋3楼展厅",
-        startTime="2026-10-15 09:00:00", endTime="2026-10-15 11:00:00",
-    ))
+    result = await generate_notification.coroutine(
+        order_info=OrderInfo(
+            notifyType="预约提醒",
+            spaceName="A栋3楼展厅",
+            startTime="2026-10-15 09:00:00",
+            endTime="2026-10-15 11:00:00",
+        )
+    )
 
     assert result["ok"] is True
     assert result["notifyType"] == 1
@@ -441,7 +502,9 @@ def test_guard_lock_resources_conflict_enum_matches_service() -> None:
         osvc.CONFLICT_INVALID_TIME,
     }
     # 模型可自行重试的三种，必须都在 order_service 的枚举里
-    assert lr._RETRYABLE <= service_types, "lock_resources 的可重试集合里有 order_service 不认识的取值"
+    assert lr._RETRYABLE <= service_types, (
+        "lock_resources 的可重试集合里有 order_service 不认识的取值"
+    )
     # 每个取值都要有行动建议，否则模型收到冲突却不知道下一步做什么
     for conflict_type in service_types:
         assert conflict_type in lr._ACTION_HINT, f"{conflict_type} 缺少 actionHint"
@@ -460,20 +523,24 @@ def test_guard_submit_plan_payload_matches_response_schema() -> None:
     from app.schemas.agent import Plan
 
     assert set(PlanPayload.model_fields) == set(Plan.model_fields), (
-        "submit_plan.PlanPayload 与 schemas.agent.Plan 字段集不一致，"
-        "模型交的字段会在响应里静默丢失"
+        "submit_plan.PlanPayload 与 schemas.agent.Plan 字段集不一致，模型交的字段会在响应里静默丢失"
     )
 
 
-async def test_guard_no_tools_routes_registered(client) -> None:  # noqa: ANN001
+async def test_guard_no_tools_routes_registered(client) -> None:
     """`/api/v1/tools/*` 必须 404（主文档 5.3 / 9.3）。
 
     工具函数的形状（简单入参、返回 dict）**看起来**天然就是个 REST 接口，
     很容易被「顺手」注册成路由——那样任何人都能绕开 JWT 直接锁资源。
     这条守的是 `app/api/v1/__init__.py` 里那段警告。
     """
-    for name in ("query_spaces", "query_devices", "lock_resources",
-                 "generate_notification", "submit_plan"):
+    for name in (
+        "query_spaces",
+        "query_devices",
+        "lock_resources",
+        "generate_notification",
+        "submit_plan",
+    ):
         resp = await client.get(f"/api/v1/tools/{name}")
         assert resp.status_code == 404, f"/api/v1/tools/{name} 存在——越权口子"
         assert set(resp.json()) == {"code", "message", "data"}
