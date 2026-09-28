@@ -438,6 +438,12 @@ async def test_lock_resources_rejects_string_device_ids(seed: dict) -> None:
 # generate_notification
 # ==========================================================================
 async def test_generate_notification_mapped_type_succeeds() -> None:
+    # ⚠️ TODO（模块 7 落 `main`、service 换成真实实现后**本用例会红，但不是断言写错了**）：
+    # 真实 `generate_notification` 要经 `dispatch_order_notification` 落库/取收件人，
+    # 需要真实订单与数据库会话；本用例是纯 Tool 层单测，没有 `db_session` 一类夹具，
+    # 届时会**在连接/会话处就报错**，根本走不到断言（2026-09-28 黄嵩提示）。
+    # 处置：等模块 7 落 `main` 后再定——或补夹具，或把本用例收窄成
+    # 「Tool 是否原样转发 `orderInfo`」，service 侧行为由模块 7 自己的用例负责。
     # 传 `OrderInfo` 实例而不是裸 dict：`args_schema` 把模型交来的参数**转成模型**
     # 之后才调本函数（Agent 路径实测如此），所以这里必须按生产形状传，
     # 否则用例在验一个生产上不存在的调用方式。
@@ -472,6 +478,21 @@ async def test_generate_notification_unmapped_type_fails_closed() -> None:
       3. 顺带核 `app/agent/tools/generate_notification.py:71` 的 `result.get("notifyType")`
          在真实 service 上取得到值——若对方返回的是 `notify_type`，这里会**静默拿到
          `None`**（`ok=True` 但文案为空，不报错）。
+
+    ⚠️ **2026-09-28 复核更正一处（与「非法类型抛 `ApiError`」的说法不同）**：
+    `resolve_tone`（`notify_templates.py:164`）确实 `raise ApiError(code=400)`，但
+    service 入口 `generate_notification` 用 `try/except` 把它**转成
+    `{"ok": False, "reason": str(exc)}`**（该函数 docstring 明写「本入口不抛异常」，
+    理由是抛栈会打断 Agent 对话，主文档 9.3）。实测其 :605-607 就是这段转换。
+    所以模块 7 落 `main` 后**红的是两处**，不是一处：
+      ① `result["ok"] is False` ——「延期致歉」在模块 7 的 `TONES` 里是合法 key
+         （别名表命中 → `notify_type=2`），`ok` 会变 `True`；
+      ② `"无对应 INT 值" in result["reason"]` —— 文案换成
+         「不支持的通知类型：…，可选：提醒、延期致歉、故障告警」。
+
+    成功返回形状已**实测**（`origin/feat/module7-conflict-notify:notify_service.py:637-642`）：
+    含驼峰 `notifyType`、**不含 `stub`** → 本模块 Tool 层的 `result.get("notifyType")`
+    取得到值、`.get("stub", False)` 得 `False`（表示真实实现），两侧兼容、无需改 Tool。
     """
     result = await generate_notification.coroutine(order_info=OrderInfo(notifyType="延期致歉"))
 
