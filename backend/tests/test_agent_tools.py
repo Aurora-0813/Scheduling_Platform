@@ -502,6 +502,12 @@ async def test_generate_notification_unmapped_type_fails_closed() -> None:
 
 
 async def test_generate_notification_unknown_type_lists_valid_ones() -> None:
+    # ⚠️ TODO（模块 7 落 `main` 后**本断言会红**）——2026-09-28 实测，黄嵩当时估的是
+    # 「可存活」，**以实测为准**：合法取值由模块 7 的 `"、".join(TONES)` 生成，
+    # 只有 **`提醒` / `延期致歉` / `故障告警`** —— `"预约提醒"` **不在其中**
+    # （实测 `"预约提醒" in reason` → `False`；该 reason 由 `resolve_tone` 抛的
+    # `ApiError` 经 service 入口的 `try/except` 转成，见上一个用例的注释）。
+    # 届时改法二选一：断言改用 `提醒`，或改为断言 reason 里出现模块 7 的实际取值列表。
     result = await generate_notification.coroutine(order_info=OrderInfo(notifyType="活动通知"))
 
     assert result["ok"] is False
