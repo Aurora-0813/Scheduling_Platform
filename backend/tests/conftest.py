@@ -104,7 +104,7 @@ os.environ["SQL_ECHO"] = "false"
 # 也不能只给第一行加（E402 逐行报），所以整段显式标注。
 
 from collections.abc import AsyncGenerator, Callable, Iterator  # noqa: E402
-from datetime import datetime  # noqa: E402
+from datetime import datetime, timedelta  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
 
@@ -1039,6 +1039,12 @@ def slots() -> dict[str, tuple[str, str]]:
 # ===========================================================================
 # 模块 7 冲突预警与通知（feat 侧夹具，原样保留）
 # ===========================================================================
+
+# 固定时间基准，让所有规则测试可复现。
+# ⚠️ 本行与上面的 `timedelta` 在把模块 7 并进 main 时被搬丢了（夹具体 `return NOW`
+#    和 `now + timedelta(...)` 都还在，常量与 import 却没了），于是本段用例全部
+#    NameError。据此从模块 7 原分支 `feat/module7-conflict-notify` 原样补回。
+NOW = datetime(2026, 9, 25, 10, 0)
 
 
 @pytest.fixture
