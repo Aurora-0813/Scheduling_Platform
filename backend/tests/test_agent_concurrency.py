@@ -59,6 +59,13 @@
 否则拿别的 409 也算过。该映射由 `test_resource_conflict_maps_to_40901_with_http_409`
 单独把关（**这条能过，不挂 xfail**——它是契约事实，不是待实现的断言）。
 
+**兼容层那条路径也已对齐**（集成侧裁定，2026-09-28）：`_BUSINESS_ERROR_HTTP_STATUS`
+补登记 `40901 → 409`。此前只有语义化异常是 409，同一件事用
+`BusinessError(code=40901)` 抛出来会兜底成 **400**。两条路径现在一致，
+由 `test_resource_conflict_is_409_on_both_exception_paths` 把关。
+全仓 `ResourceConflictError` **零调用方**（只有本文件在引用类属性），
+故这次补映射**不改任何现存行为**——它只影响「以后有人用兼容层抛 40901」这一种情况。
+
 ## 三条锁挡在前面（必须一并解除，否则这些断言永远过不了）
 
 1. **蔡玉礼改 `order_service._device_conflicts`**：按「时段重叠」推导剩余量
@@ -83,7 +90,7 @@ import asyncio
 import pytest
 from sqlalchemy import select
 
-from app.core.exceptions import ResourceConflictError
+from app.core.exceptions import BusinessError, ResourceConflictError
 from app.models.reservation import ReserveOrder
 from app.models.resource import DeviceResource
 from app.services import create_order
@@ -186,6 +193,36 @@ def test_resource_conflict_maps_to_40901_with_http_409() -> None:
     """
     assert ResourceConflictError.code == 40901
     assert ResourceConflictError.http_status == 409
+
+
+def test_resource_conflict_is_409_on_both_exception_paths() -> None:
+    """同一个「时段冲突」的**两条异常路径必须给同一个 HTTP 状态码**。
+
+    模块 4 / 模块 3 的订单 API 走语义化异常 `ResourceConflictError`
+    （`http_status` 是类属性，`app/core/exceptions.py:181-183`）；
+    模块 1 / 模块 2 走兼容层 `BusinessError(code=40901)`——它的状态码不看类属性，
+    而是查 `_BUSINESS_ERROR_HTTP_STATUS`，**未登记的码一律兜底 400**。
+    补这条映射之前，同一个业务含义确实是两种状态码：本模块拒单 409、
+    模块 1/2 拒单 400，前端得为同一件事写两套分支。
+
+    HTTP 状态码最终由全局处理器按 `exc.http_status` 出具
+    （`app/core/response.py:225`），所以核这个属性等价于核响应状态行。
+
+    ⚠️ 核的是「**业务码 + 状态码**」这一对：409xx 段里 `40900/40902/40903`
+    也是 409，只断言「是 409」会把别的冲突码放过去。
+    """
+    # 路径一：语义化异常（模块 4 的 lock_resources / 模块 3 的订单 API）
+    semantic = ResourceConflictError(message="目标时段资源已被占用")
+    assert semantic.code == 40901
+    assert semantic.http_status == 409
+
+    # 路径二：兼容层按业务码构造（模块 1/2 的既有写法，不改它们的代码）
+    compat = BusinessError(code=40901, message="目标时段资源已被占用")
+    assert compat.code == 40901
+    assert compat.http_status == 409
+
+    # 两条路径给出的是同一个 (业务码, HTTP 状态码)，不是「各自碰巧都是 409」
+    assert (semantic.code, semantic.http_status) == (compat.code, compat.http_status)
 
 
 # --------------------------------------------------------------------------

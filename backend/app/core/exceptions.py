@@ -283,6 +283,13 @@ _BUSINESS_ERROR_HTTP_STATUS: dict[int, int] = {
     # ASR 失败是下游依赖（百度语音）不可用，不是调用方的请求有问题，
     # 因此映射到 503 而非 400 —— 前端据此可提示「稍后重试」而不是「改参数」。
     ErrorCode.ASR_FAILED: 503,
+    # 40901 RESOURCE_CONFLICT（「目标时段资源已被占用」）在 409xx 段已有语义化
+    # 异常 ResourceConflictError（本文件 :181-183，类属性 http_status = 409），
+    # 模块 4 / 模块 3 的订单 API 走的是那条路。但同一个业务含义若由模块 1 / 模块 2
+    # 以 BusinessError(code=40901) 抛出，未登记时会落到本表兜底的 400 ——
+    # 同一件事两种 HTTP 状态码，前端得写两套分支。故补登记这条映射（集成侧裁定）。
+    # 只补语义上确实对应 409 的这一个码，409xx 其余码不动。
+    ErrorCode.RESOURCE_CONFLICT: 409,
 }
 
 
