@@ -1,7 +1,11 @@
 # 合并检查清单：模块 3 / 蔡玉礼 的实现合入本分支时
 
-**用途**：本分支（`feature/agent-xuchuan`）与 `origin/integrate/module3` 之间的
-**已知合入风险与待办**。每条都附了判定方法——合完逐条核，**别只看构建绿**。
+**用途**：本分支（`feature/agent-xuchuan`）合并路径上的**已知风险与待办**。
+每条都附了判定方法——合完逐条核，**别只看构建绿**。
+
+**覆盖范围**（2026-09-28 扩过一次）：原先只针对模块 3 / 蔡玉礼的实现，
+现在同时覆盖 **模块 5（杨睿坤的时段重叠修复）**、**模块 7（notify 真实实现）**、
+以及**主干 `main` 的合并前置与顺序**（第 8、12 条是硬前提，不是功能待办）。
 
 **出处**：2026-09-28 在临时分支 `tmp-verify-c01-02`（= `origin/integrate/module3` @ `1919428`，
 用后即删、未推）上把模块 4 的 8 条断言跑了一遍：**蔡玉礼的 7 条判据 7/7 通过**，
@@ -124,6 +128,21 @@
 **`origin/main` 不是本分支的祖先**：本分支 58 个提交、main 独有 6 个，
 merge-base `98c54ea`。所以**不能快进合并**，只能真合（或 rebase）。
 
+**2026-09-28：rebase 已执行（申云飞推 main 之后）**——`git rebase origin/main`
+（目标 = `2fd726e`），62 个提交重放，**只在上表这 3 个文件上停下**，一处不多：
+
+| 文件 | 实测冲突性质 | 处置 | 依据 |
+| --- | --- | --- | --- |
+| `app/agent/prompts/image_prompt.py` | 两边对**同一批超长中文 Prompt** 各折行一次（起点同为 `a98c556`） | **取 main 版** | 三份（merge-base / main / 本分支）的 `ast.dump` **逐字节相同**，且两个字符串常量取值逐字相同 → 纯格式，取谁都不丢语义 |
+| `app/api/v1/__init__.py` | 本分支多一行 `agent.router` 注册（main 只有 voice / image 两行） | **取并集**：main 两行 + `agent.router` 一行 | 该文件 docstring 自己写着「补回 `agent.router` 的注册」；只取 main 版会让 `from app.api.v1 import agent` 成为未使用导入（F401）、且 `/api/v1/agent` 路由整块消失 |
+| `app/core/exceptions.py` | **两侧代码行完全相同**（`ErrorCode.RESOURCE_CONFLICT: 409,`），只有上方注释措辞不同 | **取 main 版**（`git checkout --ours --`） | main 那份是集成侧的裁定文案（`6e3c8e1`）；取它后本文件与 `origin/main` **逐字节相同** → 第 1 条担心的「留成两条」在 rebase 这条路径上不可能发生 |
+
+rebase 后实测：merge-base = `2fd726e`、落后 main 0 / 领先 62、`git status` 干净、
+`pytest -q` 全绿。回滚点：`backup/pre-rebase-3-20260928`（= rebase 前的 `295f624`）。
+⚠️ **一处自己造成的返工（记下来免得再犯）**：并集解完我按 **3 空格**对齐写了那三行注释，
+而 `ruff format` 要 **2 空格**（正是 main 的形态）——`ruff format --check app/api/v1/__init__.py`
+当场报 `would be reformatted`。已改为 2 空格。**「与 main 相同的行，原样照抄」比「对齐好看」重要。**
+
 **main 上还缺整块东西**：
 
 - `backend/app/api/v1/` 只有 `__init__ / auth / health / image / mock / mock_data / monitor / voice`
@@ -134,6 +153,196 @@ merge-base `98c54ea`。所以**不能快进合并**，只能真合（或 rebase�
 只是把模块 4 的代码搬到一棵缺模块 3 的树上，**演示主线仍然跑不通**。
 （这也是「合并目标该是 `develop` 还是 `main`」必须在项目群定的原因，见
 `stage-09-10-prep.md` §3。）
+
+---
+
+## 8. `space_service.py` 的「**静默消失**」风险 —— 比 add/add 更隐蔽 ⚠️⚠️
+
+- **物理事实（2026-09-28 实测）**：`backend/app/services/space_service.py` **只存在于
+  本分支**（及其派生的 `origin/feature/ruikun-space-overlap`）。`origin/main` 与
+  `origin/feat/module3-caiyuli` / `origin/integrate/module3` **都没有这个文件**。
+- **为什么比第 2 条更危险**：`notify_service.py` 是 add/add，**git 至少会报冲突**；
+  而一个只在单边存在的文件，只要合并路径**绕开本分支**（例如「把模块 5 的真实现
+  直接合进 main」或「从 main 拉新分支再挑拣」），它就**不报冲突、直接不在**——
+  **连同杨睿坤这次的时段重叠修复一起消失**，而 CI 是绿的（没人 import 它就不会红）。
+- **同类还有**：`device_service.py`（模块 5 的设备查询桩，同样只在本分支）。
+- **怎么核**（合并**前**先立基线，合并**后**逐条比对）：
+
+  ```bash
+  git ls-tree --name-only origin/main -- backend/app/services/space_service.py   # 期望：空
+  git ls-tree --name-only origin/feat/module3-caiyuli -- backend/app/services/space_service.py  # 期望：空
+  git ls-tree --name-only origin/feature/agent-xuchuan -- backend/app/services/space_service.py # 期望：有
+  # 合并后（在目标分支上）：
+  git grep -n "occupied_space_ids" -- backend/app/services/space_service.py      # 期望：命中（时段重叠修复还在）
+  git grep -n "def _parse_time" -- backend/app/services/space_service.py         # 期望：命中
+  ```
+
+- **处置**：**合并必须经本分支**（把本分支合进目标分支），或**显式 cherry-pick**
+  `space_service.py` 与 `device_service.py` 两个文件。**不要用「挑提交」的方式绕**——
+  绕过的路径上没有任何机制会提醒少了一个文件。
+
+### 8.1 `services/` 目录结构事实（三边对照）
+
+| 文件 | `origin/main` | 蔡 `feat/module3-caiyuli` | 本分支（模块 4） |
+| --- | --- | --- | --- |
+| `__init__.py` | ✅ | ✅ | ✅（含 5 条 re-export，见第 2 条） |
+| `asr_service.py` | ✅ | ✅ | ✅ |
+| `format_service.py` | ✅ | ✅ | ✅ |
+| `image_service.py` / `image_storage.py` | ✅ | ✅ | ✅ |
+| `monitor_service.py` / `risk_service.py` | ✅ | —（蔡分支无） | ✅ |
+| `auth_service.py` | ✅ | — | ✅ |
+| `message_service.py` | — | ✅ | — |
+| `agent_client.py` | — | ✅ | — |
+| **`order_service.py`** | ❌ **无** | ✅ **真实现** | ✅ **桩**（合并必冲突，桩要整体让位） |
+| **`space_service.py`** | ❌ **无** | ❌ **无** | ✅ **桩 + 杨睿坤的时段重叠修复** |
+| **`device_service.py`** | ❌ **无** | ❌ **无** | ✅ 桩 |
+| **`notify_service.py`** | ❌ **无** | ❌ **无** | ✅ 桩（模块 7 侧另有真实现 → add/add，见第 2 条） |
+| **`agent_service.py`** | ❌ **无** | ❌ **无** | ✅ 模块 4 自己的 |
+
+**两条结论**：
+1. **`order_service.py` 是本分支与蔡分支「同路径、两个都非空」的唯一一处**——
+   我们的是桩、他的是真实现，合并后**必须整体取他的**（我们的桩的所有权到此为止）。
+   牵连：第 3 条那个 `CONFLICT_DEVICE_SHORTAGE` 常量、以及我们的
+   `test_agent_concurrency.py` 的导入，都要在**取他版本之后**逐个复核。
+2. **`space_service.py` 的落点取决于合并顺序**：若先合模块 5/杨的分支再合本分支，
+   本分支的这份会与杨那份在同一路径相遇（同源，通常干净）；若合并路径绕过本分支，
+   它就直接不在（见本节开头）。
+
+## 9. `app/models/reservation.py` 与蔡玉礼分支**必冲突** ⚠️
+
+- **在哪**：`backend/app/models/reservation.py`。蔡分支已把占用口径收敛到该文件
+  （`ACTIVE_ORDER_STATUSES`，见第 10 条）；杨睿坤的时段重叠修复又在**同一个文件**加了
+  `OCCUPYING_STATUS`。**同文件、同主题、两侧都改** → 合并必冲突。
+- ⚠️ **更正（2026-09-28，杨睿坤指出 + 我们实测复核）**：先前记的「本文件**直接取蔡玉礼
+  版本**」是**错的**——「蔡玉礼版本」有两个 ref，内容差得很远：
+
+  | ref | blob | `__table_args__` | `Index(` | `idx_` | 说明 |
+  | --- | --- | --- | --- | --- | --- |
+  | `origin/main` | `e51a9dfe` | 1 | **4** | 8 | 四条索引声明（`idx_user_id` / `idx_space_time` / `idx_status` / `idx_status_start`，`:64-68`） |
+  | **本分支** | `e51a9dfe` | 1 | **4** | 8 | **与 main 逐字节相同**（本分支在这个文件上没有自己的改动） |
+  | `origin/feat/module3-caiyuli` | `1005e27b` | **0** | **0** | **0** | **旧版**：四条索引声明一条都没有，他分支也没有建索引的迁移；还丢了 `PK_TYPE`（退回 `BigInteger`）、把 `device_ids`/`agent_trace` 的 `list` 标注改回 `dict` |
+  | `origin/integrate/module3` | `92f546c7` | 1 | **4** | 8 | = **main 版 + `ACTIVE_ORDER_STATUSES` 共 21 行、删除 0 行** → **main 的干净超集** |
+  | `origin/feature/ruikun-space-overlap` | `795d3496` | 1 | **4** | 8 | 本分支版 + 杨的 `OCCUPYING_STATUS` |
+
+  **盲取 `feat/module3-caiyuli` 版的后果（静默，CI 不会红）**：四条 `Index` 声明从模型层消失
+  ——**库里的索引还在**，但模型不再声明它，`alembic revision --autogenerate` 之后会**反过来
+  提议 `DROP INDEX`**；顺带丢掉 `PK_TYPE`（模块 3 对团队版的唯一偏离，见 `core/database.py`）
+  与两处 `list` 标注。**没有测试会拦住这些**。
+- **正确做法**：**三方合并**，最终版本须同时含：
+  1. **`ACTIVE_ORDER_STATUSES`**（蔡的写法，用 `OrderStatus.PENDING/CONFIRMED` 枚举成员，不写字面量）
+     —— 本轮收敛的唯一真值，见第 10 条；
+  2. **main 的四条 `Index` 声明**；
+  3. `PK_TYPE` 主键与 `device_ids` / `agent_trace` 的 **`list`** 标注（这两项**本来就是 main 版的**，
+     不是蔡带来的 —— 杨的更正里把它们记成「蔡的」，此处按实测更正归属，**要求本身不变：最终必须有**）；
+  4. **删掉** `OCCUPYING_STATUS` 定义及其整段注释（注释里已写好这三步，见杨睿坤 `fd6910d`）。
+  **最省事的等价做法**：直接取 `origin/integrate/module3` 那一版（它是 main 的超集，四条索引
+  与 `PK_TYPE` 都在），再把 `space_service.py` / `test_space_service.py` 改用名（见下）。
+- **然后改 2 处**：
+  1. **`app/services/space_service.py`**：`from app.models.reservation import OCCUPYING_STATUS, ...`
+     → 取 `ACTIVE_ORDER_STATUSES`；查询里的 `ReserveOrder.order_status.in_(OCCUPYING_STATUS)`
+     同步改（实测当前在 `space_service.py:35` 与 `:132`）。
+  2. **`backend/tests/test_space_service.py`**：护栏用例
+     `test_occupying_status_matches_order_service` 改为断言 `ACTIVE_ORDER_STATUSES`
+     （用例名与 docstring 一并改，别再叫「matches_order_service」）。
+- **怎么核**（第一条是这次更正的重点——**数一数 `Index(`**）：
+
+  ```bash
+  for R in origin/main origin/feature/agent-xuchuan origin/integrate/module3 origin/feat/module3-caiyuli; do
+    printf "%-40s Index( = %s\n" "$R" \
+      "$(git show $R:backend/app/models/reservation.py | grep -c 'Index(')"
+  done   # 期望：前三个都 4；feat/module3-caiyuli 是 0（旧版，别取它）
+  # 合并后（在目标分支上）：
+  git grep -c "Index(" -- backend/app/models/reservation.py          # 期望：4
+  git grep -c "ACTIVE_ORDER_STATUSES" -- backend/app/models/reservation.py  # 期望：≥1
+  git grep -n "OCCUPYING_STATUS" -- backend/app                       # 期望：0 命中
+  pytest backend/tests/test_space_service.py -q --no-cov              # 期望：23 passed
+  ```
+- **反面**：保留我们的 `OCCUPYING_STATUS` 不改 → 全仓出现两套占用口径，且**没人知道
+  哪份生效**——杨的护栏只钉「模型层 == 模块 3 `order_service`」，**钉不到蔡那份**。
+
+## 10. 占用口径常量：四处并存，收敛到蔡玉礼的 `ACTIVE_ORDER_STATUSES`
+
+**（2026-09-28 裁定：本次不预先改名，合并时一次性收敛。）**
+
+| # | 位置 | 名字 | 取值 | 谁能钉住它 |
+| --- | --- | --- | --- | --- |
+| 1 | 本分支 `app/services/order_service.py:47` | `OCCUPYING_STATUS = (1, 2)` | 字面量 | 杨的护栏钉的是第 2 处 vs **本处** |
+| 2 | 杨分支 `app/models/reservation.py:49` | `OCCUPYING_STATUS = (1, 2)` | 字面量 | 上面那条护栏的另一端 |
+| 3 | 模块 7 `app/services/rules/base.py:46` | `ACTIVE_ORDER_STATUSES = (1, 2)` | 字面量 | **无人钉**（模块 7 自己一份） |
+| 4 | **蔡玉礼 `app/models/reservation.py:34`（`integrate/module3` `:29`）** | `ACTIVE_ORDER_STATUSES` | `(OrderStatus.PENDING.value, OrderStatus.CONFIRMED.value)` | 蔡自己的注释即权威 |
+
+- **三处值是否都等于 `(1, 2)`**：**是**（第 4 处用枚举成员表达，值同为 `(1, 2)`；
+  其定义处注释明写「这里是当前**唯一**的占用口径真值」，`order_service` §5.5 第 3/4 步、
+  `api/conflicts.py`、`api/agent.py` 四处共用）。
+- **命名建议（收敛方向）**：**统一到 `ACTIVE_ORDER_STATUSES`**，落地在
+  `app/models/reservation.py` 一条定义，其余三处改 import——理由：① 蔡那份是唯一
+  在**模型层**、且已声明为真值的；② 用枚举成员比字面量 `(1, 2)` 抗漂移；
+  ③ `OCCUPYING_STATUS` 与 `_ALLOWED_CREATE_STATUS`（`order_service.py`，含义是
+  「创建时允许传入的状态」）语义不同，**别合并**——蔡的注释专门警告过这一点。
+- **⚠️ 一处需在群里更正的既有说法**：先前流传的「模块 4 `space_service.py`（桩）里有
+  `OCCUPYING_STATUS`」**不实**——实测 `space_service.py` 里**没有**该常量（桩不按时段过滤，
+  只筛 `status / space_type / capacity`），定义在 **`order_service.py:47`**。四处的位置以上表为准。
+
+## 11. `order_service.py` 合入时必须过 ruff ⚠️
+
+- **他为什么一个字没动**（杨睿坤的说法，**已实测属实**）：
+  `app/services/order_service.py` 现状 **`ruff check` 通过、`ruff format --check` 不通过**
+  （`ruff 0.16.9`）。动它就会被 pre-commit 的 `ruff-format` 钩子连带重排，
+  给正在改这个文件的人制造无关冲突。
+- **实测证据**：
+
+  ```bash
+  ruff check app/services/order_service.py          # All checks passed!
+  ruff format --check app/services/order_service.py # 1 file would be reformatted
+  ```
+
+  它想改的是：模块 docstring 后的空行、一组**用空格对齐的行尾注释**（`:59-68`）、
+  以及 `:282` 那个列表推导的换行。**纯格式，零语义**。
+- **这债是谁的**：文件是**模块 3 的交付物**（`order_service` 属模块 3），但
+  `git log -1` 显示当前内容**最后一次改动是我们**（`41c9941` / `4706b6b` 的桩），
+  即**桩是我们写的**，格式债随桩而来。当时 ruff 清理只覆盖了模块 4 自己的文件
+  （`app/agent/**`、`app/schemas/agent.py`、`app/api/v1/agent.py`、`app/services/agent_service.py`、
+  `tests/test_agent_*.py`）——按「不碰别人模块文件」的约束**故意没动它**。
+- **处置**：**合并时**（蔡的真实现替换掉这份桩之后）跑一次
+  `cd backend && ruff format app/services/order_service.py && ruff check app/services/order_service.py`。
+  **本次不预先修**：修了也是被整体替换掉的代码，白造一次冲突。
+- **同类（本分支范围内、同样「check 过 / format 不过」的我们的桩文件）**：
+  `app/services/__init__.py`、`app/services/device_service.py`、`app/services/notify_service.py`、
+  `app/services/space_service.py`——都是「模块 docstring 后缺空行」这类，
+  **随各自的真实现落地时一并消失**，本次同样不动。
+  （本模块自己的 22 个文件 `ruff check` / `format --check` 全绿，已复核。）
+
+## 12. 次序硬约束：**模块 7 的 v3 必须先落 `main`，本分支再合** ⚠️⚠️
+
+- **事实**：`origin/main` **根本没有** `backend/app/services/notify_service.py`
+  （第 8.1 节表里那一行 ❌），而本分支的 `services/__init__.py:34-37` re-export 了
+  `generate_notification`（见第 2 条）。
+- **顺序反了的后果**：先合本分支 → main 上有了 re-export 却没有那个函数 →
+  `import app.services.*` 处 **ImportError** → **工具层全线崩**。
+  所以不是「建议先」而是**硬约束**。
+- **解该冲突的取法**：**取模块 7 的真实实现 + 保留那 4 行 re-export**；
+  ⚠️ **取桩会让模块 7 的真实实现静默消失**（桩也是「合法」的一份文件，git 不再报错）。
+- **怎么核**：
+
+  ```bash
+  git ls-tree --name-only origin/main -- backend/app/services/notify_service.py  # 合模块 7 前：空；之后：有
+  git grep -n "def generate_notification" -- backend/app/services/notify_service.py   # 必须 1 处
+  git grep -n "generate_notification" -- backend/app/services/__init__.py             # re-export 还在
+  cd backend && python -c "import app.services"                                       # 不报 ImportError
+  ```
+
+## 13. 「3 处」与「17 处」是两个问题，**别互相套**
+
+| 数 | 是什么 | 基点 | 复现命令 |
+| --- | --- | --- | --- |
+| **3 处** | **本分支** × `main` | `98c54ea4` | `git merge-tree --write-tree origin/main backup/pre-rebase-3-20260928` |
+| **17 处** | **模块 7 `integ/module7-into-main`** × `main` | `6f6f6ff` | `git merge-tree --write-tree origin/main origin/integ/module7-into-main` |
+
+两个数**都已实测复现**（各 3 条、17 条 `CONFLICT` 行；17 处里含 4 条 add/add：
+`core/__init__.py`、`core/security.py`、`schemas/common.py`、`tests/__init__.py` 等）。
+差异来源是**分支不同**（本分支 vs 模块 7 的集成分支）、**基点不同**（`98c54ea` vs `6f6f6ff`），
+不是谁数错了。**引用时必须带上是哪两条分支**，否则「模块 4 说 3 处、模块 7 说 17 处」会变成
+互相矛盾的口径。
 
 ---
 
@@ -149,3 +358,10 @@ merge-base `98c54ea`。所以**不能快进合并**，只能真合（或 rebase�
 | CI 红数实测（本模块 0 条） | `stage-09-10-prep.md` §2 |
 | `notify_type` 裁定与用例待办（第 2 条的依据） | `done/README.md` 硬卡点 #13 / `contract-alignment.md` §8.2 |
 | `notify_service.py` add/add（第 2 条实测） | 本文件 §2 的试合并输出 |
+| 模块 7 真实现的返回形状与异常口径（第 2、12 条） | `origin/feat/module7-conflict-notify:backend/app/services/notify_service.py:575-645`（`:605-607` 是 `try/except` 转 `ok=False`，`:637-642` 是成功返回含驼峰 `notifyType`、无 `stub`） |
+| 杨睿坤时段重叠修复的核对（第 8、9、10 条） | 临时分支 `tmp-verify-overlap`（= `origin/feature/ruikun-space-overlap` @ `fd6910d`，**用后即删、未推**）实测：`pytest backend/tests/test_space_service.py` **23 passed**，含他点名的 4 条（`test_occupying_status_excludes[1]` / `[2]` / `test_touching_intervals_do_not_count_as_overlap` / `test_stage03_reported_case_is_fixed`） |
+| 占用口径四处定义、`services/` 结构表（第 8.1、10 条） | 本节 §8.1 / §10 的 `git grep -n`、`git ls-tree` 原始输出 |
+| 四条 `Index` 声明与各 ref 对照（第 9 条更正） | 本节 §9 的 `git show <ref>:...reservation.py \| grep -c 'Index('` 输出；`git diff --stat origin/main origin/integrate/module3 -- backend/app/models/reservation.py` = **+21 / −0** |
+| 「3 处 / 17 处」复现（第 13 条） | 本节 §13 的 `git merge-tree --write-tree` 输出 |
+| `order_service.py` 的 ruff 现状（第 11 条） | `ruff 0.16.9`（conda 环境 `smart_dev`）在本分支实测：check 通过、format 不过 |
+| 本分支 rebase 到 `main` 的实测（第 7 节） | 本节 §7 的 rebase 输出；回滚点 `backup/pre-rebase-3-20260928` |
