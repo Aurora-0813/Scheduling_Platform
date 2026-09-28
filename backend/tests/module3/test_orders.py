@@ -3,7 +3,7 @@ import pytest
 
 from app.core.error_codes import ErrorCode
 
-from .helpers import MOCK_USER_ID, OTHER_USER_ID, time_str
+from .helpers import MOCK_USER_ID, OTHER_USER_ID, auth_headers, time_str
 
 
 async def _create(client, **overrides):
@@ -111,8 +111,12 @@ async def test_tc07_multiple_devices(client):
     assert r.json()["data"]["deviceIds"] == [1, 2]
 
 
-async def test_identity_comes_from_header_not_body(client):
-    """§5.1 身份一律从 JWT（演示 X-User-Id）解析，请求体传 userId 不生效。"""
+async def test_identity_comes_from_token_not_body(client):
+    """§5.1 身份一律从 JWT 解析，请求体传 userId 不生效。
+
+    请求体里塞 `userId` 是伪造身份最省事的一种：不碰任何请求头，也不触发认证
+    分支，只赌服务端「顺手用了」这个字段。这里断言落库的归属是**令牌**里的那个。
+    """
     r, _ = await _create(client, userId=OTHER_USER_ID)  # 伪造身份
     assert r.status_code == 200
     assert r.json()["data"]["userId"] == MOCK_USER_ID
@@ -210,7 +214,7 @@ async def test_list_my_orders_only_mine(client):
         "/api/v1/orders/create",
         json={"spaceId": 1, "deviceIds": [], "startTime": time_str(2, 9),
               "endTime": time_str(2, 10)},
-        headers={"X-User-Id": str(OTHER_USER_ID)},
+        headers=auth_headers(OTHER_USER_ID),
     )
     assert theirs.status_code == 200, theirs.text
 

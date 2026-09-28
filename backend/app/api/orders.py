@@ -3,9 +3,12 @@
 - POST /api/v1/orders/create、GET /api/v1/orders/my、PUT /api/v1/orders/{orderId}/cancel
   为契约接口；GET /{orderId}、PUT /{orderId}/confirm 为模块内补充（状态机走「已确认」必需）。
 - 身份一律从 JWT 解析（§5.1），请求体不再携带 userId。
+  依赖 `app.api.deps.get_current_user`（团队基础支撑的正式实现，返回 `CurrentUser`）；
+  本模块曾用过一版读 `X-User-Id` 请求头的 mock，已随本轮重组删除 —— 那个头
+  不在契约里，任何人改一个头就能变成别人。
 - **归属校验逐条做**：详情/确认/取消三条都必须取「本人的单」（`_get_owned_order`），
   兼容路径 `GET /user/{userId}` 同样比对路径参数与当前身份。
-  认证层只回答「你是谁」，回答不了「这单是不是你的」——只注入 `user_id` 而不比对，
+  认证层只回答「你是谁」，回答不了「这单是不是你的」——只注入身份而不比对，
   等于任何人拿到别人的 orderId 就能读、能确认、能取消。越权一律 404，不泄露存在性。
 """
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
@@ -13,7 +16,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
-from ..core.deps import get_current_user
 from ..core.exceptions import (
     BizError,
     DeviceNotFoundError,
@@ -36,6 +38,7 @@ from ..state_machine import (
     release_occupancy,
     transition,
 )
+from .deps import CurrentUser, get_current_user
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -103,7 +106,8 @@ async def _get_owned_order(db: AsyncSession, order_id: int, user_id: int) -> Res
     """取「当前用户自己的」订单；不存在、或不属于本人，一律 404。
 
     归属校验必须逐条做，不能靠认证层兜：`get_current_user` 只回答「你是谁」，
-    回答不了「这单是不是你的」。同一个 `X-User-Id` 换成别人的就绕过去了。
+    回答不了「这单是不是你的」。拿着别人的 orderId 就能读、能确认、能取消 ——
+    归属这一层只有本函数在守。
 
     用 404 而不是 403：403 等于承认「这单存在，只是不是你的」，攻击者可以据此
     枚举出全库有哪些订单。`messages.py::read_message` 对越权消息也是 404，两处
@@ -118,7 +122,7 @@ async def _get_owned_order(db: AsyncSession, order_id: int, user_id: int) -> Res
 @router.post("/create")
 async def create_order(
     data: OrderCreate,
-    user_id: int = Depends(get_current_user),
+    current: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """创建预约（§5.3 模块3）——薄壳，校验与落单全在 `order_service.create_order`。
@@ -129,7 +133,7 @@ async def create_order(
     HTTP 状态码。
     """
     result = await order_service.create_order(
-        user_id=user_id,
+        user_id=current.id,
         space_id=data.spaceId,
         device_ids=data.deviceIds,
         start_time=data.startTime,
@@ -147,11 +151,11 @@ async def create_order(
 @router.get("/my")
 async def list_my_orders(
     status: int | None = Query(default=None, description="状态筛选 1/2/3/4"),
-    user_id: int = Depends(get_current_user),
+    current: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """当前用户预约列表（§5.3 模块3：GET /orders/my，身份从 JWT 解析）。"""
-    q = select(ReserveOrder).where(ReserveOrder.user_id == user_id)
+    q = select(ReserveOrder).where(ReserveOrder.user_id == current.id)
     if status is not None:
         q = q.where(ReserveOrder.order_status == status)
     q = q.order_by(ReserveOrder.create_time.desc())
@@ -164,7 +168,7 @@ async def list_my_orders(
 async def list_orders(
     userId: int,
     status: int | None = Query(default=None, description="状态筛选 1/2/3/4"),
-    user_id: int = Depends(get_current_user),
+    current: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """兼容旧路径的用户预约列表（保留以兼容历史客户端，契约以 `/my` 为准）。
@@ -178,7 +182,7 @@ async def list_orders(
     `userId` 不在 `§5.3` 的契约清单里（契约只有 `/orders/my`），本模块内也没有
     任何客户端再走它，所以收紧不会破坏合法调用 —— 唯一被挡掉的用法就是跨用户读取。
     """
-    if userId != user_id:
+    if userId != current.id:
         raise OrderNotFoundError("预约不存在")
     q = select(ReserveOrder).where(ReserveOrder.user_id == userId)
     if status is not None:
@@ -192,11 +196,11 @@ async def list_orders(
 @router.get("/{orderId}")
 async def get_order(
     orderId: int,
-    user_id: int = Depends(get_current_user),
+    current: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """订单详情（扩展）。仅限本人的单；他人单与不存在的单同样是 404。"""
-    order = await _get_owned_order(db, orderId, user_id)
+    order = await _get_owned_order(db, orderId, current.id)
     return ok(_order_out(order))
 
 
@@ -204,11 +208,11 @@ async def get_order(
 async def confirm_order(
     orderId: int,
     background_tasks: BackgroundTasks,
-    user_id: int = Depends(get_current_user),
+    current: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """确认预约（扩展，状态机 1→2）。仅限本人的单；触发「预约已确认」通知。"""
-    order = await _get_owned_order(db, orderId, user_id)
+    order = await _get_owned_order(db, orderId, current.id)
     if not can_transition(order.order_status, OrderStatus.CONFIRMED):
         raise OrderStatusConflictError("当前状态不允许确认")
 
@@ -232,11 +236,11 @@ async def confirm_order(
 async def cancel_order(
     orderId: int,
     background_tasks: BackgroundTasks,
-    user_id: int = Depends(get_current_user),
+    current: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """取消预约（契约）。仅限本人的单；取消「已确认」单时释放占用（§5.3 模块3）。"""
-    order = await _get_owned_order(db, orderId, user_id)
+    order = await _get_owned_order(db, orderId, current.id)
 
     was_confirmed = order.order_status == OrderStatus.CONFIRMED.value
     if not can_transition(order.order_status, OrderStatus.CANCELLED):

@@ -13,7 +13,10 @@ from app.core.database import AsyncSessionLocal, Base, async_engine
 from app.main import app
 from app.models import DeviceResource, SpaceResource
 
-from .helpers import MOCK_USER_ID, OTHER_USER_ID
+from .helpers import MOCK_USER_ID, OTHER_USER_ID, ROLE_NAME, auth_headers
+
+#: 种子角色的主键，供 `sys_user.role_id` 引用
+ROLE_ID = 1
 
 
 def _seed_spaces() -> list[SpaceResource]:
@@ -47,8 +50,20 @@ def _seed_devices() -> list[DeviceResource]:
     ]
 
 
+def _seed_role():
+    """种子角色：`sys_user.role_id` 指向它。
+
+    必须有，且**必须连用户一起灌**（见 `_seed_users`）：`get_current_user`
+    在 `role_name_of(user) is None` 时抛 `RoleMissingError`（403 / 40302），
+    只灌用户不灌角色会让每一条用例都变成 403。
+    """
+    from app.models import SysRole
+
+    return [SysRole(id=ROLE_ID, role_name=ROLE_NAME, permissions=["*"])]
+
+
 def _seed_users():
-    """种子用户：2 个（本人 + 越权用例用的另一人）。
+    """种子用户：2 个（本人 + 越权用例用的另一人），都挂在 `_seed_role` 的角色上。
 
     团队的 `reserve_order.user_id` / `notify_message.receiver_id` 声明了指向
     `sys_user.id` 的真外键（与云库一致）。SQLite 默认不强制外键，但灌上更贴近真库，
@@ -63,9 +78,9 @@ def _seed_users():
     password = "$2b$12$WPAzHZb7EolabiZR5BLNMeZs1iYXMklXA9S0GRF4B4soj3Jmh45N."
     return [
         SysUser(id=MOCK_USER_ID, username="zhangsan", password=password,
-                role_id=None, status=1),
+                role_id=ROLE_ID, status=1),
         SysUser(id=OTHER_USER_ID, username="lisi", password=password,
-                role_id=None, status=1),
+                role_id=ROLE_ID, status=1),
     ]
 
 
@@ -77,6 +92,9 @@ async def _fresh_db():
         await conn.run_sync(Base.metadata.create_all)
 
     async with AsyncSessionLocal() as session:
+        # 角色必须先于用户：sys_user.role_id 指向它
+        session.add_all(_seed_role())
+        await session.flush()
         session.add_all(_seed_users())
         session.add_all(_seed_spaces())
         session.add_all(_seed_devices())
@@ -87,15 +105,17 @@ async def _fresh_db():
 
 @pytest.fixture
 async def client():
-    """异步 ASGI 客户端，默认携带 mock 身份头 `X-User-Id`（§5.1）。
+    """异步 ASGI 客户端，默认以 `MOCK_USER_ID` 的真实 JWT 登录（§5.1）。
 
-    需要切换身份时按请求覆盖：`client.get(url, headers={"X-User-Id": "2"})`。
+    需要切换身份时按请求覆盖 `headers=auth_headers(OTHER_USER_ID)` ——
+    注意 `headers=` 是**整体替换**客户端默认头，不是合并，所以覆盖时
+    `Authorization` 必须一并给出（`auth_headers()` 就负责这件事）。
     """
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
         transport=transport,
         base_url="http://testserver",
-        headers={"X-User-Id": str(MOCK_USER_ID)},
+        headers=auth_headers(MOCK_USER_ID),
     ) as c:
         yield c
 

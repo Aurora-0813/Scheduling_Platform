@@ -4,7 +4,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
-from ..core.deps import get_current_user
 from ..core.response import ok
 from ..models import ACTIVE_ORDER_STATUSES, ReserveOrder, SpaceResource
 from ..schemas.agent import ScheduleRequest
@@ -14,6 +13,7 @@ from ..services.agent_client import (
     schedule,
     transcribe_audio,
 )
+from .deps import CurrentUser, get_current_user
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -21,10 +21,15 @@ router = APIRouter(prefix="/agent", tags=["agent"])
 @router.post("/schedule")
 async def schedule_plan(
     data: ScheduleRequest,
-    user_id: int = Depends(get_current_user),
+    current: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """提交需求文本 → 调度 Agent（真实或 mock）→ 返回主/备方案 + 思考步骤。"""
+    """提交需求文本 → 调度 Agent（真实或 mock）→ 返回主/备方案 + 思考步骤。
+
+    `current` 在函数体里没被用到，但**不能删**：它声明的是「这条路径必须已登录」。
+    去掉之后本接口对匿名调用者敞开，而 `/schedule` 会读全库占用时段（Agent 落库
+    时的入参来源），是条有信息量的探针。身份是否合法由 `get_current_user` 负责。
+    """
     # 查询真实占用时段，供 mock 调度器避让（真实 Agent 则自行调 Tool 查询）
     result = await db.execute(
         select(ReserveOrder.start_time, ReserveOrder.end_time).where(

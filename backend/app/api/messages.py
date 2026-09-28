@@ -7,12 +7,12 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
-from ..core.deps import get_current_user
 from ..core.exceptions import MessageNotFoundError
 from ..core.response import ok
 from ..core.utils import format_time
 from ..models import NotifyMessage
 from ..services.message_service import reminder_scan
+from .deps import CurrentUser, get_current_user
 
 router = APIRouter(prefix="/messages", tags=["messages"])
 
@@ -32,12 +32,12 @@ def _message_out(m: NotifyMessage) -> dict:
 
 @router.get("/unread")
 async def unread_count(
-    user_id: int = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(
         select(func.count())
         .select_from(NotifyMessage)
-        .where(NotifyMessage.receiver_id == user_id, NotifyMessage.is_read == 0)
+        .where(NotifyMessage.receiver_id == current.id, NotifyMessage.is_read == 0)
     )
     count = result.scalar() or 0
     return ok({"count": count})
@@ -47,14 +47,14 @@ async def unread_count(
 async def list_messages(
     skip: int = 0,
     limit: int = 20,
-    user_id: int = Depends(get_current_user),
+    current: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     limit = max(1, min(limit, 100))  # 分页上限，防超大 limit 拉全表
     skip = max(0, skip)
     result = await db.execute(
         select(NotifyMessage)
-        .where(NotifyMessage.receiver_id == user_id)
+        .where(NotifyMessage.receiver_id == current.id)
         .order_by(NotifyMessage.create_time.desc())
         .offset(skip)
         .limit(limit)
@@ -66,11 +66,11 @@ async def list_messages(
 @router.put("/{messageId}/read")
 async def read_message(
     messageId: int,
-    user_id: int = Depends(get_current_user),
+    current: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     msg = await db.get(NotifyMessage, messageId)
-    if not msg or msg.receiver_id != user_id:
+    if not msg or msg.receiver_id != current.id:
         # 不存在与非本人同一处理：区分了就等于承认「这条存在，只是不是你的」，
         # 可据此枚举全库消息。与 orders.py::_get_owned_order 同口径（§5.1）。
         # 用业务异常而不是 HTTPException：后者的 detail 会被统一异常处理器的
@@ -84,11 +84,11 @@ async def read_message(
 
 @router.put("/read-all")
 async def read_all(
-    user_id: int = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    current: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     await db.execute(
         update(NotifyMessage)
-        .where(NotifyMessage.receiver_id == user_id, NotifyMessage.is_read == 0)
+        .where(NotifyMessage.receiver_id == current.id, NotifyMessage.is_read == 0)
         .values(is_read=1)
     )
     await db.commit()

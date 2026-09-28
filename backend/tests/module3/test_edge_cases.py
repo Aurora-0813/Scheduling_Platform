@@ -8,14 +8,13 @@ import pytest
 from fastapi import FastAPI
 
 from app.core.config import Settings
-from app.core.deps import MOCK_USER_ID
 from app.core.error_codes import DEFAULT_MESSAGES, ErrorCode
 from app.core.response import register_exception_handlers
 from app.core.utils import parse_time
 from app.models import ReserveOrder
 from app.state_machine import IllegalTransitionError, OrderStatus, transition
 
-from .helpers import OTHER_USER_ID, time_str
+from .helpers import MOCK_USER_ID, OTHER_USER_ID, auth_headers, time_str
 
 UID = MOCK_USER_ID
 
@@ -24,11 +23,11 @@ UID = MOCK_USER_ID
 
 
 async def _create(client, space_id=1, days=1, hour=9, user_id=None):
-    """建一条预约，返回 orderId。"""
+    """建一条预约，返回 orderId。`user_id` 给定时以该用户的真实 JWT 发起。"""
     r = await client.post("/api/v1/orders/create", json={
         "spaceId": space_id, "deviceIds": [],
         "startTime": time_str(days, hour), "endTime": time_str(days, hour + 1),
-    }, headers=None if user_id is None else {"X-User-Id": str(user_id)})
+    }, headers=None if user_id is None else auth_headers(user_id))
     assert r.status_code == 200, r.text
     return r.json()["data"]["orderId"]
 
@@ -67,11 +66,11 @@ async def test_legacy_user_orders_endpoint_is_scoped(client, db_session):
     assert nobody.json() == theirs.json()
 
 
-async def test_legacy_user_orders_endpoint_accepts_matching_header(client):
-    """带 `X-User-Id` 且与路径一致时照常返回 —— 收紧挡的是跨用户，不是旧客户端。"""
+async def test_legacy_user_orders_endpoint_accepts_matching_path(client):
+    """路径参数与**令牌身份**一致时照常返回 —— 收紧挡的是跨用户，不是旧客户端。"""
     oid = await _create(client)
     r = await client.get(
-        f"/api/v1/orders/user/{UID}", headers={"X-User-Id": str(UID)}
+        f"/api/v1/orders/user/{UID}", headers=auth_headers(UID)
     )
     assert r.status_code == 200
     assert [o["orderId"] for o in r.json()["data"]] == [oid]
@@ -114,8 +113,8 @@ async def test_cancel_missing_order_returns_404(client):
 # ------------------------------------------------- 归属校验：他人订单一律 404
 
 # 这三条钉的是同一个性质的漏洞：认证层只回答「你是谁」，不回答「这单是不是你的」。
-# 路由里注入了 user_id 却不比对，等于把 orderId 当密码用——而 orderId 是自增的，
-# 换个 X-User-Id 头就能读、能确认、能取消别人的预约。
+# 路由里注入了身份却不比对，等于把 orderId 当密码用 —— 而 orderId 是自增的，
+# 换一个令牌就能读、能确认、能取消别人的预约。
 
 
 async def test_cannot_read_others_order(client):
@@ -143,9 +142,9 @@ async def test_cannot_confirm_others_order(client, db_session):
 
     order = await db_session.get(ReserveOrder, oid)
     assert order.order_status == OrderStatus.PENDING.value, "状态被越权改动了"
-    # 通知不能发给原主人
+    # 通知不能发给原主人（以他人身份查未读数）
     unread = await client.get(
-        "/api/v1/messages/unread", headers={"X-User-Id": str(OTHER_USER_ID)}
+        "/api/v1/messages/unread", headers=auth_headers(OTHER_USER_ID)
     )
     assert unread.json()["data"]["count"] == 0
 
@@ -184,22 +183,34 @@ async def test_owner_can_still_use_own_order(client):
 # ------------------------------------------------- 身份兜底（§5.1）
 
 
-async def test_missing_identity_header_falls_back_to_mock_user(client):
-    """未带任何身份头时兜底 mock 用户 1，绝不放行请求体里的任意 userId。"""
+async def test_missing_token_is_rejected_not_defaulted(client):
+    """不带令牌一律 401 / 40101 —— 身份**没有**兜底路径。
+
+    本模块早先有一版读 `X-User-Id` 的 mock：没带令牌时兜底成演示用户 1。那等于
+    把 §5.1 降级成可选项 —— 线上漏配令牌不会报错，只会安静地以 1 号身份读写数据。
+    现在身份只有一个来源（JWT），缺失就是「未登录」。
+
+    顺带钉住：那个旧请求头必须**彻底失效**，而不只是「不再优先」。
+    """
     from app.main import app
 
     transport = httpx.ASGITransport(app=app)
+    body = {
+        "spaceId": 1, "deviceIds": [],
+        "startTime": time_str(1, 9), "endTime": time_str(1, 10),
+        "userId": OTHER_USER_ID,          # 请求体里的 userId 也不作数
+    }
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as bare:
-        created = (await bare.post("/api/v1/orders/create", json={
-            "spaceId": 1, "deviceIds": [],
-            "startTime": time_str(1, 9), "endTime": time_str(1, 10),
-            "userId": OTHER_USER_ID,          # 请求体里的 userId 必须被忽略
-        })).json()["data"]
+        r = await bare.post("/api/v1/orders/create", json=body)
+        stale = await bare.post(
+            "/api/v1/orders/create", json=body,
+            headers={"X-User-Id": str(OTHER_USER_ID)},   # 旧 mock 的身份来源
+        )
 
-        mine = (await bare.get("/api/v1/orders/my")).json()["data"]
-
-    assert created["userId"] == MOCK_USER_ID
-    assert [o["userId"] for o in mine] == [MOCK_USER_ID]
+    for resp in (r, stale):
+        assert resp.status_code == 401
+        assert resp.json()["code"] == ErrorCode.TOKEN_MISSING
+        assert resp.json()["data"] is None
 
 
 # ------------------------------------------------- 状态机不变量
