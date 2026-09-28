@@ -24,6 +24,7 @@
     「这个模型到底认不认得我们的场地照片？」——
     这是整个模块最大的不确定性，越早验证越好。
 """
+
 import pytest
 
 from app.core.config import settings
@@ -49,9 +50,7 @@ def require_candidates():
     async def _check() -> int:
         async with AsyncSessionLocal() as db:
             rows = (
-                await db.execute(
-                    select(SpaceResource.id).where(SpaceResource.status == 1).limit(1)
-                )
+                await db.execute(select(SpaceResource.id).where(SpaceResource.status == 1).limit(1))
             ).all()
             return len(rows)
 
@@ -60,7 +59,7 @@ def require_candidates():
     try:
         if asyncio.run(_check()) == 0:
             pytest.skip("数据库里没有可用场地，请先执行 python scripts/seed.py seed")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - 任何异常都表示「环境不具备」，跳过而非失败
         pytest.skip(f"数据库不可用，跳过联网冒烟测试：{exc}")
 
 
@@ -129,10 +128,10 @@ async def test_real_vision_api_recognizes_seeded_space(
     from app.services.image_service import analyze_space_image
 
     image_path = os.getenv("SMOKE_IMAGE")
-    if not image_path or not Path(image_path).exists():
+    if not image_path or not Path(image_path).exists():  # noqa: ASYNC240 - 冒烟用例读一张小图
         pytest.skip("未设置 SMOKE_IMAGE 环境变量或文件不存在，跳过业务冒烟")
 
-    raw = Path(image_path).read_bytes()
+    raw = Path(image_path).read_bytes()  # noqa: ASYNC240 - 同上：测试里同步读小图可以接受
     upload = UploadFile(
         file=io.BytesIO(raw),
         filename=Path(image_path).name,
@@ -157,8 +156,6 @@ async def test_real_vision_api_recognizes_seeded_space(
             from app.models.resource import SpaceResource
 
             row = (
-                await db.execute(
-                    select(SpaceResource.id).where(SpaceResource.id == data.spaceId)
-                )
+                await db.execute(select(SpaceResource.id).where(SpaceResource.id == data.spaceId))
             ).first()
         assert row is not None, "识别结果里的 spaceId 必须是数据库真实存在的场地"

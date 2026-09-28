@@ -16,6 +16,7 @@
     2. 公共子结构（SpaceCandidate / AvailableSlot / DeviceHint）—— 组装响应用。
     3. 对外响应模型（SpaceAnalyzeData / SketchAnalyzeData）—— 接口 data 字段。
 """
+
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -152,8 +153,7 @@ class SpaceRecognition(BaseModel):
     spaceName: str | None = Field(
         default=None,
         description=(
-            "所选候选场地的名称，必须与候选列表中的写法**逐字一致**。"
-            "选不出场地时填 null。"
+            "所选候选场地的名称，必须与候选列表中的写法**逐字一致**。选不出场地时填 null。"
         ),
     )
     rawText: str | None = Field(
@@ -202,7 +202,7 @@ class SpaceRecognition(BaseModel):
         if not isinstance(data, dict):
             return data
 
-        data = dict(data)      # 不原地修改调用方的数据
+        data = dict(data)  # 不原地修改调用方的数据
 
         # spaceId 是防幻觉关键字段：转不出整数就置 None，绝不猜
         data["spaceId"] = _coerce_optional_int(data.get("spaceId"))
@@ -246,9 +246,7 @@ class SketchRecognition(BaseModel):
     )
     question: str | None = Field(
         default=None,
-        description=(
-            "当 confidence 低于阈值时生成的一句中文追问；达到阈值时填 null。"
-        ),
+        description=("当 confidence 低于阈值时生成的一句中文追问；达到阈值时填 null。"),
     )
 
     @model_validator(mode="before")
@@ -289,6 +287,7 @@ class SketchRecognition(BaseModel):
 
 class SpaceCandidate(BaseModel):
     """候选场地（供前端在识别错误时让用户手动改选）"""
+
     spaceId: int = Field(..., description="场地ID")
     spaceName: str = Field(..., description="场地名称")
     spaceType: int = Field(..., description="空间类型：1会议室 2展厅 3多功能厅 4户外场地")
@@ -298,6 +297,7 @@ class SpaceCandidate(BaseModel):
 
 class AvailableSlot(BaseModel):
     """场地空档时段（在开放时间内扣除已被占用的区间）"""
+
     date: str = Field(..., description="日期，YYYY-MM-DD")
     startTime: str = Field(..., description="空档开始，HH:mm:ss")
     endTime: str = Field(..., description="空档结束，HH:mm:ss")
@@ -312,6 +312,7 @@ class DeviceHint(BaseModel):
         原因是当前数据库没有 space_resource ↔ device_resource 的关联表，
         无法对它做权威校验，因此本字段仅作展示参考，**不参与任何业务决策**。
     """
+
     deviceType: str = Field(..., description="设备类型，如 投影仪 / 音响 / 显示屏")
     count: int = Field(1, description="可见数量估计")
     confidence: float = Field(0.0, description="该设备识别的置信度")
@@ -330,6 +331,7 @@ class SpaceAnalyzeData(BaseModel):
         [契约] = 开发流程.md §5.3 模块 2 原有字段
         [新增] = 本模块扩展字段，见设计文档 §4.4，**需按 §2.5 通知相关方**
     """
+
     type: Literal["space"] = Field("space", description="固定 space [契约]")
     spaceId: int | None = Field(None, description="匹配到的场地ID；未匹配到为 null [契约]")
     spaceName: str | None = Field(None, description="场地名称，**取自数据库**而非模型输出 [契约]")
@@ -337,9 +339,7 @@ class SpaceAnalyzeData(BaseModel):
     availableTime: list[AvailableSlot] = Field(
         default_factory=list, description="场地未来可用空档时段 [契约]"
     )
-    devices: list[DeviceHint] = Field(
-        default_factory=list, description="照片中识别到的设备 [契约]"
-    )
+    devices: list[DeviceHint] = Field(default_factory=list, description="照片中识别到的设备 [契约]")
 
     needConfirm: bool = Field(True, description="是否需要用户确认后才能送往 Agent [新增]")
     question: str | None = Field(None, description="追问文案，needConfirm=true 时必有值 [新增]")
@@ -352,12 +352,11 @@ class SpaceAnalyzeData(BaseModel):
 
 class SketchAnalyzeData(BaseModel):
     """POST /api/v1/image/sketch 的 data 字段"""
+
     type: Literal["sketch"] = Field("sketch", description="固定 sketch [契约]")
     capacity: int | None = Field(None, description="预估容纳人数 [契约]")
     layout: str | None = Field(None, description="布局文字描述 [契约]")
-    requirements: list[str] = Field(
-        default_factory=list, description="草图隐含的约束关键词 [契约]"
-    )
+    requirements: list[str] = Field(default_factory=list, description="草图隐含的约束关键词 [契约]")
     confidence: float = Field(0.0, ge=0.0, le=1.0, description="解读置信度 0~1 [契约]")
 
     needConfirm: bool = Field(True, description="是否需要用户确认 [新增]")

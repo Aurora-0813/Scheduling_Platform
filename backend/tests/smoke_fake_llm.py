@@ -8,6 +8,7 @@ FakeMessagesListChatModel 与 GenericFakeChatModel 都没有实现 bind_tools**�
 
 运行：python tests/smoke_fake_llm.py
 """
+
 import asyncio
 
 from langchain.agents import create_agent
@@ -29,12 +30,21 @@ def query_spaces(capacity: int, space_type: int, start_time: str, end_time: str)
 
 
 def _tool_call() -> AIMessage:
-    return AIMessage(content="", tool_calls=[{
-        "name": "query_spaces",
-        "args": {"capacity": 40, "space_type": 2,
-                 "start_time": "2026-09-30 14:00:00", "end_time": "2026-09-30 16:00:00"},
-        "id": "call_1",
-    }])
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "query_spaces",
+                "args": {
+                    "capacity": 40,
+                    "space_type": 2,
+                    "start_time": "2026-09-30 14:00:00",
+                    "end_time": "2026-09-30 16:00:00",
+                },
+                "id": "call_1",
+            }
+        ],
+    )
 
 
 class StubChatModel(BaseChatModel):
@@ -47,11 +57,11 @@ class StubChatModel(BaseChatModel):
     def _llm_type(self) -> str:
         return "stub-chat-model"
 
-    def bind_tools(self, tools, **kwargs):  # noqa: ANN001, ANN003 - 对齐父类签名
+    def bind_tools(self, tools, **kwargs):
         """create_agent 必需。基类默认实现直接抛 NotImplementedError。"""
         return self
 
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # noqa: ANN001
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         idx = min(self._cursor, len(self.responses) - 1)
         self._cursor += 1
         return ChatResult(generations=[ChatGeneration(message=self.responses[idx])])
@@ -74,13 +84,20 @@ async def probe(label: str, model) -> bool:
 
 async def main() -> None:
     # 第一次调用产生 tool_call，第二次给最终答复
-    await probe("FakeMessagesListChatModel",
-                FakeMessagesListChatModel(responses=[_tool_call(), AIMessage(content="已找到方案")]))
-    await probe("GenericFakeChatModel",
-                GenericFakeChatModel(messages=iter([_tool_call(), AIMessage(content="已找到方案")])))
-    ok = await probe("StubChatModel（自实现 bind_tools）",
-                     StubChatModel(responses=[_tool_call(), AIMessage(content="已找到方案")]))
-    print("\n结论：", "StubChatModel 可用，作为本模块的假 LLM 夹具" if ok else "三个方案均不可用，需另寻")
+    await probe(
+        "FakeMessagesListChatModel",
+        FakeMessagesListChatModel(responses=[_tool_call(), AIMessage(content="已找到方案")]),
+    )
+    await probe(
+        "GenericFakeChatModel",
+        GenericFakeChatModel(messages=iter([_tool_call(), AIMessage(content="已找到方案")])),
+    )
+    ok = await probe(
+        "StubChatModel（自实现 bind_tools）",
+        StubChatModel(responses=[_tool_call(), AIMessage(content="已找到方案")]),
+    )
+    verdict = "StubChatModel 可用，作为本模块的假 LLM 夹具" if ok else "三个方案均不可用，需另寻"
+    print("\n结论：", verdict)
 
 
 if __name__ == "__main__":

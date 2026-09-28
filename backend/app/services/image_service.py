@@ -21,6 +21,7 @@
     【本项目明确不引入向量库 / RAG】候选场地是 space_resource 小表的全量查询，
     不存在 embedding、检索或召回环节。
 """
+
 import json
 import logging
 import re
@@ -80,9 +81,7 @@ _SPACE_PARSE_FAILED_HINT = (
     "照片识别没能完成，可以重拍一张更清晰的照片（对准门牌或场地全景），"
     "或者直接改用文字描述你的需求。"
 )
-_SKETCH_PARSE_FAILED_HINT = (
-    "草图没能读懂，可以画得更清楚一些，或者直接用文字描述场地要求。"
-)
+_SKETCH_PARSE_FAILED_HINT = "草图没能读懂，可以画得更清楚一些，或者直接用文字描述场地要求。"
 
 # 错误码
 _CODE_RECOGNITION_FAILED = 41003
@@ -161,7 +160,7 @@ async def analyze_space_image(
             needConfirm=True,
             question=_SPACE_PARSE_FAILED_HINT,
             rawText=None,
-            candidates=candidates,          # 给候选，让用户可以直接手动选
+            candidates=candidates,  # 给候选，让用户可以直接手动选
             availableTime=[],
             devices=[],
             imageUrl=image_url,
@@ -199,7 +198,7 @@ async def analyze_space_image(
 
     return SpaceAnalyzeData(
         spaceId=matched.spaceId if matched else None,
-        spaceName=matched.spaceName if matched else None,   # ← 数据库值，不是模型值
+        spaceName=matched.spaceName if matched else None,  # ← 数据库值，不是模型值
         confidence=confidence,
         needConfirm=need_confirm,
         question=question,
@@ -281,12 +280,14 @@ async def analyze_sketch_image(
     # 因此只要三个核心字段全空，就按「没读懂」处理，走降级分支。
     # （这一步在 schema 层做不了：Pydantic 只管字段类型，管不了「内容是否有意义」）
     if capacity is None and layout is None and not requirements:
-        logger.info("草图识别结果语义为空（capacity / layout / requirements 均无内容），按解析失败处理")
+        logger.info(
+            "草图识别结果语义为空（capacity / layout / requirements 均无内容），按解析失败处理"
+        )
         return SketchAnalyzeData(
             capacity=None,
             layout=None,
             requirements=[],
-            confidence=0.0,          # 模型自评的置信度在此情境下没有意义，归零
+            confidence=0.0,  # 模型自评的置信度在此情境下没有意义，归零
             needConfirm=True,
             question=_SKETCH_PARSE_FAILED_HINT,
             imageUrl=image_url,
@@ -497,7 +498,7 @@ def _extract_json(text: str) -> dict | None:
     start, end = text.find("{"), text.rfind("}")
     if start != -1 and end > start:
         try:
-            obj = json.loads(text[start:end + 1])
+            obj = json.loads(text[start : end + 1])
             return obj if isinstance(obj, dict) else None
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
@@ -565,9 +566,7 @@ def _match_candidate(
             if c.spaceId == parsed.spaceId:
                 return c
         # 命中不了 → 这就是幻觉。丢弃模型给的 id，绝不放行（§9.3 / §13）
-        logger.warning(
-            "模型返回了不存在的 spaceId=%s，已丢弃（疑似幻觉）", parsed.spaceId
-        )
+        logger.warning("模型返回了不存在的 spaceId=%s，已丢弃（疑似幻觉）", parsed.spaceId)
 
     # ---- 第 2 步：按名称完全一致 ----
     name = (parsed.spaceName or "").strip()
@@ -608,7 +607,7 @@ def _clamp01(value) -> float:
         return 0.0
 
     if 1.0 < num <= 100.0:
-        num = num / 100.0       # 85 → 0.85
+        num = num / 100.0  # 85 → 0.85
 
     return max(0.0, min(1.0, num))
 
@@ -812,8 +811,8 @@ async def list_available_slots(
 
     # ---- 2. 查占用区间（只考虑会真正占用场地的状态）----
     today = date.today()
-    range_start = datetime.combine(today, time.min)                 # 今天 00:00:00
-    range_end = range_start + timedelta(days=days)                  # N 天后 00:00:00
+    range_start = datetime.combine(today, time.min)  # 今天 00:00:00
+    range_end = range_start + timedelta(days=days)  # N 天后 00:00:00
 
     stmt = (
         select(ReserveOrder.start_time, ReserveOrder.end_time)
@@ -833,13 +832,13 @@ async def list_available_slots(
 
     for offset in range(days):
         d = today + timedelta(days=offset)
-        day_open = datetime.combine(d, open_start)     # 当天开放起点
-        day_close = datetime.combine(d, open_end)      # 当天开放终点
+        day_open = datetime.combine(d, open_start)  # 当天开放起点
+        day_close = datetime.combine(d, open_end)  # 当天开放终点
 
         # cursor 表示「当前已经处理到的时间点」，初始为开放起点
         cursor = day_open
         if cursor >= day_close:
-            continue                                   # 开放时段为空的异常配置，跳过
+            continue  # 开放时段为空的异常配置，跳过
 
         for busy_start, busy_end in busy:
             # 把跨天订单按当天边界裁剪，只关心落在 [day_open, day_close] 内的部分
@@ -847,14 +846,14 @@ async def list_available_slots(
             e = min(busy_end, day_close)
 
             if e <= cursor:
-                continue                               # 该占用段完全在当前游标之前，跳过
+                continue  # 该占用段完全在当前游标之前，跳过
             if s > cursor:
                 # 占用段之前还有一段空闲 → 记为一个空档
                 slots.append(_make_slot(d, cursor, min(s, day_close)))
 
-            cursor = max(cursor, e)                    # 游标推进到占用段结束
+            cursor = max(cursor, e)  # 游标推进到占用段结束
             if cursor >= day_close:
-                break                                  # 当天已被占满，不用再看后面的订单
+                break  # 当天已被占满，不用再看后面的订单
 
         # 收尾：最后一个占用段结束到闭馆之间还有空档
         if cursor < day_close:

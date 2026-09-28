@@ -35,5 +35,5 @@ api_router = APIRouter()
 api_router.include_router(health.router)
 api_router.include_router(auth.router)
 api_router.include_router(monitor.router)
-api_router.include_router(voice.router)   # 模块 1 语音输入
-api_router.include_router(image.router)   # 模块 2 摄像头空间感知
+api_router.include_router(voice.router)  # 模块 1 语音输入
+api_router.include_router(image.router)  # 模块 2 摄像头空间感知

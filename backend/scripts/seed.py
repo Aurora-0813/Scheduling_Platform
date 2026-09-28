@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """
 种子数据与一键自测脚本（摄像头空间感知模块）
 ====================================================================
@@ -33,6 +32,7 @@
     本脚本是**开发者本地自助工具**：复用 ORM 模型（表结构改了不会失配）、
     幂等可重跑、且能顺手把整条识别链路跑一遍。两者不冲突。
 """
+
 import argparse
 import asyncio
 import io
@@ -61,18 +61,18 @@ if str(BACKEND_DIR) not in sys.path:
 try:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
-except Exception:
+except Exception:  # noqa: BLE001 - 重定向场景下 reconfigure 可能不支持，此项失败不影响后续
     pass
 
-from passlib.context import CryptContext                                    # noqa: E402
-from sqlalchemy import delete, func, select                                 # noqa: E402
+from passlib.context import CryptContext  # noqa: E402
+from sqlalchemy import delete, func, select  # noqa: E402
 
-from app.core.config import settings                                        # noqa: E402
-from app.core.database import AsyncSessionLocal, async_engine               # noqa: E402
-from app.models.notification import NotifyMessage                           # noqa: E402
-from app.models.reservation import ReserveOrder                             # noqa: E402
-from app.models.resource import DeviceResource, SpaceResource               # noqa: E402
-from app.models.system import SysRole, SysUser                              # noqa: E402
+from app.core.config import settings  # noqa: E402
+from app.core.database import AsyncSessionLocal, async_engine  # noqa: E402
+from app.models.notification import NotifyMessage  # noqa: E402
+from app.models.reservation import ReserveOrder  # noqa: E402
+from app.models.resource import DeviceResource, SpaceResource  # noqa: E402
+from app.models.system import SysRole, SysUser  # noqa: E402
 
 # ===========================================================================
 # 种子数据定义（对应规范 §6.9）
@@ -130,19 +130,20 @@ SEED_DEVICES = [
 ]
 
 # ---- 历史预约（10 条，覆盖不同状态与时段）----
-# 字段：空间名、用户名、相对今天的天数偏移、开始小时、结束小时、状态(1待确认 2已确认 3已取消 4已完成)
+# 字段：空间名、用户名、相对今天的天数偏移、开始小时、结束小时、
+#       状态(1待确认 2已确认 3已取消 4已完成)
 # 故意跨越「今天」，这样 seed 之后立刻调 /image/analyze 就能看到 availableTime 非空。
 SEED_ORDERS = [
-    ("A栋3楼展厅", "user01", 0, 14, 16, 2),          # 今天下午，已确认 → 会被空档计算扣掉
-    ("A栋3楼展厅", "user01", 0, 9, 11, 2),           # 今天上午，已确认
-    ("B栋2楼多功能厅", "user01", 0, 10, 12, 1),      # 今天上午，待确认
+    ("A栋3楼展厅", "user01", 0, 14, 16, 2),  # 今天下午，已确认 → 会被空档计算扣掉
+    ("A栋3楼展厅", "user01", 0, 9, 11, 2),  # 今天上午，已确认
+    ("B栋2楼多功能厅", "user01", 0, 10, 12, 1),  # 今天上午，待确认
     ("A栋2楼小会议室", "admin01", 0, 15, 17, 2),
-    ("A栋2楼中会议室", "user01", 1, 9, 11, 2),       # 明天
-    ("B栋1楼大会议室", "admin01", 1, 14, 18, 2),     # 明天
-    ("中心广场", "super01", 2, 8, 12, 2),            # 后天
-    ("A栋1楼临展厅", "user01", -1, 13, 15, 4),       # 昨天，已完成
+    ("A栋2楼中会议室", "user01", 1, 9, 11, 2),  # 明天
+    ("B栋1楼大会议室", "admin01", 1, 14, 18, 2),  # 明天
+    ("中心广场", "super01", 2, 8, 12, 2),  # 后天
+    ("A栋1楼临展厅", "user01", -1, 13, 15, 4),  # 昨天，已完成
     ("C栋1楼圆桌多功能厅", "user01", -2, 19, 21, 3),  # 前天，已取消（不占时段）
-    ("B栋2楼多功能厅", "super01", 3, 13, 17, 2),     # 三天后
+    ("B栋2楼多功能厅", "super01", 3, 13, 17, 2),  # 三天后
 ]
 
 
@@ -217,9 +218,7 @@ async def cmd_seed(reset: bool) -> int:
             role_map: dict[str, SysRole] = {}
             for item in SEED_ROLES:
                 existing = (
-                    await db.execute(
-                        select(SysRole).where(SysRole.role_name == item["role_name"])
-                    )
+                    await db.execute(select(SysRole).where(SysRole.role_name == item["role_name"]))
                 ).scalar_one_or_none()
                 if existing:
                     role_map[item["role_name"]] = existing
@@ -228,7 +227,7 @@ async def cmd_seed(reset: bool) -> int:
 
                 role = SysRole(role_name=item["role_name"], permissions=item["permissions"])
                 db.add(role)
-                await db.flush()          # flush 后才能拿到自增 id
+                await db.flush()  # flush 后才能拿到自增 id
                 role_map[item["role_name"]] = role
                 ok(f"新增角色：{item['role_name']} (id={role.id})")
 
@@ -237,9 +236,7 @@ async def cmd_seed(reset: bool) -> int:
             user_map: dict[str, SysUser] = {}
             for item in SEED_USERS:
                 existing = (
-                    await db.execute(
-                        select(SysUser).where(SysUser.username == item["username"])
-                    )
+                    await db.execute(select(SysUser).where(SysUser.username == item["username"]))
                 ).scalar_one_or_none()
                 if existing:
                     user_map[item["username"]] = existing
@@ -264,9 +261,7 @@ async def cmd_seed(reset: bool) -> int:
             space_map: dict[str, SpaceResource] = {}
             for name, stype, cap, loc, budget, o_start, o_end in SEED_SPACES:
                 existing = (
-                    await db.execute(
-                        select(SpaceResource).where(SpaceResource.space_name == name)
-                    )
+                    await db.execute(select(SpaceResource).where(SpaceResource.space_name == name))
                 ).scalar_one_or_none()
                 if existing:
                     space_map[name] = existing
@@ -336,7 +331,7 @@ async def cmd_seed(reset: bool) -> int:
                 order = ReserveOrder(
                     user_id=user_map[username].id,
                     space_id=space_map[space_name].id,
-                    device_ids=[],                 # JSON 字段，留空表示未借用设备
+                    device_ids=[],  # JSON 字段，留空表示未借用设备
                     start_time=start_dt,
                     end_time=end_dt,
                     order_status=ostatus,
@@ -352,7 +347,7 @@ async def cmd_seed(reset: bool) -> int:
 
             await db.commit()
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - 脚本最外层兜底：任何失败都要落成可读提示
             await db.rollback()
             fail(f"写入种子数据失败：{type(exc).__name__}: {exc}")
             say()
@@ -365,7 +360,7 @@ async def cmd_seed(reset: bool) -> int:
 
     title("种子数据写入完成")
     say(f"  库名：{settings.DB_NAME}")
-    say(f"  演示账号：user01 / admin01 / super01")
+    say("  演示账号：user01 / admin01 / super01")
     say(f"  初始密码：{DEFAULT_SEED_PASSWORD}  （演示用，请勿用于生产环境）")
     say()
     return 0
@@ -407,9 +402,7 @@ async def _reset_seed_data(db) -> None:
     ]
     user_ids = [
         r[0]
-        for r in (
-            await db.execute(select(SysUser.id).where(SysUser.username.in_(usernames)))
-        ).all()
+        for r in (await db.execute(select(SysUser.id).where(SysUser.username.in_(usernames)))).all()
     ]
     order_ids = []
     if space_ids:
@@ -437,9 +430,7 @@ async def _reset_seed_data(db) -> None:
         await db.execute(delete(SpaceResource).where(SpaceResource.id.in_(space_ids)))
     # 设备的删除与场地无关，单独判断 —— 否则场地表为空时设备永远删不掉
     if device_names:
-        await db.execute(
-            delete(DeviceResource).where(DeviceResource.device_name.in_(device_names))
-        )
+        await db.execute(delete(DeviceResource).where(DeviceResource.device_name.in_(device_names)))
     if user_ids:
         await db.execute(delete(SysUser).where(SysUser.id.in_(user_ids)))
     await db.execute(delete(SysRole).where(SysRole.role_name.in_(role_names)))
@@ -453,7 +444,9 @@ async def _reset_seed_data(db) -> None:
 # ===========================================================================
 
 
-async def cmd_test(image_path: str | None, is_sketch: bool, use_mock: bool, confidence: float) -> int:
+async def cmd_test(
+    image_path: str | None, is_sketch: bool, use_mock: bool, confidence: float
+) -> int:
     """
     对本模块的识别链路做一次端到端自测。
 
@@ -484,10 +477,10 @@ async def cmd_test(image_path: str | None, is_sketch: bool, use_mock: bool, conf
     # ---------- 准备图片 ----------
     if image_path:
         src = Path(image_path)
-        if not src.exists():
+        if not src.exists():  # noqa: ASYNC240 - 一次性 CLI 脚本，没有并发任务可被这次同步 stat 拖住
             fail(f"图片不存在：{src}")
             return 1
-        raw_bytes = src.read_bytes()
+        raw_bytes = src.read_bytes()  # noqa: ASYNC240 - 同上：本地单张小图，读盘耗时可忽略
         say(f"  使用图片：{src}  ({len(raw_bytes) / 1024:.1f} KB)")
     else:
         raw_bytes = build_placeholder_png()
@@ -509,7 +502,7 @@ async def cmd_test(image_path: str | None, is_sketch: bool, use_mock: bool, conf
                 # 因此这里先查一遍候选场地，取第一个作为假模型的答案。
                 try:
                     candidates = await list_active_space_candidates(db, limit=5)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - 自测脚本：任何失败都转成排查提示
                     fail(f"查询候选场地失败：{type(exc).__name__}: {exc}")
                     say()
                     say("  这通常是数据库连不上，请先执行：python scripts/seed.py check")
@@ -538,7 +531,7 @@ async def cmd_test(image_path: str | None, is_sketch: bool, use_mock: bool, conf
             say(f"  使用真实模型：{settings.VISION_MODEL_NAME}")
             try:
                 llm = get_vision_llm()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - 同上：配置缺失/依赖缺失都要给出人话提示
                 fail(f"构造模型客户端失败：{exc}")
                 return 1
 
@@ -563,15 +556,19 @@ async def cmd_test(image_path: str | None, is_sketch: bool, use_mock: bool, conf
                 data = await analyze_sketch_image(db=db, file=upload, llm=llm)
             else:
                 data = await analyze_space_image(db=db, file=upload, llm=llm)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - 自测脚本要区分「库问题 / 模型问题」，见下方分支
             fail(f"识别失败：{type(exc).__name__}: {exc}")
             say()
 
             # 区分「数据库问题」和「模型问题」—— 两者的排查方向完全不同，
             # 如果不加区分，用户看到"识别失败"会先去查 API Key，白费功夫。
             text = str(exc).lower()
-            if "operationalerror" in type(exc).__name__.lower() or "can't connect" in text \
-                    or "connection" in text or "refused" in text:
+            if (
+                "operationalerror" in type(exc).__name__.lower()
+                or "can't connect" in text
+                or "connection" in text
+                or "refused" in text
+            ):
                 say("  这看起来是**数据库**问题，请检查：")
                 say("    1. SSH 隧道是否开着（另开一个终端保持不关）：")
                 say(f"       ssh -L {settings.DB_PORT}:127.0.0.1:3307 root@<服务器IP> -N")
@@ -616,7 +613,7 @@ async def cmd_test(image_path: str | None, is_sketch: bool, use_mock: bool, conf
         say(f"  （已挂载静态目录，服务运行时可通过 http://127.0.0.1:8000{data.imageUrl} 访问）")
 
     if not is_sketch and data.availableTime:
-        say(f"  场地空档时段（前 5 条）：")
+        say("  场地空档时段（前 5 条）：")
         for slot in data.availableTime[:5]:
             say(f"    {slot.date} {slot.startTime} ~ {slot.endTime}")
 
@@ -661,8 +658,7 @@ class MockVisionLLM:
                         "requirements": ["需要投影", "需要讲台"],
                         "confidence": outer.confidence,
                         "question": (
-                            f"草图解读置信度 {int(outer.confidence * 100)}%，"
-                            "能否补充一句场地用途？"
+                            f"草图解读置信度 {int(outer.confidence * 100)}%，能否补充一句场地用途？"
                             if outer.confidence < 0.75
                             else None
                         ),
@@ -715,7 +711,8 @@ async def cmd_check() -> int:
         warn("VISION_API_KEY 未配置 —— 只能用 --mock 跑假模型自测")
         say("         配置方法见 backend/.env.example")
     say(f"         VISION_API_BASE = {settings.VISION_API_BASE or '（未配置）'}")
-    say(f"         结构化输出     = {'开启' if settings.VISION_STRUCTURED_OUTPUT else '关闭（手工解析）'}")
+    structured = "开启" if settings.VISION_STRUCTURED_OUTPUT else "关闭（手工解析）"
+    say(f"         结构化输出     = {structured}")
     say(f"         置信度阈值     = {settings.IMAGE_CONFIDENCE_THRESHOLD}")
     say(f"         上传目录       = {settings.image_upload_path}")
     if settings.AUTH_BYPASS:
@@ -733,7 +730,7 @@ async def cmd_check() -> int:
         ok(f"连接成功 —— 场地 {space_count} 条 / 设备 {device_count} 条 / 用户 {user_count} 条")
         if space_count == 0:
             warn("场地表为空，识别时没有候选可匹配。请先执行：python scripts/seed.py seed")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - 体检命令：连不上库就是它的正常输出之一
         blocking = True
         fail(f"连接失败：{type(exc).__name__}: {exc}")
         say()

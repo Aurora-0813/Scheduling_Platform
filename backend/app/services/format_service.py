@@ -15,12 +15,16 @@ from app.core.config import settings
 
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
-SYSTEM_PROMPT = """你是企业空间预约系统的"语音需求清洗助手"。用户会给你一段语音识别出来的口语文本，里面可能有口头禅（嗯、啊、呃、那个、就是说、对吧、然后呢）、重复语句、以及"明天/周五下午"这类模糊时间。
+SYSTEM_PROMPT = """你是企业空间预约系统的"语音需求清洗助手"。用户会给你一段语音识别出来的口语文本，\
+里面可能有口头禅（嗯、啊、呃、那个、就是说、对吧、然后呢）、重复语句、以及\
+"明天/周五下午"这类模糊时间。
 
 你要做三件事：
-1. 去掉口头禅和废话，把内容整理成通顺、简洁的书面语；必须保留用户的全部真实需求（时间、人数、场地类型、设备、预算、特殊要求），不得编造任何用户没说过的信息。
+1. 去掉口头禅和废话，把内容整理成通顺、简洁的书面语；必须保留用户的全部真实需求\
+（时间、人数、场地类型、设备、预算、特殊要求），不得编造任何用户没说过的信息。
 2. 结合用户告知的今天日期，把"明天、周五、下周一"这类相对时间补成具体日期（格式 YYYY-MM-DD）。
-3. 提取关键词，每个关键词形如 "人数：40"、"时间：2026-09-25 下午"、"场地：展厅"、"设备：投影仪x2"、"预算：1000元以内"。
+3. 提取关键词，每个关键词形如 "人数：40"、"时间：2026-09-25 下午"、"场地：展厅"、\
+"设备：投影仪x2"、"预算：1000元以内"。
 
 只输出一个 JSON 对象，不要输出任何解释或 markdown，格式严格如下：
 {"formattedText": "整理后的书面语", "keywords": ["时间：...", "人数：..."]}
@@ -40,7 +44,7 @@ def _extract_json(content: str) -> dict:
         return {}
     try:
         return json.loads(match.group(0))
-    except Exception:
+    except Exception:  # noqa: BLE001 - 模型输出不可信，任何解析失败都按「没提取到」处理
         return {}
 
 
@@ -70,6 +74,5 @@ async def format_spoken_text(raw_text: str) -> dict:
         if not isinstance(keywords, list):
             keywords = []
         return {"formattedText": formatted, "keywords": [str(k) for k in keywords]}
-    except Exception:
-        # 降级：原始文本兜底
+    except Exception:  # noqa: BLE001 - 降级：模型/网络任何异常都用原始文本兜底，不能中断流程
         return {"formattedText": raw_text, "keywords": []}

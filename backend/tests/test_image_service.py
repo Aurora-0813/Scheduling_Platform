@@ -12,10 +12,11 @@
 真实数据库的全链路联调放在接口级测试里（使用独立测试库 smart_scheduler_test），
 真实大模型 API 只做一次冒烟验证（标记 @pytest.mark.smoke，默认跳过）。
 """
+
 import pytest
 
 from app.core.config import settings
-from app.schemas.image import SpaceCandidate
+from app.schemas.image import SpaceCandidate, SpaceRecognition
 from app.services import image_service
 from app.services.image_service import (
     ImageRecognitionError,
@@ -27,7 +28,6 @@ from app.services.image_service import (
     analyze_sketch_image,
     analyze_space_image,
 )
-from app.schemas.image import SpaceRecognition
 
 # ===========================================================================
 # 公共夹具
@@ -72,10 +72,12 @@ async def test_high_confidence_success(
     patch_candidates, fake_llm, make_upload_file, temp_upload_dir
 ):
     """T01：高置信度正常识别，不应触发追问，且场地信息取自数据库"""
-    llm = fake_llm([
-        '{"spaceId": 101, "spaceName": "A栋3楼展厅", "rawText": "A-3F 展厅", '
-        '"deviceHints": ["投影仪", "音响"], "confidence": 0.92, "question": null}'
-    ])
+    llm = fake_llm(
+        [
+            '{"spaceId": 101, "spaceName": "A栋3楼展厅", "rawText": "A-3F 展厅", '
+            '"deviceHints": ["投影仪", "音响"], "confidence": 0.92, "question": null}'
+        ]
+    )
 
     data = await analyze_space_image(db=None, file=make_upload_file(), llm=llm)
 
@@ -97,9 +99,9 @@ async def test_low_confidence_triggers_question(
     patch_candidates, fake_llm, make_upload_file, temp_upload_dir
 ):
     """T02：置信度低于阈值 → needConfirm=true，且追问文案含场地名与百分比"""
-    llm = fake_llm([
-        '{"spaceId": 101, "spaceName": "A栋3楼展厅", "confidence": 0.65, "question": null}'
-    ])
+    llm = fake_llm(
+        ['{"spaceId": 101, "spaceName": "A栋3楼展厅", "confidence": 0.65, "question": null}']
+    )
 
     data = await analyze_space_image(db=None, file=make_upload_file(), llm=llm)
 
@@ -118,10 +120,12 @@ async def test_model_generated_question_is_preferred(
 ):
     """模型自己生成了追问文案时，应优先采用模型版本（§4.4：AI 主动生成追问文案）"""
     model_question = "这张照片看着像 A栋3楼展厅，我只有六成把握，是这里吗？"
-    llm = fake_llm([
-        '{"spaceId": 101, "spaceName": "A栋3楼展厅", "confidence": 0.6, '
-        f'"question": "{model_question}"}}'
-    ])
+    llm = fake_llm(
+        [
+            '{"spaceId": 101, "spaceName": "A栋3楼展厅", "confidence": 0.6, '
+            f'"question": "{model_question}"}}'
+        ]
+    )
 
     data = await analyze_space_image(db=None, file=make_upload_file(), llm=llm)
 
@@ -145,20 +149,22 @@ async def test_non_json_reply_degrades_gracefully(
     assert data.spaceName is None
     assert data.confidence == 0.0
     assert data.needConfirm is True
-    assert data.question                      # 必须有引导语
-    assert len(data.candidates) == 2          # 给出候选让用户手动选
-    assert data.imageUrl is not None          # 落盘与识别解耦，图片照常保存
+    assert data.question  # 必须有引导语
+    assert len(data.candidates) == 2  # 给出候选让用户手动选
+    assert data.imageUrl is not None  # 落盘与识别解耦，图片照常保存
 
 
 async def test_markdown_fenced_json_is_parsed(
     patch_candidates, fake_llm, make_upload_file, temp_upload_dir
 ):
     """T04：模型用 ```json 围栏包裹 → 能正确剥离并解析成功"""
-    llm = fake_llm([
-        '好的，我分析完了：\n```json\n'
-        '{"spaceId": 102, "spaceName": "B栋2楼多功能厅", "confidence": 0.88}\n'
-        '```\n希望对你有帮助。'
-    ])
+    llm = fake_llm(
+        [
+            "好的，我分析完了：\n```json\n"
+            '{"spaceId": 102, "spaceName": "B栋2楼多功能厅", "confidence": 0.88}\n'
+            "```\n希望对你有帮助。"
+        ]
+    )
 
     data = await analyze_space_image(db=None, file=make_upload_file(), llm=llm)
 
@@ -171,9 +177,7 @@ async def test_json_wrapped_in_chatter_is_parsed(
     patch_candidates, fake_llm, make_upload_file, temp_upload_dir
 ):
     """T05：JSON 前后夹带寒暄语 → 正则截取花括号后解析成功"""
-    llm = fake_llm([
-        '根据照片判断，结果如下：{"spaceId": 101, "confidence": 0.9} 以上是我的判断。'
-    ])
+    llm = fake_llm(['根据照片判断，结果如下：{"spaceId": 101, "confidence": 0.9} 以上是我的判断。'])
 
     data = await analyze_space_image(db=None, file=make_upload_file(), llm=llm)
 
@@ -196,15 +200,15 @@ async def test_hallucinated_space_id_is_rejected(
     §9.3「图像识别只做业务需求解析，业务真实性由后端校验」
     §13 「大模型幻觉，编造不存在的场地设备」
     """
-    llm = fake_llm([
-        '{"spaceId": 999, "spaceName": "火星会议室", "confidence": 0.99, "question": null}'
-    ])
+    llm = fake_llm(
+        ['{"spaceId": 999, "spaceName": "火星会议室", "confidence": 0.99, "question": null}']
+    )
 
     data = await analyze_space_image(db=None, file=make_upload_file(), llm=llm)
 
-    assert data.spaceId is None            # 幻觉 id 被丢弃
+    assert data.spaceId is None  # 幻觉 id 被丢弃
     assert data.spaceName is None
-    assert data.confidence == 0.0          # 模型自评的 0.99 不作数
+    assert data.confidence == 0.0  # 模型自评的 0.99 不作数
     assert data.needConfirm is True
     assert len(data.candidates) == 2
 
@@ -213,9 +217,7 @@ async def test_name_match_when_id_missing(
     patch_candidates, fake_llm, make_upload_file, temp_upload_dir
 ):
     """T07：模型只填了名称没填 id，但名称与候选完全一致 → 应能匹配上"""
-    llm = fake_llm([
-        '{"spaceId": null, "spaceName": "B栋2楼多功能厅", "confidence": 0.85}'
-    ])
+    llm = fake_llm(['{"spaceId": null, "spaceName": "B栋2楼多功能厅", "confidence": 0.85}'])
 
     data = await analyze_space_image(db=None, file=make_upload_file(), llm=llm)
 
@@ -224,11 +226,11 @@ async def test_name_match_when_id_missing(
     assert data.needConfirm is False
 
 
-async def test_fuzzy_name_match_single_hit(patch_candidates, fake_llm, make_upload_file, temp_upload_dir):
+async def test_fuzzy_name_match_single_hit(
+    patch_candidates, fake_llm, make_upload_file, temp_upload_dir
+):
     """名称互相包含且候选中唯一命中（模型输出「3楼展厅」，库里是「A栋3楼展厅」）→ 采纳"""
-    llm = fake_llm([
-        '{"spaceId": null, "spaceName": "3楼展厅", "confidence": 0.9}'
-    ])
+    llm = fake_llm(['{"spaceId": null, "spaceName": "3楼展厅", "confidence": 0.9}'])
 
     data = await analyze_space_image(db=None, file=make_upload_file(), llm=llm)
 
@@ -237,8 +239,11 @@ async def test_fuzzy_name_match_single_hit(patch_candidates, fake_llm, make_uplo
     assert data.spaceName == "A栋3楼展厅"
 
 
-async def test_fuzzy_name_match_ambiguous_is_rejected(monkeypatch, fake_llm, make_upload_file, temp_upload_dir):
+async def test_fuzzy_name_match_ambiguous_is_rejected(
+    monkeypatch, fake_llm, make_upload_file, temp_upload_dir
+):
     """名称模糊匹配到多个候选 → 不猜，返回 None 交由用户确认"""
+
     async def _two_similar(db, limit=None):
         return [
             SpaceCandidate(spaceId=101, spaceName="A栋3楼展厅", spaceType=2, capacity=40),
@@ -275,12 +280,12 @@ async def test_percentage_confidence_is_normalized(
     "raw,expected",
     [
         (0.42, 0.42),
-        (85, 0.85),        # 百分数归一化
-        (-0.5, 0.0),       # 负数裁剪到 0
-        (2.0, 0.02),       # 2.0 落在 (1, 100]，按百分数 2% 处理
-        (None, 0.0),       # None 兜底
-        ("abc", 0.0),      # 非数值兜底
-        (150, 1.0),        # 超过 100 的离谱值 → 裁剪到 1
+        (85, 0.85),  # 百分数归一化
+        (-0.5, 0.0),  # 负数裁剪到 0
+        (2.0, 0.02),  # 2.0 落在 (1, 100]，按百分数 2% 处理
+        (None, 0.0),  # None 兜底
+        ("abc", 0.0),  # 非数值兜底
+        (150, 1.0),  # 超过 100 的离谱值 → 裁剪到 1
     ],
 )
 def test_clamp01(raw, expected):
@@ -375,10 +380,12 @@ async def test_structured_output_fallback_to_plain_call(
 
 async def test_sketch_success(patch_candidates, fake_llm, make_upload_file, temp_upload_dir):
     """T15：草图识别正常路径"""
-    llm = fake_llm([
-        '{"capacity": 30, "layout": "剧院式排布，前方设讲台", '
-        '"requirements": ["需要投影", "需要讲台"], "confidence": 0.85, "question": null}'
-    ])
+    llm = fake_llm(
+        [
+            '{"capacity": 30, "layout": "剧院式排布，前方设讲台", '
+            '"requirements": ["需要投影", "需要讲台"], "confidence": 0.85, "question": null}'
+        ]
+    )
 
     data = await analyze_sketch_image(db=None, file=make_upload_file(), llm=llm)
 
@@ -399,17 +406,19 @@ async def test_sketch_invalid_capacity_is_cleared(
     data = await analyze_sketch_image(db=None, file=make_upload_file(), llm=llm)
 
     assert data.capacity is None
-    assert data.layout == "会议桌"      # 其它字段不受影响
+    assert data.layout == "会议桌"  # 其它字段不受影响
 
 
 async def test_sketch_requirements_are_cleaned(
     patch_candidates, fake_llm, make_upload_file, temp_upload_dir
 ):
     """T17：requirements 需去重、去空白、丢弃非字符串、限制条数"""
-    llm = fake_llm([
-        '{"capacity": 20, "requirements": '
-        '["需要投影", "需要投影", "  需要投影  ", 123, null, "需要音响"], "confidence": 0.9}'
-    ])
+    llm = fake_llm(
+        [
+            '{"capacity": 20, "requirements": '
+            '["需要投影", "需要投影", "  需要投影  ", 123, null, "需要音响"], "confidence": 0.9}'
+        ]
+    )
 
     data = await analyze_sketch_image(db=None, file=make_upload_file(), llm=llm)
 
@@ -417,7 +426,9 @@ async def test_sketch_requirements_are_cleaned(
     assert data.requirements == ["需要投影", "需要音响"]
 
 
-async def test_sketch_non_json_degrades(patch_candidates, fake_llm, make_upload_file, temp_upload_dir):
+async def test_sketch_non_json_degrades(
+    patch_candidates, fake_llm, make_upload_file, temp_upload_dir
+):
     """草图解析失败也要走友好降级"""
     llm = fake_llm(["这张草图我看不太明白呢。"])
 
@@ -439,18 +450,16 @@ async def test_sketch_semantically_empty_result_degrades(
     场景：模型返回 `{}`，或把所有字段填成 null，却给了一个高 confidence。
     若不加这道判断，前端会显示「90% 置信度但什么都没识别出来」的自相矛盾结果。
     """
-    llm = fake_llm([
-        '{"capacity": null, "layout": null, "requirements": [], "confidence": 0.9}'
-    ])
+    llm = fake_llm(['{"capacity": null, "layout": null, "requirements": [], "confidence": 0.9}'])
 
     data = await analyze_sketch_image(db=None, file=make_upload_file(), llm=llm)
 
     assert data.capacity is None
     assert data.layout is None
     assert data.requirements == []
-    assert data.confidence == 0.0        # 空结果的「高置信度」必须归零
+    assert data.confidence == 0.0  # 空结果的「高置信度」必须归零
     assert data.needConfirm is True
-    assert data.question                 # 必须给出引导语
+    assert data.question  # 必须给出引导语
 
 
 async def test_sketch_validates_when_only_one_field_present(
@@ -480,10 +489,12 @@ async def test_space_junk_field_types_do_not_break_parsing(
     场景：模型把数组给了 null、把 confidence 给了字符串、把 id 给了非数字。
     期望：能救的字段救回来，救不回的置空走人工确认 —— 而不是直接降级丢失全部信息。
     """
-    llm = fake_llm([
-        '{"spaceId": "101", "spaceName": "A栋3楼展厅", '
-        '"deviceHints": null, "confidence": "0.9", "question": null}'
-    ])
+    llm = fake_llm(
+        [
+            '{"spaceId": "101", "spaceName": "A栋3楼展厅", '
+            '"deviceHints": null, "confidence": "0.9", "question": null}'
+        ]
+    )
 
     data = await analyze_space_image(db=None, file=make_upload_file(), llm=llm)
 
@@ -539,12 +550,12 @@ async def test_space_garbage_confidence_falls_back_to_conservative_value(
 @pytest.mark.parametrize(
     "text,expected_keys",
     [
-        ('{"a": 1}', ["a"]),                                       # 策略 1：直接解析
-        ('```json\n{"a": 1}\n```', ["a"]),                          # 策略 2：剥离围栏
-        ('前面有一堆话 {"a": 1} 后面还有一堆话', ["a"]),              # 策略 3：截取花括号
-        ("完全没有 JSON", None),                                     # 全部失败
-        ("", None),                                                  # 空串
-        ("[1, 2, 3]", None),                                         # 数组不是我们要的结构
+        ('{"a": 1}', ["a"]),  # 策略 1：直接解析
+        ('```json\n{"a": 1}\n```', ["a"]),  # 策略 2：剥离围栏
+        ('前面有一堆话 {"a": 1} 后面还有一堆话', ["a"]),  # 策略 3：截取花括号
+        ("完全没有 JSON", None),  # 全部失败
+        ("", None),  # 空串
+        ("[1, 2, 3]", None),  # 数组不是我们要的结构
     ],
 )
 def test_extract_json(text, expected_keys):

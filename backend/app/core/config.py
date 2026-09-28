@@ -113,9 +113,9 @@ class Settings(BaseSettings):
     AUTH_BYPASS: bool = False
 
     # ---------- 视觉多模态模型（模块 2）----------
-    VISION_MODEL_NAME: str = ""            # 模型名，如 qwen-vl-max
-    VISION_API_KEY: str = ""               # 密钥，真实值放 .env
-    VISION_API_BASE: str = ""              # OpenAI 兼容端点地址
+    VISION_MODEL_NAME: str = ""  # 模型名，如 qwen-vl-max
+    VISION_API_KEY: str = ""  # 密钥，真实值放 .env
+    VISION_API_BASE: str = ""  # OpenAI 兼容端点地址
     VISION_STRUCTURED_OUTPUT: bool = True  # 是否启用 with_structured_output（见 app/core/llm.py）
     # 单次模型调用超时（秒）。视觉任务比纯文本慢，给足。
     LLM_TIMEOUT: int = 60
@@ -145,9 +145,9 @@ class Settings(BaseSettings):
     IMAGE_ENABLE_AVAILABLE_SLOTS: bool = True
 
     # ---------- 语音识别 ASR（模块 1，百度短语音标准版）----------
-    BAIDU_APP_ID: str = ""        # 百度智能云 AppID
-    BAIDU_API_KEY: str = ""       # API Key，真实值放 .env
-    BAIDU_SECRET_KEY: str = ""    # Secret Key，真实值放 .env
+    BAIDU_APP_ID: str = ""  # 百度智能云 AppID
+    BAIDU_API_KEY: str = ""  # API Key，真实值放 .env
+    BAIDU_SECRET_KEY: str = ""  # Secret Key，真实值放 .env
     # 1537 普通话（含英文/数字，实测最稳）；1737 纯中文。
     ASR_MODEL_PID: int = 1537
     # 采样率，需与小程序录音参数对齐。
@@ -156,9 +156,9 @@ class Settings(BaseSettings):
     ASR_MAX_DURATION_S: int = 60
 
     # ---------- 口语格式化（模块 1，DeepSeek 纯文本模型）----------
-    DEEPSEEK_API_KEY: str = ""                                # 真实值放 .env
+    DEEPSEEK_API_KEY: str = ""  # 真实值放 .env
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
-    DEEPSEEK_MODEL: str = "deepseek-flash"                    # 口语清洗所用模型
+    DEEPSEEK_MODEL: str = "deepseek-flash"  # 口语清洗所用模型
 
     model_config = SettingsConfigDict(
         env_file=".env",
