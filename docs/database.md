@@ -55,6 +55,16 @@ DATABASE_URL=mysql+asyncmy://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${D
 > 2. **凭据需轮换**（库密码 + `JWT_SECRET_KEY`）。不轮换的话，历史里那份仍然可用。
 >    轮换由集成组决定并执行。
 >
+> **2026-09-28 补记（轮换与否的裁定）**：**负责人决定：不轮换**。风险现状照录——
+> `git rm --cached` 只摘掉索引，**历史里那份凭据仍然可用**；且 `pre-commit` 的
+> `no-secrets-file` 钩子当前**两道防线都不生效**（① `.git/hooks/` 下只有 `*.sample`，
+> 钩子从未安装；② 其 `files` 正则 `^\.env(\.|$)|…` 的 `^` 锚定匹配不上
+> `backend/.env`，实测 `backend/.env` 不匹配、`.env` 匹配）。因此：
+> **`pre-commit` 修好之前，`backend/.env` 下次可能又被提交**——
+> `.gitignore` 的 `.env` 规则只对**未跟踪**文件有效，一个 `git add -f`
+> 或文件重回索引就绕过去了。修 `files` 正则归集成组（见
+> `docs/spec/done/README.md` 的《2026-09-28 裁定通知》#4）。
+>
 > 教训：判断"安全"要看 `git ls-files` 而不是 `git check-ignore`——
 > 后者对已跟踪文件**不报忽略**，两者结论相反时以 `git ls-files` 为准。
 
