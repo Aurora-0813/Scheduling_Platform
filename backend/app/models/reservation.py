@@ -10,6 +10,30 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
+#: `reserve_order.order_status` 中「占位」的状态（主文档 6.3 表 6）。
+#: 1待确认、2已确认；3已取消与4已完成都不占位。
+#:
+#: ⚠️ 这里取 (1, 2) **比主文档 5.5 第 3 步更严**——5.5 原文写的是
+#: 「该场地在目标时段是否存在**已确认**订单」，字面只覆盖 status=2。
+#: 但 create_order 的 `order_status` 默认值是 1，若真实实现照 5.5 字面只查 status=2，
+#: **Agent 落下的待确认订单就不占位**，并发下会被别人重复预约（模块 7 黄嵩的
+#: 冲突监控也会漏报）。二者必须统一，见 `services/order_service.py` 的
+#: 「待蔡玉礼确认」第 2 条。
+#:
+#: **本常量当前有两处定义**：此处，以及 `services/order_service.py`（模块 3）。
+#: 「哪些状态占位」是 `order_status` 这个字段本身的性质，模块 3 的 `create_order`
+#: 与模块 5 的 `query_spaces`（时段重叠排除）都要用它，而 service 子模块之间不宜
+#: 互相 import（见 `services/__init__.py` 的「叶子」约定），故在两边都能 import 的
+#: 模型层再声明一份。
+#:
+#: 之所以没有直接把 `order_service.py` 那行改成 import 本名来合并成一处：那个文件
+#: 归属模块 3，且当前**不满足 ruff-format**，一旦改动它，pre-commit 的 `ruff-format`
+#: 钩子会连带重排其内多处注释与推导式，给正在改它的同学制造无关冲突。故两份并存，
+#: 由 `tests/test_space_service.py::test_occupying_status_matches_order_service`
+#: 断言相等 —— 靠测试防漂移，不靠注释。等 `order_service.py` 下次被改到时，把它那行
+#: 换成 `from app.models.reservation import OCCUPYING_STATUS` 即可合并。
+OCCUPYING_STATUS = (1, 2)
+
 
 class ReserveOrder(Base):
     """预约订单表"""
