@@ -107,7 +107,7 @@ async def _extract_by_llm(
 ) -> int | None:
     """AI 抽取。任何失败都静默返回 None，由正则兜底接手"""
     model = llm if llm is not None else build_llm()
-    effective_timeout = timeout if timeout is not None else settings.LLM_TIMEOUT_SECONDS
+    effective_timeout = timeout if timeout is not None else settings.LLM_TIMEOUT
 
     try:
         response = await asyncio.wait_for(

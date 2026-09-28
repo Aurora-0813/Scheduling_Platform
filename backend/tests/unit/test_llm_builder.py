@@ -56,7 +56,7 @@ def test_client_does_not_retry_aggressively(live_llm_settings):
 
 
 def test_timeout_defaults_to_the_configured_value(live_llm_settings):
-    assert build_llm().request_timeout == settings.LLM_TIMEOUT_SECONDS
+    assert build_llm().request_timeout == settings.LLM_TIMEOUT
 
 
 def test_an_explicit_timeout_wins(live_llm_settings):

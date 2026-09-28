@@ -75,7 +75,7 @@ async def generate_notify_content(
     :param notify_type: 语气，接受整数 notify_type 或中文名（"延期致歉"）
     :param facts: 已结构化的事实，供 Prompt 与兜底模板共同使用
     :param llm: 注入点。测试传假 LLM；不传则按配置构造
-    :param timeout: 覆盖 LLM_TIMEOUT_SECONDS，便于测试超时分支
+    :param timeout: 覆盖 settings.LLM_TIMEOUT，便于测试超时分支
     """
     # 非法 type 在此抛出 ApiError(400)，由全局异常处理器转成统一响应体
     tone = resolve_tone(notify_type)
@@ -89,7 +89,7 @@ async def generate_notify_content(
 
     model = llm if llm is not None else build_llm()
     effective_timeout = (
-        timeout if timeout is not None else settings.LLM_TIMEOUT_SECONDS
+        timeout if timeout is not None else settings.LLM_TIMEOUT
     )
 
     messages = [

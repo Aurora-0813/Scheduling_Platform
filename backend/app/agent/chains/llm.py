@@ -73,7 +73,7 @@ def build_llm(*, temperature: float = 0.4, timeout: float | None = None) -> Base
         # 从而落到统一的降级链路，而不是在构造期抛出难懂的异常
         api_key=settings.LLM_API_KEY or "NOT_CONFIGURED",
         base_url=settings.LLM_BASE_URL,
-        timeout=timeout or settings.LLM_TIMEOUT_SECONDS,
+        timeout=timeout or settings.LLM_TIMEOUT,
         max_retries=1,
         temperature=temperature,
     )
