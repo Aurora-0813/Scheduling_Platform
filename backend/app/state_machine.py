@@ -10,6 +10,8 @@
 from enum import IntEnum
 from typing import Dict, Set
 
+from .core.exceptions import OrderStatusConflictError
+
 
 class OrderStatus(IntEnum):
     PENDING = 1      # 待确认
@@ -27,7 +29,16 @@ TRANSITIONS: Dict[int, Set[int]] = {
 }
 
 
-class IllegalTransitionError(Exception):
+class IllegalTransitionError(OrderStatusConflictError):
+    """非法状态流转（`409` / `40903`，见 `docs/api.md` §1.4）。
+
+    继承团队的业务异常基类，是为了让「万一绕过了 `can_transition` 前置校验」
+    这条兜底路径也走统一响应体：抛裸 `Exception` 会被兜底处理器接成 `500`，
+    而它本质是「当前状态不允许该操作」——是调用方可理解的冲突，不是服务端故障。
+    `api/orders.py` 的三条写路径都先 `can_transition` 再 `transition`，故线上
+    正常不会走到这里；这条继承关系保护的是将来新增调用方时忘写前置校验的情况。
+    """
+
     pass
 
 

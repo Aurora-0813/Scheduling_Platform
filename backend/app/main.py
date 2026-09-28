@@ -55,10 +55,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
+from app import models  # noqa: F401  确保模型注册后再建表（_ensure_schema 用）
 from app.api.deps import reset_token_store
 from app.api.v1 import API_V1_PREFIX, api_router
 from app.core.config import MIN_JWT_SECRET_LENGTH, settings
-from app.core.database import async_engine
+from app.core.database import Base, async_engine
 from app.core.logging import get_logger, setup_logging
 from app.core.metrics import reset_metric_store
 from app.core.redis import check_health as redis_check_health
@@ -124,6 +125,34 @@ def _warn_about_security_settings() -> None:
         logger.info("当前环境为 %s（非 dev），已启用密钥强度硬校验", settings.APP_ENV)
 
 
+async def _ensure_schema() -> None:
+    """确保 ORM 声明的表都存在（`checkfirst=True`：已存在的不动）。
+
+    为什么启动时要建表，而不是全交给 Alembic
+    ----------------------------------------
+    1. **`§13.1` 的演示应急预案**：「云数据库断连 -> 切换本地 SQLite 镜像库」。
+       镜像库是演示现场临时建的空库，没有跑过任何迁移 —— 不建表就只能演示一个
+       「每个接口都 500」的系统，应急预案等于没有。
+    2. **`§6.5` 的云库路径不受影响**：云库上的表由基础支撑与集成组统一建立，
+       `checkfirst=True` 使这一步在云库上退化为一次 `has_table` 查询，
+       不会改任何既有表结构。**它不能替代迁移**：新增/变更列仍须走
+       `alembic/versions/`，由集成组统一执行（`§6.5`）。
+
+    失败只告警不阻止启动，与 `_probe_database` 同一取舍：库不可用时更需要
+    进程活着，好让 `/api/v1/ready` 能回答「到底哪一环不通」。
+    """
+    try:
+        async with async_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as exc:  # noqa: BLE001 - 启动期不能因建表失败而崩
+        logger.warning(
+            "启动建表失败（服务仍会启动，业务接口可能因缺表报错） target=%s %s: %s",
+            settings.masked_database_url,
+            type(exc).__name__,
+            exc,
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """应用生命周期：日志 → 配置自检 → 依赖探活 →（yield）→ 资源释放。"""
@@ -160,6 +189,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         db_status,
         redis_status,
     )
+
+    await _ensure_schema()
 
     try:
         yield

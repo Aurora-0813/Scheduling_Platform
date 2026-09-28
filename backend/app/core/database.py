@@ -7,10 +7,19 @@
 （历史说明：本模块原先同时提供同步引擎供 Alembic 使用。为满足 3.4 的硬约束，
 已移除同步引擎，Alembic 亦改为全异步迁移，见 `alembic/env.py`。）
 
-本模块在团队基线上**额外保留一处临时补丁**，以下方 `[临时补丁]` 标记标明，
-**集成组在公用基线修复后应移除**：
-    `patch_asyncmy_ping` —— 修复团队版 `pool_pre_ping` 与 asyncmy 的 `ping` 崩溃
-    （完整触发链见下方补丁注释，已作为问题反馈给集成组）。
+本模块在团队基线上**额外保留两处补丁**，以下方 `[临时补丁]` 标记标明：
+
+    `patch_asyncmy_ping`（临时）—— 修复团队版 `pool_pre_ping` 与 asyncmy 的
+    `ping` 崩溃。完整触发链见下方补丁注释，已作为问题反馈给集成组，
+    **集成组在公用基线修复后应移除**。
+
+    SQLite 引擎参数适配（**不能移除**）—— 团队基线的 `create_async_engine`
+    无条件传了 `pool_size` / `max_overflow` / `pool_recycle` / `connect_timeout`，
+    而 SQLite（`§13.1` 的本地镜像库，以及**团队自己的 `tests/conftest.py`**）
+    会选中 `NullPool`，这些参数一个都不接受，导入即抛
+    `TypeError: Invalid argument(s) 'pool_size', 'max_overflow' sent to create_engine()`。
+    这处适配不是为模块 3 打的：在新 main 上跑**任何**用例都会撞上，
+    详见下方“SQLite 应急路径的引擎参数适配”一节。
 
 ⚠️ 关于 SQLite 下主键自增：团队基线的做法是在**测试进程内**把 BIGINT 编译成
 INTEGER（见 `tests/conftest.py` 的 `SQLiteTypeCompiler` 垫片），因此模型一律用裸
@@ -82,17 +91,40 @@ class Base(DeclarativeBase):
     """所有 ORM 模型的基类。Alembic 依靠 Base.metadata 识别全部模型。"""
 
 
+# ---------- SQLite 应急路径的引擎参数适配（必需，非临时补丁） ----------
+# `settings.database_url` 有两条路径不是 mysql+asyncmy：`§13.1` 的本地 SQLite
+# 应急镜像，以及**测试期 —— 团队自己的 `tests/conftest.py` 就把 DATABASE_URL
+# 指向临时 SQLite**。
+#
+# SQLite 的 aiosqlite 方言在这种连接串下选中 `NullPool`，而 `NullPool.__init__`
+# **不接受** pool_size / max_overflow / pool_recycle / connect_timeout。
+# 无条件传过去的话，`app.core.database` 在被 import 的**那一刻**就抛：
+#     TypeError: Invalid argument(s) 'pool_size', 'max_overflow' sent to create_engine()
+# 症状是「任何一条用例都收集不到」—— 报错发生在 conftest 导入 app 时，
+# 看起来像测试框架坏了，其实是引擎参数与方言不匹配。
+#
+# ⚠️ 这不是模块 3 的私事：在新 main 上跑**任何**模块的用例都会撞上，
+#    与模块 3 的 `order_service.create_order` 自管会话（§5.5）无关。
+#    集成组在公用基线修这一处时，直接照抄下面的条件分支即可。
+_is_sqlite = settings.database_url.startswith("sqlite")
+
 async_engine = create_async_engine(
     settings.database_url,
     echo=settings.SQL_ECHO,
-    pool_size=5,
-    max_overflow=10,
     pool_pre_ping=True,
-    pool_recycle=3600,
-    # 建连超时。不设时隧道未启动 / 云库不可达要等操作系统的 TCP 超时，
-    # 表现为进程启动卡住、`GET /ready` 长时间无响应。
-    # `connect_timeout` 是 asyncmy 的参数，因此只能走 connect_args。
-    connect_args={"connect_timeout": settings.DB_CONNECT_TIMEOUT},
+    **(
+        {}
+        if _is_sqlite
+        else {
+            "pool_size": 5,
+            "max_overflow": 10,
+            "pool_recycle": 3600,
+            # 建连超时。不设时隧道未启动 / 云库不可达要等操作系统的 TCP 超时，
+            # 表现为进程启动卡住、`GET /ready` 长时间无响应。
+            # `connect_timeout` 是 asyncmy 的参数，因此只能走 connect_args。
+            "connect_args": {"connect_timeout": settings.DB_CONNECT_TIMEOUT},
+        }
+    ),
 )
 
 AsyncSessionLocal = async_sessionmaker(

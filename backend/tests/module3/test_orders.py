@@ -1,6 +1,8 @@
 """预约创建 / 校验 / 状态机（docs/test.md TC-01 ~ TC-12）。"""
 import pytest
 
+from app.core.error_codes import ErrorCode
+
 from .helpers import MOCK_USER_ID, OTHER_USER_ID, time_str
 
 
@@ -38,40 +40,60 @@ async def test_tc01_create_order_success(client):
     assert d["updateTime"]
 
 
+# TC-02 / TC-03 的状态码已从 422 改为 400（`40001`）。
+# 团队基线的口径见 `docs/api.md` §1.4：Pydantic 校验失败与参数类业务失败**统一**
+# 用 400 + 40001，FastAPI 默认的 422 被异常处理器显式改掉。前端只需要记住一条规则。
+# 这两条时间校验已从 `schemas/order.py` 下沉到 `order_service`（那里是唯一校验点，
+# Agent 的 Tool 路径也经过它），因此走的是 `conflictType="invalid_param"` 分支。
+
+
 async def test_tc02_start_not_before_end(client):
-    """TC-02 开始时间晚于结束时间 → 422。"""
+    """TC-02 开始时间晚于结束时间 → 400 / 40001，且**具体原因要出现在响应里**。
+
+    断言文案不是「顺手」：这两条消息一度被通用文案（「参数校验未通过：body
+    取值不合法」）覆盖掉，用户看不到到底哪里错了。这里是防它复发的回归位。
+    """
     r, _ = await _create(client, startTime=time_str(1, 10), endTime=time_str(1, 9))
-    assert r.status_code == 422
+    assert r.status_code == 400
+    assert r.json()["code"] == ErrorCode.PARAM_INVALID
     assert "开始时间必须早于结束时间" in r.json()["message"]
 
 
 async def test_tc03_invalid_time_format(client):
-    """TC-03 时间格式非法（用 T 分隔）→ 422。"""
+    """TC-03 时间格式非法（用 T 分隔）→ 400 / 40001，且提示出正确格式。"""
     bad = time_str(1, 9).replace(" ", "T")
     r, _ = await _create(client, startTime=bad)
-    assert r.status_code == 422
+    assert r.status_code == 400
+    assert r.json()["code"] == ErrorCode.PARAM_INVALID
     assert "YYYY-MM-DD HH:mm:ss" in r.json()["message"]
 
 
 async def test_tc04_space_not_found(client):
-    """TC-04 场地不存在 → 404。"""
+    """TC-04 场地不存在 → 404 / 40402（空间资源不存在）。
+
+    同是 404，业务码要能区分「场地 / 设备 / 订单」——前端据此决定提示语。
+    路由层按服务层返回的 `conflictDetail["target"]` 选异常类，见 `api/orders.py`。
+    """
     r, _ = await _create(client, spaceId=999)
     assert r.status_code == 404
+    assert r.json()["code"] == ErrorCode.SPACE_NOT_FOUND
     assert r.json()["message"] == "场地不存在"
 
 
 async def test_tc05_device_not_found(client):
-    """TC-05 设备不存在 → 404。"""
+    """TC-05 设备不存在 → 404 / 40403，且提示里带上是哪一个 ID。"""
     r, _ = await _create(client, deviceIds=[999])
     assert r.status_code == 404
+    assert r.json()["code"] == ErrorCode.DEVICE_NOT_FOUND
     assert "999" in r.json()["message"]
 
 
 async def test_tc06_time_slot_conflict(client):
-    """TC-06 该场地同时段已有未完成单 → 409。"""
+    """TC-06 该场地同时段已有未完成单 → 409 / 40901。"""
     _, _ = await _create(client)
     r, _ = await _create(client)  # 同场地同时段
     assert r.status_code == 409
+    assert r.json()["code"] == ErrorCode.RESOURCE_CONFLICT
     assert r.json()["message"] == "该时段已被占用"
 
 
@@ -121,6 +143,7 @@ async def test_tc09_duplicate_confirm_rejected(client):
 
     r = await client.put(f"/api/v1/orders/{oid}/confirm")
     assert r.status_code == 409
+    assert r.json()["code"] == ErrorCode.ORDER_STATUS_CONFLICT
     assert r.json()["message"] == "当前状态不允许确认"
 
 

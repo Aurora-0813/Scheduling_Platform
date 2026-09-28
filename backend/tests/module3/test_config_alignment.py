@@ -33,24 +33,32 @@ def test_config_defaults_align_with_public_backend():
     assert fields["APP_NAME"].default == "SmartScheduler"
     assert fields["APP_ENV"].default == "dev"
     assert fields["JWT_ALGORITHM"].default == "HS256"
-    assert fields["JWT_EXPIRE_MINUTES"].default == 1440
+    # 30 分钟 = 团队基线（`docs/api.md` §1.7「accessToken 有效期 30 分钟」）。
+    # 本模块此前取 1440（一天），与团队不一致；已随本轮重组对齐团队。
+    assert fields["JWT_EXPIRE_MINUTES"].default == 30
 
 
-def test_connection_string_schemes():
-    """异步固定 mysql+asyncmy://（§3.4），同步为 mysql+pymysql://（与公用一致）。"""
+def test_connection_string_is_async_only():
+    """异步固定 mysql+asyncmy://（§3.4），且**不提供**同步串。
+
+    团队曾为 Alembic 保留 `sync_database_url`（mysql+pymysql://），后因迁移改为
+    全异步（`alembic/env.py` 用 async_engine_from_config）而删除。本用例把
+    「同步路径已不存在」钉死：属性一旦被加回来，就说明有人重新引入了 PyMySQL ——
+    那是 §3.4 明令禁止的同步驱动。
+    """
     s = Settings(
         DATABASE_URL="", DB_HOST="h", DB_PORT=3308,
         DB_USER="u", DB_PASSWORD="p", DB_NAME="d",
     )
     assert s.database_url == "mysql+asyncmy://u:p@h:3308/d?charset=utf8mb4"
-    assert s.sync_database_url == "mysql+pymysql://u:p@h:3308/d?charset=utf8mb4"
+    assert not hasattr(s, "sync_database_url")
+    assert not hasattr(s, "sync_engine")
 
 
 def test_explicit_database_url_overrides_parts():
     """显式 DATABASE_URL（§13.1 应急/自测）优先于五项拼接。"""
     s = Settings(DATABASE_URL="sqlite+aiosqlite:///./x.db", DB_HOST="h")
     assert s.database_url == "sqlite+aiosqlite:///./x.db"
-    assert s.sync_database_url == "sqlite:///./x.db"
 
 
 # ------------------------------------------------------------ 测试库隔离
@@ -98,23 +106,67 @@ def test_foreign_keys_align_with_spec():
     }
 
 
+#: §6.6 索引规范 → 该索引应声明在哪张表上。
+#: 不含 `sys_user.uk_username`：它是 UNIQUE **约束**（`uk_` 前缀），
+#: 由列上的 `unique=True` 表达，不进 `table.indexes`，故单列一条断言。
+_SPEC_6_6_INDEXES: dict[str, str] = {
+    "idx_space_type": "space_resource",
+    "idx_capacity": "space_resource",
+    "idx_device_type": "device_resource",
+    "idx_user_id": "reserve_order",
+    "idx_space_time": "reserve_order",
+    "idx_status": "reserve_order",
+    "idx_space_id": "inspect_record",
+    "idx_device_id": "repair_ticket",
+    "idx_ticket_status": "repair_ticket",
+    "idx_receiver_read": "notify_message",
+}
+
+
 def test_index_names_align_with_spec_6_6():
-    """§6.6 的 `idx_*` 索引**云库里并不存在**，模型也不声明 —— 此处固化「未声明」这一事实。
+    """§6.6 的 10 个 `idx_*` 必须一个不少、一个不多、且挂在正确的表上。
 
-    §6.7 第 7 步的 `CREATE INDEX idx_*` 注明「由基础支撑与集成组统一执行」。但直查云库
-    `smart_scheduler_dev` 的 `information_schema.STATISTICS`，9 个 `idx_*` 一个都没有：
-    除主键外，库里的索引全是外键/唯一约束自动生成、与外键列同名的那些
-    （`reserve_order.space_id`、`notify_message.order_id`、`sys_user.username` …）。
+    **方向已翻转。** 本用例此前断言的是「模型不声明 `idx_*`」—— 那是当时的事实：
+    直查云库 `smart_scheduler_dev` 的 `information_schema.STATISTICS`，`idx_*`
+    一个都没有，团队模型也没声明。新 main（`9f30d3a`）把这个缺口补上了：
+    团队模型开始声明 `idx_*`，并配了幂等迁移
+    `alembic/versions/b7f1c4a92e35_add_doc66_indexes_idempotent.py`。
 
-    团队模型亦无任何索引声明，本模块跟随团队，故断言「不声明 `idx_*`」。将来集成组
-    若补建这些索引，应同步在模型里声明，并把本用例改成正向断言。
+    ⚠️ **本用例只验证「模型声明 == §6.6 规范」，不验证云库已建。**
+    云库上这 10 个索引是否真的存在，取决于上述迁移有没有在云库跑过 ——
+    本轮重组**未复验**（需要 SSH 隧道 + 直查 `information_schema`）。
+    在复验之前，不要把这行绿当成「云库已有索引」的证据。
     """
     declared = {
-        i.name for table in Base.metadata.tables.values() for i in table.indexes
+        i.name: table.name
+        for table in Base.metadata.tables.values()
+        for i in table.indexes
     }
-    assert not {n for n in declared if n.startswith("idx_")}, (
-        f"模型声明了 §6.6 的 idx_* 索引，但云库实际没有：{sorted(declared)}"
+    # 不多：模型里不该出现 §6.6 之外的 idx_*（多出来的索引没人负责维护，
+    # 而它会实打实占写入开销）
+    assert set(declared) == set(_SPEC_6_6_INDEXES), (
+        f"模型声明的 idx_* 与 §6.6 不一致：\n"
+        f"  多了：{sorted(set(declared) - set(_SPEC_6_6_INDEXES))}\n"
+        f"  少了：{sorted(set(_SPEC_6_6_INDEXES) - set(declared))}"
     )
+    # 不少、且位置正确
+    for name, table_name in _SPEC_6_6_INDEXES.items():
+        assert declared[name] == table_name, (
+            f"{name} 应声明在 {table_name} 上，实际在 {declared[name]}"
+        )
+
+
+def test_username_unique_constraint_aligns_with_spec_6_6():
+    """§6.6 的 `uk_username` 由列级 UNIQUE 约束表达（登录查询靠它）。"""
+    sys_user = Base.metadata.tables["sys_user"]
+    unique_cols = {
+        c.name for c in sys_user.columns if c.unique
+    } | {
+        tuple(sorted(c.name for c in con.columns))
+        for con in sys_user.constraints
+        if con.__class__.__name__ == "UniqueConstraint"
+    }
+    assert "username" in unique_cols or ("username",) in unique_cols
 
 
 # ------------------------------------------------------------ 与公用后端一致性

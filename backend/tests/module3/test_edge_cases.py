@@ -9,7 +9,8 @@ from fastapi import FastAPI
 
 from app.core.config import Settings
 from app.core.deps import MOCK_USER_ID
-from app.core.exceptions import register_exception_handlers
+from app.core.error_codes import DEFAULT_MESSAGES, ErrorCode
+from app.core.response import register_exception_handlers
 from app.core.utils import parse_time
 from app.models import ReserveOrder
 from app.state_machine import IllegalTransitionError, OrderStatus, transition
@@ -92,15 +93,22 @@ async def test_legacy_user_orders_endpoint_status_filter(client):
 
 
 async def test_confirm_missing_order_returns_404(client):
+    """404 之外还要钉住业务码与文案：团队基线是「真实 HTTP 状态码 + 5 位业务码」。
+
+    这里必须是 `40404`（预约订单不存在）而不是通用的 `40400` —— 前端按 `code`
+    分支，`40404` 才能提示「该预约已不存在」并刷新列表。
+    """
     r = await client.put("/api/v1/orders/999999/confirm")
     assert r.status_code == 404
-    assert r.json()["code"] == 404
+    assert r.json()["code"] == ErrorCode.ORDER_NOT_FOUND
+    assert r.json()["message"] == "预约不存在"
 
 
 async def test_cancel_missing_order_returns_404(client):
     r = await client.put("/api/v1/orders/999999/cancel")
     assert r.status_code == 404
-    assert r.json()["code"] == 404
+    assert r.json()["code"] == ErrorCode.ORDER_NOT_FOUND
+    assert r.json()["message"] == "预约不存在"
 
 
 # ------------------------------------------------- 归属校验：他人订单一律 404
@@ -229,19 +237,28 @@ def _throwing_app(exc: Exception) -> FastAPI:
 
 
 async def test_unhandled_exception_becomes_500_envelope():
-    """未捕获异常 → 500 + 统一响应体，且不泄漏堆栈。"""
+    """未捕获异常 → 500 + 统一响应体（5 位业务码），且不泄漏堆栈。"""
     transport = httpx.ASGITransport(app=_throwing_app(RuntimeError("内部细节不应外泄")),
                                     raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
         r = await c.get("/boom")
 
     assert r.status_code == 500
-    assert r.json() == {"code": 500, "message": "服务器内部错误", "data": None}
+    assert r.json() == {
+        "code": ErrorCode.INTERNAL_ERROR,
+        "message": DEFAULT_MESSAGES[ErrorCode.INTERNAL_ERROR],
+        "data": None,
+    }
     assert "内部细节" not in r.text
 
 
 async def test_illegal_transition_becomes_409_envelope():
-    """状态机非法流转若逃过前置校验，兜底为 409 而非 500。"""
+    """状态机非法流转若逃过前置校验，兜底为 409 / 40903 而非 500。
+
+    `IllegalTransitionError` 继承自团队的 `OrderStatusConflictError`（见
+    `app/state_machine.py`），因此走的是 `BizError` 处理器，拿到的是
+    「订单当前状态不允许该操作」这一段的专用业务码，而不是通用 40900。
+    """
     transport = httpx.ASGITransport(
         app=_throwing_app(IllegalTransitionError("非法状态流转: 3 -> 2")),
         raise_app_exceptions=False)
@@ -249,7 +266,7 @@ async def test_illegal_transition_becomes_409_envelope():
         r = await c.get("/boom")
 
     assert r.status_code == 409
-    assert r.json()["code"] == 409
+    assert r.json()["code"] == ErrorCode.ORDER_STATUS_CONFLICT
     assert "非法状态流转" in r.json()["message"]
 
 
@@ -260,10 +277,20 @@ async def test_http_exception_uses_same_envelope(client):
     assert set(r.json()) == {"code", "message", "data"}
 
 
-# ------------------------------------------------- 连接串派生
+# ------------------------------------------------- 同步驱动已彻底移除（§3.4）
 
 
-def test_sync_url_converts_asyncmy_to_pymysql():
-    """显式 DATABASE_URL 也要给出对应的同步串（Alembic / 同步脚本用）。"""
+def test_no_sync_database_path_remains():
+    """`Settings.sync_database_url` 与 `app.core.database` 的同步引擎都已删除。
+
+    §3.4 禁止同步驱动 PyMySQL / mysqlclient。团队此前的同步引擎是为 Alembic
+    保留的，迁移改全异步（`alembic/env.py` 用 `async_engine_from_config`）后
+    一并删除。本用例把「同步路径不存在」钉死：任一属性被加回来，都说明有人
+    重新引入了 PyMySQL。这是 §3.4 的硬约束，不是风格问题。
+    """
+    import app.core.database as database
+
     s = Settings(DATABASE_URL="mysql+asyncmy://u:p@h:3308/d?charset=utf8mb4")
-    assert s.sync_database_url == "mysql+pymysql://u:p@h:3308/d?charset=utf8mb4"
+    assert not hasattr(s, "sync_database_url")
+    assert not hasattr(database, "sync_engine")
+    assert not hasattr(database, "SyncSessionLocal")

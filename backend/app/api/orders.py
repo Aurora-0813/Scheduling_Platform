@@ -8,12 +8,22 @@
   认证层只回答「你是谁」，回答不了「这单是不是你的」——只注入 `user_id` 而不比对，
   等于任何人拿到别人的 orderId 就能读、能确认、能取消。越权一律 404，不泄露存在性。
 """
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
 from ..core.deps import get_current_user
+from ..core.exceptions import (
+    BizError,
+    DeviceNotFoundError,
+    OrderNotFoundError,
+    OrderStatusConflictError,
+    ParamInvalidError,
+    ResourceConflictError,
+    SpaceNotFoundError,
+    UserNotFoundError,
+)
 from ..core.response import ok
 from ..core.utils import format_time
 from ..models import ReserveOrder
@@ -47,14 +57,46 @@ def _order_out(o: ReserveOrder) -> dict:
     }
 
 
-#: `services` 层返回的 `conflictType` -> HTTP 状态码。映射只属于路由层：
+#: `services` 层返回的 `conflictType` -> 业务异常类。翻译只属于路由层：
 #: services 层不认识 HTTP（§7.3），它只回结构化原因。
-_CONFLICT_STATUS = {
-    "invalid_param": 422,
-    "not_found": 404,
-    "time_conflict": 409,
-    "device_conflict": 409,
+#:
+#: 用异常类而不是裸 HTTP 状态码，是团队基线的口径（见 `docs/api.md` §1.4）：
+#: HTTP 状态码与 5 位业务码都挂在异常类上，抛出去由统一异常处理器收口。
+#: 直接 `raise HTTPException(404, ...)` 走的是另一条分支 —— 那条分支会用
+#: `_STATUS_MESSAGES` 把 detail 覆盖成通用文案（`预约不存在` -> `接口或资源不存在`），
+#: 前端拿不到具体原因。
+_CONFLICT_ERRORS: dict[str, type[BizError]] = {
+    "invalid_param": ParamInvalidError,        # 400 / 40001
+    "time_conflict": ResourceConflictError,    # 409 / 40901
+    "device_conflict": ResourceConflictError,  # 409 / 40901
 }
+
+#: `not_found` 的具体归属靠 `conflictDetail["target"]` 再细分 —— 同是 404，
+#: 业务码不同（40401 用户 / 40402 场地 / 40403 设备 / 40404 订单），
+#: 前端据此决定提示语与跳转，所以不能在路由层拍平成同一个 404。
+_NOT_FOUND_ERRORS: dict[str, type[BizError]] = {
+    "user": UserNotFoundError,      # 404 / 40401
+    "space": SpaceNotFoundError,    # 404 / 40402
+    "device": DeviceNotFoundError,  # 404 / 40403
+}
+
+
+def _error_for(result: dict) -> BizError:
+    """把服务层的结构化失败翻译成业务异常（`§5.3` 模块3）。
+
+    `reason` 原样作为 `message` 透传 —— 服务层写的都是面向用户的中文原因
+    （「该时段已被占用」「设备 999 不存在」），是前端唯一能拿来提示用户的文本，
+    不能在路由层被通用文案替换掉。
+    """
+    detail = result.get("conflictDetail") or {}
+    if result["conflictType"] == "not_found":
+        error_cls = _NOT_FOUND_ERRORS.get(detail.get("target"), OrderNotFoundError)
+    else:
+        # 未登记的 conflictType 一律按「调用方参数有问题」处理（400 / 40001）：
+        # 这类失败只可能来自本模块自己的服务层，真出现说明是代码缺陷，
+        # 但也没必要因此给用户一个 500。
+        error_cls = _CONFLICT_ERRORS.get(result["conflictType"], ParamInvalidError)
+    return error_cls(result["reason"])
 
 
 async def _get_owned_order(db: AsyncSession, order_id: int, user_id: int) -> ReserveOrder:
@@ -69,7 +111,7 @@ async def _get_owned_order(db: AsyncSession, order_id: int, user_id: int) -> Res
     """
     order = await db.get(ReserveOrder, order_id)
     if order is None or order.user_id != user_id:
-        raise HTTPException(status_code=404, detail="预约不存在")
+        raise OrderNotFoundError("预约不存在")
     return order
 
 
@@ -96,10 +138,7 @@ async def create_order(
         agent_trace=data.agentTrace,
     )
     if not result["ok"]:
-        raise HTTPException(
-            status_code=_CONFLICT_STATUS.get(result["conflictType"], 400),
-            detail=result["reason"],
-        )
+        raise _error_for(result)
 
     order = await db.get(ReserveOrder, result["orderId"])
     return ok(_order_out(order), "预约创建成功")
@@ -140,7 +179,7 @@ async def list_orders(
     任何客户端再走它，所以收紧不会破坏合法调用 —— 唯一被挡掉的用法就是跨用户读取。
     """
     if userId != user_id:
-        raise HTTPException(status_code=404, detail="预约不存在")
+        raise OrderNotFoundError("预约不存在")
     q = select(ReserveOrder).where(ReserveOrder.user_id == userId)
     if status is not None:
         q = q.where(ReserveOrder.order_status == status)
@@ -171,7 +210,7 @@ async def confirm_order(
     """确认预约（扩展，状态机 1→2）。仅限本人的单；触发「预约已确认」通知。"""
     order = await _get_owned_order(db, orderId, user_id)
     if not can_transition(order.order_status, OrderStatus.CONFIRMED):
-        raise HTTPException(status_code=409, detail="当前状态不允许确认")
+        raise OrderStatusConflictError("当前状态不允许确认")
 
     transition(order, OrderStatus.CONFIRMED)
     await db.commit()
@@ -201,7 +240,7 @@ async def cancel_order(
 
     was_confirmed = order.order_status == OrderStatus.CONFIRMED.value
     if not can_transition(order.order_status, OrderStatus.CANCELLED):
-        raise HTTPException(status_code=409, detail="当前状态不允许取消")
+        raise OrderStatusConflictError("当前状态不允许取消")
 
     transition(order, OrderStatus.CANCELLED)
     if was_confirmed:

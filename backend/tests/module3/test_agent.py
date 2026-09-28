@@ -1,4 +1,6 @@
 """Agent 联动与语音/图像占位入口（docs/test.md TC-23 ~ TC-28）。"""
+from app.core.error_codes import ErrorCode
+
 from .helpers import MOCK_USER_ID, time_str
 
 
@@ -41,12 +43,19 @@ async def test_tc23_schedule_returns_structured_plan(client):
 
 
 async def test_tc24_empty_requirement_rejected(client):
-    """TC-24 空需求 → 422。"""
+    """TC-24 空需求 → 400 / 40001（团队基线，见 `docs/api.md` §1.4）。
+
+    `ScheduleRequest.text` 的 `min_length=1` 由 Pydantic 触发，走团队异常处理器
+    的 `RequestValidationError` 分支：HTTP 400、业务码 40001，FastAPI 默认的 422
+    已被显式改掉。空串与缺字段两条路径都覆盖。
+    """
     r = await client.post("/api/v1/agent/schedule", json={"text": ""})
-    assert r.status_code == 422
+    assert r.status_code == 400
+    assert r.json()["code"] == ErrorCode.PARAM_INVALID
 
     r = await client.post("/api/v1/agent/schedule", json={})
-    assert r.status_code == 422
+    assert r.status_code == 400
+    assert r.json()["code"] == ErrorCode.PARAM_INVALID
 
 
 async def test_mock_schedule_avoids_occupied_slots(client):

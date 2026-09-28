@@ -2,12 +2,13 @@
 
 - GET /api/v1/messages/unread 为契约接口；其余为模块内补充（通知接收）。
 """
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
 from ..core.deps import get_current_user
+from ..core.exceptions import MessageNotFoundError
 from ..core.response import ok
 from ..core.utils import format_time
 from ..models import NotifyMessage
@@ -70,7 +71,11 @@ async def read_message(
 ):
     msg = await db.get(NotifyMessage, messageId)
     if not msg or msg.receiver_id != user_id:
-        raise HTTPException(status_code=404, detail="通知不存在")
+        # 不存在与非本人同一处理：区分了就等于承认「这条存在，只是不是你的」，
+        # 可据此枚举全库消息。与 orders.py::_get_owned_order 同口径（§5.1）。
+        # 用业务异常而不是 HTTPException：后者的 detail 会被统一异常处理器的
+        # 通用文案覆盖掉（404 -> 「接口或资源不存在」），原因就丢了。
+        raise MessageNotFoundError("通知不存在")
     msg.is_read = 1
     await db.commit()
     await db.refresh(msg)
