@@ -54,6 +54,12 @@ Agent 只能通过 Tool 调用 **`services/` 层的异步函数**访问业务数
 `not_found` 与 `device_conflict` 的分界是「东西不存在」还是「东西被占/不能用」——
 前者对 HTTP 是 404，后者是 409，归错类会把状态码整体带偏。
 
+> **`§5.5` 第 2 步现在的锁覆盖两类行**（2026-09-28 增补，不是原六步的写法）：场地行 +
+> **本次涉及的设备行**，且两者都必须在**任何非加锁读之前**取到（第 2b 步，见
+> `_lock_devices_stmt`）。原先只锁场地行，跨场地共用同一台设备时会**超卖**
+> （cap=2 却成 3 单，已在 SQLite 上稳定复现）。这是**扩了 `§5.5` 的锁足迹**，
+> 集成组复核时请一并看；长期解法是设备占用表，仍在等口径。
+
 ### 与 `lock_resources` 的对应
 
 Tool 签名 `lock_resources(space_id, device_ids, start_time, end_time)`（`§5.3` 模块 4）
@@ -143,6 +149,69 @@ def _lock_space_stmt(space_id: int):
     )
 
 
+def _lock_devices_stmt(device_ids: list[int]):
+    """`§5.5` 第 2 步的设备侧语句：对本次预约涉及的**每台设备行**加锁。
+
+    与 `_lock_space_stmt` 一样单独抽成函数，好让「锁有没有被写丢」可被机械验证。
+
+    ### 为什么设备也要锁
+
+    `_device_conflicts` 的判据是「该时段重叠单数 `>=` `available_count`」——
+    它是一个**先读后判再写**的序列：读（数重叠单）与写（第 5 步 INSERT）之间
+    若不排他，两个事务会各自读到「还差一个名额」然后都插入，**设备被超卖**。
+
+    场地行锁挡不住这种超卖：设备是**全局资源**（`device_resource` 没有
+    `space_id`），同一台设备可以出现在不同场地的订单里，跨场地的两个事务在
+    场地行上根本不碰面。
+
+    ### 锁的位置比锁本身更要紧 —— 这是本函数存在的真正理由
+
+    只在第 4 步校验时才锁是**不够**的。云库是 MySQL/InnoDB 默认的
+    `REPEATABLE READ`：**非加锁** SELECT 读的是「本事务第一次非加锁读」时定下的
+    读视图，`FOR UPDATE` 读的才是最新已提交版本。于是：
+
+        T1、T2 跨场地抢同一台设备（cap = 2）
+        T2 先做了 `db.get(SysUser, ...)` / `_time_conflicts`（都是非加锁读）
+            → T2 的读视图在此刻钉死，早于 T1 提交
+        T2 此刻才去锁设备行 → 确实会等 T1 提交，但**读视图不会因此刷新**
+        T2 随后数重叠单（`_device_conflicts` 也是非加锁 SELECT）
+            → 读的是旧视图，看不见 T1 刚插入的那一单 → 少数一单 → 放行 → 超卖
+
+    一句话：**锁了一行、却从另一张表的旧快照里读计数，这把锁是白加的。**
+    唯一修法是让加锁发生在任何非加锁读之前 —— 所以本函数在**第 2 步**被调用
+    （在 `db.get(SysUser, ...)` 与 `_time_conflicts` 之前）。这样 T2 的读视图是在
+    锁等待结束、T1 已提交之后才形成的，数出来的重叠单是新的。场地行锁能挡住
+    同场地的并发，靠的也是同一个机制（它是事务里的第一条语句）。
+
+    ### 加锁顺序
+
+    `order_by(id)` 不是为了结果稳定（`_check_devices` 只按 id 建字典），而是为了
+    **加锁顺序确定**：两个事务若各自按不同顺序锁同一组设备行，就会互相等对方
+    手里那把锁 → 死锁。事务内一律「先场地、再设备升序」，因而不会成环。
+
+    SQLite 方言会把 `FOR UPDATE` **编译掉**（与场地锁相同），所以这条锁在模块 3
+    的 SQLite 用例里恒为空操作。能在这里钉住的只有两件事：「语句里写了
+    `with_for_update()`」与「它排在非加锁读之前」（见
+    `tests/module3/test_order_service.py`）；真正的并发语义**只能在云库上验证**
+    —— `tests/conftest.py` 已写明行锁、事务并发、时区三类行为在本测试环境
+    不可验证。
+
+    ⚠️ 上面「加锁位置」那段的推演**尚未在云库上实测过**（只能离线推自 InnoDB 的
+    行为：读视图由**第一条非加锁读**建立，`FOR UPDATE` 不建立它且读最新已提交
+    版本）。所以本函数的正确性当前建立在两条**可离线验证**的性质上 —— 语句里有
+    锁、且它排在非加锁读之前 —— 加上这条推演。若云库实测与本推演不符
+    （例如实测仍是 3 单全成），那说明光靠行锁解决不了，得走占用表
+    （见 `docs/available_count口径判据.md`），**不要**在没实测的情况下把
+    `test_concurrent_device_creation_does_not_oversell` 的 xfail 摘掉。
+    """
+    return (
+        select(DeviceResource)
+        .where(DeviceResource.id.in_(device_ids))
+        .order_by(DeviceResource.id)
+        .with_for_update()
+    )
+
+
 def _fail(conflict_type: str, reason: str, detail: dict | None = None) -> dict:
     """失败结果（字段集与成功结果一致，调用方无需分支取值）。"""
     return {
@@ -198,10 +267,13 @@ async def _device_conflicts(
     """第 4 步的时间维度部分：这些设备在同时段是否已被**约满**。
 
     `§6.3` 没有「设备占用」表，设备的时段占用只存在 `reserve_order.device_ids`
-    （JSON 列）里，所以只能先捞重叠时段的订单、再在 Python 里按设备计数；`§6.6`
-    的 10 个 `idx_*` 里也没有设备维度的索引，这一步没有可用索引。数据量上来后
-    需要集成组给出正式口径（占用表 / 生成列 / 多值索引），当前实现是**尽力而为**
-    的正确性，不做性能承诺。
+    （JSON 列）里，所以只能先捞重叠时段的订单、再在 Python 里按设备计数。
+
+    索引现状（2026-09-28）：集成组已补 `idx_status_start (order_status, start_time)`
+    （main `98c54ea`，登记在 `b7f1c4a92e35` 迁移里），下面这条 SELECT 的等值与范围
+    都能走索引；**但「按设备计数」这一步仍无索引可用** —— `device_ids` 是 JSON 列，
+    建普通索引无从下手，多值索引 / 生成列都要先定口径。所以本函数仍是**尽力而为的
+    正确性，不做性能承诺**，正式口径（占用表 / 生成列 / 多值索引）仍需集成组给。
 
     **判据是计数比较，不是「查到重叠就拒」**：`device_resource.available_count`
     是**可用上限**（不是「还剩几台」），同一台设备在同时段允许多单共存，只要总数
@@ -259,11 +331,17 @@ async def _device_conflicts(
     return conflicts
 
 
-async def _check_devices(db, device_ids: list[int], start, end) -> None:
+async def _check_devices(db, device_ids: list[int], locked: list, start, end) -> None:
     """第 4 步：校验设备可用性。失败抛 `_Reject`。
 
     四查：存在（`not_found`）→ 状态完好 → 还有可用上限 → 时段未被约满
     （后三者是 `device_conflict`，时间维度的检查见 `_device_conflicts`）。
+
+    `locked` 是第 2 步 `_lock_devices_stmt` 取回的设备行，**判的就是已经加了锁的
+    那一份**，不再重新 SELECT 一遍。这不是省一条查询：两条语句会重新打开一个
+    「锁的是一份、判的是另一份」的窗口，而且这种不一致在读代码时根本看不出来。
+    「锁必须在非加锁读之前」（见 `_lock_devices_stmt`）也要求设备行的读取只有
+    第 2 步这一次。
 
     注意 `available_count` **只读不写** —— 这不是「暂时不扣」而是**口径本身**：
     它是**可用上限**（`total_count` 是物理台账数，留出备用机），「还剩几台」是
@@ -277,10 +355,7 @@ async def _check_devices(db, device_ids: list[int], start, end) -> None:
     if not device_ids:
         return
 
-    result = await db.execute(
-        select(DeviceResource).where(DeviceResource.id.in_(device_ids))
-    )
-    devices = {d.id: d for d in result.scalars().all()}
+    devices = {d.id: d for d in locked}
 
     for did in device_ids:
         device = devices.get(did)
@@ -396,6 +471,18 @@ async def create_order(
                         {"target": "space", "spaceId": space_id},
                     )
 
+                # 2b. 设备行锁。**必须紧跟在场地锁之后**，理由见 `_lock_devices_stmt`：
+                #     下面 `db.get(SysUser, ...)` 与 `_time_conflicts` 都是非加锁读，
+                #     而本事务的读视图是在**第一次**非加锁读时定下的。设备行锁若排到
+                #     第 4 步才加，等它拿到锁时读视图已经钉死在别人提交之前 —— 数出来
+                #     的重叠单是旧的，锁白加、照旧超卖。
+                #     空 device_ids 时**不发语句**（否则就是为一把用不上的锁去锁表）。
+                locked_devices = (
+                    (await db.execute(_lock_devices_stmt(device_ids))).scalars().all()
+                    if device_ids
+                    else []
+                )
+
                 # 预约人必须存在：云库上 reserve_order.user_id 是真外键
                 # （docs/database.md），不先查会以 1452 炸成 500
                 if await db.get(SysUser, user_id) is None:
@@ -411,7 +498,7 @@ async def create_order(
                         "time_conflict", "该时段已被占用", {"conflicts": conflicts}
                     )
 
-                await _check_devices(db, device_ids, start, end)              # 4.
+                await _check_devices(db, device_ids, locked_devices, start, end)   # 4.
 
                 # 5. 插入 reserve_order，写入 device_ids
                 order = ReserveOrder(

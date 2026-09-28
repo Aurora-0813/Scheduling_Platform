@@ -35,7 +35,6 @@ from ..services.message_service import create_message
 from ..state_machine import (
     OrderStatus,
     can_transition,
-    release_occupancy,
     transition,
 )
 from .deps import CurrentUser, get_current_user
@@ -239,16 +238,19 @@ async def cancel_order(
     current: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """取消预约（契约）。仅限本人的单；取消「已确认」单时释放占用（§5.3 模块3）。"""
+    """取消预约（契约）。仅限本人的单。
+
+    **取消不需要「释放占用」这一步**：占用口径是用时推导（`available_count`
+    只读不写，剩余量按 `ACTIVE_ORDER_STATUSES` 现算），取消单离开该集合即自动
+    释放，没有可回补的东西。原先这里调过一个空 hook `release_occupancy`，
+    2026-09-28 已连函数一起删除，理由见 `app/state_machine.py` 的注释。
+    """
     order = await _get_owned_order(db, orderId, current.id)
 
-    was_confirmed = order.order_status == OrderStatus.CONFIRMED.value
     if not can_transition(order.order_status, OrderStatus.CANCELLED):
         raise OrderStatusConflictError("当前状态不允许取消")
 
     transition(order, OrderStatus.CANCELLED)
-    if was_confirmed:
-        release_occupancy(order)  # 释放场地/设备占用（预留 hook）
     await db.commit()
     await db.refresh(order)
 

@@ -1,6 +1,6 @@
 # PR：模块 3（移动端预约与通知）重新集成到新 main
 
-> 分支：`integrate/module3` → `main`（**10 个提交**，72 文件，+8569 / −639）
+> 分支：`integrate/module3` → `main`（**12 个提交**，72 文件，+9010 / −639）
 > 作者：模块 3（蔡玉礼）｜ 日期：2026-09-28
 > 基线：`9f30d3a`（merge(backend): 合并模块1/2（语音输入、摄像头空间感知）并适配集成层约定）
 > 关联：《docs/本次合并对齐方案.md》《docs/团队仓库合并冲突比对.md》
@@ -123,6 +123,59 @@ ws://host/ws/notify?user_id=2     # 谁都能连，一连上就实时收 2 号�
   不存在**同一处理**（404，响应体不含任何订单字段）—— 原先可被用来枚举全库订单。
 - 补 `update_agent_trace` 实现。
 
+### 3.7 并入 main（`98c54ea`）：`idx_status_start` + 模块 4 mock 真源
+
+分支原基于 `9f30d3a`，main 之后前进了两个提交，本分支已并入（**无冲突**）：
+
+- `98c54ea fix(db): 索引迁移按列判存在、补设备时段索引` —— 给 `reserve_order` 加了
+  `idx_status_start (order_status, start_time)`，**正是模块 3 反馈的「设备维度时段统计
+  没有可用索引」**（设备是全局资源、不挂场地，`idx_space_time` 的最左前缀用不上；
+  `device_ids` 是 JSON 列建不了普通索引）。它不在 `§6.6` 原文里，属集成组确认后的补充，
+  已登记进 `tests/module3/test_config_alignment.py::_EXTRA_INDEXES` —— 该用例的
+  「不多」断言现在要求**规范外的索引必须登记并写明依据**，否则红。
+- `25b3ee3 fix(mock): 模块 4 思考链以 docs/mock/agent_schedule.json 为唯一真源`
+
+并入后 `_device_conflicts` 的注释仍写着「没有可用索引」，已一并更正。
+
+### 3.8 设备行锁提前到事务头部（修跨场地超卖）
+
+模块 4 徐川报的 **3b**：3 个协程各占一个场地、抢同一台 `available_count = 2` 的
+设备，**3 单全成**（应恰好 2 单）。本地稳定复现 13/13 次，属实。
+
+值得说清楚的是**归因**：这不是「忘了加设备行锁」那么简单。
+
+- 场地行锁挡不住跨场地的并发 —— 设备是**全局资源**（`device_resource` 没有
+  `space_id`），同一台设备可以出现在不同场地的订单里，两个事务在场地行上不碰面。
+- 但**只把设备行锁补到第 4 步校验处也仍然不够**。云库是 InnoDB 默认的
+  `REPEATABLE READ`：非加锁 SELECT 读的是「本事务第一条非加锁读」时定下的读视图，
+  `FOR UPDATE` 读的才是最新已提交版本。第 4 步之前已经有 `db.get(SysUser, ...)`
+  与 `_time_conflicts` 两处非加锁读，读视图早就钉死在对方提交之前；此时再等锁，
+  锁等到了**视图也不会刷新**，随后数出来的重叠单还是旧值。
+  一句话：**锁了一行、却从另一张表的旧快照里读计数，这把锁是白加的。**
+
+**改法**：设备行锁提前到**第 2b 步**（紧随场地锁，在上述两处非加锁读之前），
+并按设备 id **升序**加锁（顺序不定会死锁）。`_check_devices` 改为校验**已经加了
+锁的那一份**行，不再重新 SELECT（否则「锁的是 A、判的是 A'」）。
+
+**这是扩了 `§5.5` 第 2 步的锁足迹**（原本只锁场地行），复核时请一并看。
+
+**能验证到哪一步**（不夸大）：
+
+| 性质 | 离线（SQLite） | 云库 |
+| --- | --- | --- |
+| 语句里有 `with_for_update()` | ✅ 断言 | — |
+| 两条锁都排在第一条非加锁读之前 | ✅ 断言 | — |
+| 三方并发下不超卖 | ❌ 永远红（`xfail(strict=True)`） | **未验证** |
+
+SQLite 上第三条**必然红**：`FOR UPDATE` 被方言编译掉，且 pysqlite 默认不为 SELECT
+开启事务（不持有读锁），三个协程因此必然都读到「还差一个名额」。`tests/conftest.py`
+本就写明「事务并发、行锁、时区这三类行为无法在此验证」。所以 **3b 的 xfail 不能在
+本地摘**；若在云库跑通，`strict` 会把 XPASS 转成 FAILED，那才是摘标记的信号。
+
+⚠️ 「读视图由第一条非加锁读建立」这条推演**未在云库实测**。若云库实测仍超卖，
+说明行锁这条路不够，得走**设备占用表**（`§6.3` 变更，仍等集成组口径）。
+完整分析见 `docs/available_count口径判据.md` §7。
+
 ### 3.6 设备容量改为**计数比较**（`available_count` 口径 = 用时推导）
 
 模块 4 的 AGENT-C-01/02（并发与库存扣减）需要可验证的口径，而 `§5.3` / `§6.3`
@@ -152,7 +205,44 @@ ws://host/ws/notify?user_id=2     # 谁都能连，一连上就实时收 2 号�
 
 ---
 
-## 四、请集成组处理的三件事
+## 四、请集成组处理的事项
+
+> **2026-09-28 状态更新**：
+> - **`release_occupancy` 已定「删」并已执行**（函数 + 调用点 + monkeypatch 用例），
+>   不再需要答复。请同步 `docs/test.md` 的 TC-11 描述（仍写着「执行
+>   `release_occupancy` hook」）—— 属团队权威文档，模块 3 未擅自改动。
+> - **设备维度索引已由集成组补上**（main `98c54ea` 给 `reserve_order` 加了
+>   `idx_status_start (order_status, start_time)`，正对 `_device_conflicts` 的谓词）。
+>   本分支已并入 main，并把该索引登记进 `_EXTRA_INDEXES`。
+> - **跨场地超卖已修但云库未验证**（第 3.8 节）：设备行锁提前到第 2b 步。
+>   **请注意这是 `§5.5` 锁足迹的扩展**，需要复核；3b 的 xfail 不能在 SQLite 上摘。
+> - **4.1 / 4.2 / 4.3 仍待答复**（SQLite 池参数、`value_error` 文案、团队文档里的
+>   `X-User-Id`）。
+
+### 4.4 合并顺序提醒：模块 4 分支的两个符号必须留住（**不是本分支的问题**）
+
+徐川提出两条合并风险，已在**本分支实测核对**，结论与提出的假设**不同**：
+
+| 符号 | `origin/main` | 本分支 | 结论 |
+| --- | --- | --- | --- |
+| `_BUSINESS_ERROR_HTTP_STATUS` | ✅ 有（`core/exceptions.py:279`） | ✅ 同 | 字典在 main 上，但**里面没有 `RESOURCE_CONFLICT` 这一项** |
+| `RESOURCE_CONFLICT = 40901` | ✅ 有（`core/error_codes.py:72`） | ✅ 同 | 常量与文案都在 main 上，模块 3 用的就是它 |
+| `CONFLICT_DEVICE_SHORTAGE` | ❌ **没有** | ❌ 没有 | 确认只在模块 4 分支 |
+
+两条实测依据：
+
+- 本分支相对基线 `9f30d3a` **完全没有改过** `core/exceptions.py` 与
+  `core/error_codes.py`（`git diff --stat 9f30d3a HEAD -- <这两个文件>` 输出为空）。
+  所以**模块 3 合进来不会动到那两个文件**，不可能挤掉模块 4 的追加项。
+- 模块 3 不依赖 `_BUSINESS_ERROR_HTTP_STATUS` 的 `RESOURCE_CONFLICT` 项：
+  `ResourceConflictError`（`exceptions.py:182`）自带 `http_status = 409`，
+  走的是 `BizError` 子类那条路；那张映射表只服务于模块 1/2 的 `BusinessError`
+  兼容层。`CONFLICT_DEVICE_SHORTAGE` 在本分支与 main 上都**无人引用**。
+
+**所以真正要提醒的不是「模块 3 会挤掉它们」，而是**：合并模块 4 时，
+若有人用「整文件取某一侧」的方式解冲突，`core/error_codes.py` 与
+`core/exceptions.py` 会被整体覆盖，`CONFLICT_DEVICE_SHORTAGE` 就此消失 →
+收集期 `ImportError`。**这两个文件应当逐 hunk 合并，不要整文件取一侧。**
 
 详见 `docs/公用后端问题反馈.md` 第六 ~ 八节，摘要：
 
@@ -216,14 +306,17 @@ Pydantic 对校验器里抛的 `ValueError` 一律标 `type="value_error"`，而
 
 | 项 | 结果 |
 |---|---|
-| 模块 3 用例 | 收集 144 条：**143 passed / 1 skipped**（skip 的是 `test_config_alignment.py:175`，因 `backend/.env` 不在仓库里而条件跳过） |
-| 全仓用例 | 收集 **568 条，全部通过**（`pytest` 退出码 0） |
+| 模块 3 用例 | 收集 147 条：**145 passed / 1 skipped / 1 xfailed**（skip 的是 `test_config_alignment.py:175`，因 `backend/.env` 不在仓库里而条件跳过；xfailed 是第 3.8 节的 3b，原因见该节） |
+| 全仓用例 | **569 passed / 10 skipped / 1 xfailed**（`pytest` 退出码 0） |
 | 运行环境 | `backend/.venv`（Python 3.11.15，§3.1 锁定版本），**全部跑在临时 SQLite 上，未触碰云库**，无需 SSH 隧道 |
 
 **本 PR 未验证的事项**（不要当成已验证）：
 
-- **云库上 §6.6 的 10 个 `idx_*` 是否真的建好了** —— 需要 SSH 隧道直查
-  `information_schema`。测试里只断言「模型声明 == §6.6 规范」，不验证云库已建
+- **云库上 §6.6 的 10 个 `idx_*` 与新增 `idx_status_start` 是否真的建好了** ——
+  需要 SSH 隧道直查 `information_schema`。测试里只断言「模型声明 == §6.6 规范」，
+  不验证云库已建
+- **跨场地超卖的修复在云库上的实际效果**（第 3.8 节）—— 离线只能断言「锁写了」
+  与「锁排在非加锁读之前」，并发语义本身未验证
 - **云库种子数据**（行数、`sys_role` 空表等）—— 上轮读数已过期，引用前请重测
 - **真实 Agent（模块 4）联调** —— 本模块跑的是 mock 调度器
 
