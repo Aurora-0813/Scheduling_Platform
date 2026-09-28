@@ -15,11 +15,16 @@
 
     SQLite 引擎参数适配（**不能移除**）—— 团队基线的 `create_async_engine`
     无条件传了 `pool_size` / `max_overflow` / `pool_recycle` / `connect_timeout`，
-    而 SQLite（`§13.1` 的本地镜像库，以及**团队自己的 `tests/conftest.py`**）
-    会选中 `NullPool`，这些参数一个都不接受，导入即抛
+    而 SQLite 会选中 `NullPool`，这些参数一个都不接受，导入即抛
     `TypeError: Invalid argument(s) 'pool_size', 'max_overflow' sent to create_engine()`。
-    这处适配不是为模块 3 打的：在新 main 上跑**任何**用例都会撞上，
-    详见下方“SQLite 应急路径的引擎参数适配”一节。
+    触发条件是「`DATABASE_URL` 指向 SQLite」，目前有两条路走到那里：
+    `§13.1` 的本地镜像库（演示应急），以及测试进程 —— 模块 3 的用例直接使用
+    模块级的 `async_engine`（`services/order_service.create_order` 自管会话，
+    §5.5），必须把 `DATABASE_URL` 指到临时 SQLite 才不会写脏云库，见
+    `tests/conftest.py` 顶部那行覆盖。**团队自己的用例目前不会撞上**：它们的
+    `DATABASE_URL` 仍是 `.env` 里的 MySQL，且自建的引擎不含池参数 ——
+    所以这条不是「团队基线现在就跑不起来」，而是「一旦有人按 §13.1 切 SQLite
+    就会启动即挂」。详见下方“SQLite 应急路径的引擎参数适配”一节。
 
 ⚠️ 关于 SQLite 下主键自增：团队基线的做法是在**测试进程内**把 BIGINT 编译成
 INTEGER（见 `tests/conftest.py` 的 `SQLiteTypeCompiler` 垫片），因此模型一律用裸
@@ -93,18 +98,21 @@ class Base(DeclarativeBase):
 
 # ---------- SQLite 应急路径的引擎参数适配（必需，非临时补丁） ----------
 # `settings.database_url` 有两条路径不是 mysql+asyncmy：`§13.1` 的本地 SQLite
-# 应急镜像，以及**测试期 —— 团队自己的 `tests/conftest.py` 就把 DATABASE_URL
-# 指向临时 SQLite**。
+# 应急镜像，以及测试进程 —— 模块 3 的用例直接用模块级 `async_engine`，必须把
+# `DATABASE_URL` 指到临时 SQLite 才不会写脏云库（`tests/conftest.py` 顶部）。
 #
-# SQLite 的 aiosqlite 方言在这种连接串下选中 `NullPool`，而 `NullPool.__init__`
-# **不接受** pool_size / max_overflow / pool_recycle / connect_timeout。
-# 无条件传过去的话，`app.core.database` 在被 import 的**那一刻**就抛：
+# `sqlite+aiosqlite` 无论文件库还是 `:memory:` 都会选中 `NullPool`（实测；
+# `:memory:` 是 `StaticPool`），二者的 `__init__` **都不接受** pool_size /
+# max_overflow / pool_recycle。无条件传过去的话，`app.core.database` 在被
+# import 的**那一刻**就抛：
 #     TypeError: Invalid argument(s) 'pool_size', 'max_overflow' sent to create_engine()
 # 症状是「任何一条用例都收集不到」—— 报错发生在 conftest 导入 app 时，
 # 看起来像测试框架坏了，其实是引擎参数与方言不匹配。
 #
-# ⚠️ 这不是模块 3 的私事：在新 main 上跑**任何**模块的用例都会撞上，
-#    与模块 3 的 `order_service.create_order` 自管会话（§5.5）无关。
+# ⚠️ 准确的触发条件，别记成「团队基线现在就跑不起来」：
+#    **团队自己的用例撞不上** —— 它们不覆盖 `DATABASE_URL`（仍是 `.env` 里的
+#    MySQL），并自建不含池参数的引擎。所以这是「一旦有人按 §13.1 把
+#    `DATABASE_URL` 切成 SQLite，服务就会启动即挂」，而不是当下的故障。
 #    集成组在公用基线修这一处时，直接照抄下面的条件分支即可。
 _is_sqlite = settings.database_url.startswith("sqlite")
 
