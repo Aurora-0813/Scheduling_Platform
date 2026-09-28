@@ -305,7 +305,7 @@ alembic revision --autogenerate -m "描述"    # 生成迁移（必须人工审�
 No module named alembic.__main__; 'alembic' is a namespace package
 ```
 
-`scripts/dev.sh` 与 CI 里都走控制台脚本（`.github/workflows/ci.yml` 同理）。
+`scripts/dev.sh` 与 CI 里都走控制台脚本（`.github/workflows/backend-ci.yml` 同理）。
 
 #### ② 连接串只从 `.env` 来，`alembic.ini` 里保持注释
 

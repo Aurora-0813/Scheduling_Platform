@@ -92,7 +92,7 @@ assert settings.BCRYPT_ROUNDS == 4, "BCRYPT_ROUNDS 未生效"
 > 若有人把 `from app.core.config import settings` 挪到这些语句之前，
 > `settings` 会在 import 时就完成实例化（读 `.env`，`BCRYPT_ROUNDS=12`），断言随即触发。
 >
-> `BCRYPT_ROUNDS=4` 是测试能跑完的关键：全量 349 个用例里有大量登录/校验路径，
+> `BCRYPT_ROUNDS=4` 是测试能跑完的关键：全量用例里有大量登录/校验路径，
 > cost=12 时每个约 250ms，会从 4 分钟变成 20 分钟以上。
 
 **SQLite 类型垫片**：`conftest.py` 在测试进程内把 `SQLiteTypeCompiler.visit_BIGINT` 换成输出 `INTEGER`。
@@ -413,7 +413,7 @@ passlib 被完全封闭在本文件对应的两个函数里（判据：换库时
 | `test_detail_false_drops_none_fields` | `detail=false` 时明细字段从 JSON 中**消失**（不是 `null`） |
 | `test_ok_wrapper_keeps_camel_case` | 监控出参字段为 camelCase |
 
-#### `tests/api/test_response_envelope.py` — 9 函数 / 9 items（`api`）
+#### `tests/api/test_response_envelope.py` — 11 函数 / 11 items（`api`）
 
 **这是全组共用的「收口」护栏**：它遍历所有已注册路由，保证没有任何接口漏掉统一响应体。
 
@@ -427,6 +427,8 @@ passlib 被完全封闭在本文件对应的两个函数里（判据：换库时
 | `test_method_not_allowed_is_documented_as_400xx` | ⚠️ **已知偏差**：405 复用业务码 `40000` 且透传 `Allow` 头 |
 | `test_unhandled_exception_is_500_without_leaking_internals` | 未处理异常 500 不泄露 SQL / 表名 / 堆栈 |
 | `test_response_model_violation_is_a_server_error` | 出参不符 `response_model`（服务端 bug）收敛为 500 |
+| `test_legacy_status_table_agrees_with_the_exception_classes` | **对账护栏**：`_BUSINESS_ERROR_HTTP_STATUS` 里登记了状态码的业务码，其状态码必须与对应异常类一致（防止「同一个错误码、两条抛法给出两个状态码」重现） |
+| `test_legacy_conflict_error_returns_http_409` | 走兼容层 `raise BusinessError(40901)` 时 HTTP 必须是 **409**（自建探针路由；40901 目前无调用方，否则无人能发现它曾经返回 400） |
 | `test_lifespan_is_not_required_for_requests` | 不跑 `lifespan` 也能正常请求 |
 
 #### `tests/api/test_mock_routes.py` — 11 函数 / 54 items（`api`）
@@ -651,8 +653,13 @@ TOTAL                                 2027    319    84%
    它们要么需要真实 Redis，要么只在进程启停/换环境时执行。
 
 **口径说明**：覆盖率是**辅助指标**，不作为验收门槛。本项目的验收门槛是
-「349 个用例全绿」+「协议契约（响应体/字段命名/错误码）有断言」。
-一个说明这个立场的例子：`test_response_envelope.py` 用 9 个用例遍历全部路由，
+「全量用例全绿」+「协议契约（响应体/字段命名/错误码）有断言」。
+
+> **用例数口径**：本文件逐条记录的是**模块 9/10 交付时**的 349 条用例。
+> 之后并入模块 1/2，`pytest` 默认收集（`-m "not smoke"`）现为 **435 条**
+> —— 模块 1/2 的用例（`test_image_*` / `test_voice_*`）不在本文件的记录范围内。
+> 看「用例总数」类的数字时，请以命令输出为准，不要引用本文件的历史数字。
+一个说明这个立场的例子：`test_response_envelope.py` 用 11 个用例钉住响应体契约（其中 2 个遍历全部路由），
 它对覆盖率数字的贡献很小，但它是**唯一**能拦住「新接口忘了包统一信封」的护栏 ——
 按覆盖率排序会把它排在最后，按价值排序它在最前。
 
@@ -660,7 +667,8 @@ TOTAL                                 2027    319    84%
 
 ## 七、CI 集成
 
-`.github/workflows/ci.yml`（`开发流程.md` 8.7）在推送 `main` / `develop` 及面向它们 PR 时执行：
+**`.github/workflows/backend-ci.yml`（仓库根，`开发流程.md` 8.7）** 在推送 `main` / `develop`
+及面向它们 PR 时执行：
 
 ```
 检出代码 → 安装 Python 3.11.9 → pip install -r requirements.lock
@@ -672,18 +680,25 @@ TOTAL                                 2027    319    84%
         → 上传覆盖率报告（if: always()）
 ```
 
-两点值得强调：
+除最后一步与「回仓库根跑凭证检查」外，所有步骤都在 `backend/` 下执行
+（job 级 `defaults.run.working-directory: backend`）—— 否则 `pytest.ini` 与
+`ruff.toml` 不会被读到，跑出来的结果与本地不是一回事。
+
+三点值得强调：
 
 1. **CI 不需要配置任何密钥**（不需要 `.env`、云库、Redis）—— 这正是「测试全部离线」的直接收益；
 2. **`pre-commit run no-secrets-file` 是 CI 里最有价值的一项**：`.env` 一旦进过仓库历史，密钥就必须更换（历史无法撤回）。
+   这一步必须回仓库根执行：钩子规则写在根目录的 `.pre-commit-config.yaml` 里，
+   而 `files:` 匹配的是**相对仓库根**的路径；
+3. CI 里的 `ruff check` / `ruff format --check` 会扫 `backend/` 全量文件，
+   不只是本次改动的文件 —— 本地提交前跑一次 `ruff check . && ruff format --check .`
+   可以避免「本地过、CI 挂」。
 
-> ⚠️ **当前限制**：`.github/workflows/ci.yml` 位于 `backend/.github/` 下，
-> 而 **GitHub Actions 只认仓库根目录的 `.github/workflows/**`**，因此**它现在不会执行**。
-> 处理方式（二选一，见文件头注释）：
-> a) 合入 monorepo 时移到根目录的 `.github/workflows/backend-ci.yml` 并加 `working-directory`；
-> b) 若本仓库直接被当作后端仓库使用（自身即仓库根），**移一次目录即可生效**。
->
-> 另外本仓库当前**零提交**，因此 CI 与 pre-commit 钩子都尚未真正跑过 —— 需要先完成首次提交与远端配置。
+> **历史说明（2026-09-28 已修复）**：本文件此前位于 `backend/.github/workflows/ci.yml`，
+> 而 **GitHub Actions 只认仓库根目录的 `.github/workflows/**`** —— 也就是说这条流水线
+> 一次都没执行过。现已移到根目录的 `.github/workflows/backend-ci.yml` 并补上
+> `working-directory: backend`，首次运行前已把 39 条 ruff 告警与 16 个文件的格式清干净
+> （提交 `style: 清理 39 条 ruff 告警`），避免「第一次跑就是红的」。
 
 ---
 
