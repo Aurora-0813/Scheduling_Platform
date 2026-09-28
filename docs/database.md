@@ -11,7 +11,7 @@
 | --- | --- | --- |
 | 建表 / 改表 / 建索引 | **集成组** | 主文档 6.5、6.7。**任何人不得到生产库自行执行 DDL** |
 | `docs/seed.sql` 的导入 | **集成组** | 导入前确认目标库为 `smart_scheduler_dev`，禁止误入正式环境 |
-| 连接凭据 | **各人本地 `.env`** | 见第三节。**凭据不入本文件、不入代码、不入提交** |
+| 连接凭据 | **各人本地 `.env`** | 见第二节。**凭据不入本文件、不入代码、不入提交** |
 | 本文件的表结构描述 | 集成组维护 | 本文与主文档 6.3 不一致时，以主文档为准并立即修正本文 |
 
 ---
@@ -23,23 +23,45 @@
 | 配置项 | 值 |
 | --- | --- |
 | 云服务器地址 | 见 `.env` 的 `DB_HOST` |
-| 端口 | 见 `.env` 的 `DB_PORT`（默认 `3307`） |
+| 端口 | 见 `.env` 的 `DB_PORT`（默认 `3308`，**是本机隧道入口端口，不是云服务器侧 MySQL 的监听端口**） |
 | 业务库 | `smart_scheduler_dev` |
 | 测试库 | `smart_scheduler_test` |
 | 用户名 / 密码 | 见 `.env` 的 `DB_USER` / `DB_PASSWORD` |
 | 字符集 | `utf8mb4` |
 | 驱动 | `asyncmy`（异步） |
 
+### 2.1 关于端口：3307 与 3308 不是同一个数
+
+云服务器侧 MySQL 监听 **3307**，本机通过 SSH 隧道接入，隧道在本机的入口是 **3308**：
+
+```bash
+ssh -L 3308:127.0.0.1:3307 <user>@<云服务器IP> -N
+```
+
+代码连的是**本机入口**，所以 `.env` 的 `DB_PORT` 填 **3308**。填成 3307 会连到本机一个没人监听的端口，报错只有一句「连接被拒绝」，极难定位。
+
+起没起隧道用这个验：`netstat -ano | findstr 3308` → 有 `LISTENING` 才算通。
+
+### 2.2 连接串由代码拼出，`.env` 里不写
+
 `backend/.env.example`（**已提交，仅占位符**）：
 
 ```env
-DB_HOST=<云服务器IP>
-DB_PORT=3307
+DB_HOST=127.0.0.1
+DB_PORT=3308
 DB_USER=<数据库用户名>
 DB_PASSWORD=<数据库密码>
 DB_NAME=smart_scheduler_dev
-DATABASE_URL=mysql+asyncmy://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?charset=utf8mb4
 ```
+
+**注意：不要在这里写 `DATABASE_URL`。** 连接串由 `app/core/config.py` 从上面五项拼出，分两条：
+
+| 用途 | 属性 | 驱动 |
+| --- | --- | --- |
+| 应用运行时 | `database_url` | `mysql+asyncmy://`（主文档 3.4 固定异步驱动） |
+| Alembic 迁移 | `sync_database_url` | `mysql+pymysql://`（仅 `alembic/env.py` 引用） |
+
+多写一个 URL 配置项有两个问题：一是 `Settings` 是 `extra="forbid"`，多出来的键会让服务启动时直接 `ValidationError`；二是 `${VAR}` 这种写法 pydantic-settings 不做变量插值，即使键合法也拼不出预期值。
 
 > 🔴 **`backend/.env` 必须被 `.gitignore` 忽略，`.env.example` 必须提交。**
 > 提交前 `git status` 看不到 `.env` 才算安全。凭据一旦进入 git 历史，改密码也不足以清除。
@@ -140,7 +162,16 @@ Navicat / DBeaver 仅作可视化查询用，连接信息从 `.env` 读取，**�
 | `create_time` | DATETIME | | 是 | 创建时间 |
 | `update_time` | DATETIME | | 是 | 更新时间 |
 
-**冲突判定只认 `order_status IN (1, 2)`**（待确认与已确认占位，已取消与已完成不占位）。
+**硬冲突判定只认 `order_status IN (1, 2)`**（待确认与已确认占位，已取消与已完成不占位）。
+
+> ⚠️ **两套「有效订单」口径并存，用途不同，不要混用：**
+>
+> | 场景 | 口径 | 为什么 |
+> | --- | --- | --- |
+> | 硬冲突占位（并发预约检测，模块 3） | `IN (1, 2)` | 已完成与已取消都不再占用场地 |
+> | 软冲突扫描（模块 7） | `IN (1, 2, 4)`，代码中即 `ACTIVE_ORDER_STATUSES`（`app/models/reservation.py`） | 扫描窗口是「前 7 天 ~ 后 7 天」，「已完成」的订单仍在窗口内，它同样构成「连续活动无休息」「单日累计占用超 8 小时」的事实依据；漏掉它会漏报。已取消（3）一律排除 |
+>
+> 模块 7 的口径见第九节，**与模块 3 对接时需确认双方一致认可**。
 
 ### 4.7 `inspect_record` 巡检记录表
 
@@ -198,6 +229,8 @@ Navicat / DBeaver 仅作可视化查询用，连接信息从 `.env` 读取，**�
 | `notify_message` | `idx_receiver_read` | `receiver_id, is_read` | COMPOSITE | 未读消息查询 |
 
 > **`idx_space_time` 是并发预约能否守住的关键。** 没有这个联合索引，`SELECT ... FOR UPDATE` 在冲突检测时会退化为全表扫描并放大锁范围（主文档 5.5），低并发下测不出问题，演示当天会翻车。
+
+> 🔴 **上表是规范，不等于库里已有。** 见 6.2 —— `backend/alembic/` 的初始迁移脚本**一条索引都没建**，在建表路径上与本表不一致。
 
 ---
 
@@ -280,6 +313,26 @@ ORDER BY SEQ_IN_INDEX;
 
 `idx_space_time` 的 `SEQ_IN_INDEX` 必须依次为 `space_id=1`、`start_time=2`、`end_time=3`。**顺序错了索引基本失效。**
 
+### 6.2 与 `backend/alembic/` 迁移脚本的关系（**待集成组定夺**）
+
+仓库里目前存在**两条互不相同的建表路径**：
+
+| 路径 | 内容 | 是否含第五节索引 |
+| --- | --- | --- |
+| 本节 SQL（`ALTER` + `CREATE INDEX`） | 6.7 清单，逐条变更 | ✅ 全部 11 条 |
+| `backend/alembic/versions/8969262c9d0c_init_tables_single_role.py` | 直接 `create_table` 建 9 张表 | ❌ **一条 `op.create_index` 都没有** |
+
+也就是说：**只跑 Alembic 得到的是「有表无索引」的库**，与本文件第五节、以及主文档 6.6 都不一致。后果不是「慢一点」，而是 `idx_space_time` 缺失会让模块 3 的并发预约检测退化为全表扫描并放大锁范围（主文档 5.5）。
+
+此外，Alembic 脚本是**全新 `create_table`**，不包含本节 1~6 条的 `ALTER` 语义，因此它假定的是「空库可直接建全量结构」，与「已有库需增量变更」是两种前提。
+
+**结论：两条路径只能留一条作为权威。** 建议由集成组明确：
+
+1. 以本节 SQL 为准，Alembic 仅作留档；或
+2. 以 Alembic 为准，则**必须补齐索引**（`op.create_index` × 11），并把本节 1~6 条的历史变更语义并入迁移链
+
+> 索引缺失已单独登记为待办（见 `docs/test.md` 与本轮合并说明），**不由模块 7 擅自补迁移脚本** —— 建表与索引归集成组，模块 7 全程零 DDL 变更。
+
 ---
 
 ## 七、测试库（主文档 6.8）
@@ -355,10 +408,109 @@ SELECT COUNT(*) FROM space_resource WHERE capacity >= 40 AND budget <= 500;
 
 ---
 
-## 九、变更记录
+## 九、模块 7：AI 冲突预警与智能通知
+
+### 9.1 ⚠️ 本模块无 DDL 变更
+
+**结论：本模块不新增任何表、字段、索引或约束，不需要集成组执行任何 `ALTER TABLE`。**
+
+主文档 6.7 的「表结构变更 DDL 清单」中与本模块相关的部分（**第 6 条**：`notify_message` 增加 `notify_type`、`order_id` 及外键，**第 7 条**：创建 `idx_receiver_read`）**已包含在集成组的既有清单内（见本文第六节），本模块不需要追加任何条目**。
+
+请集成组按原清单执行即可，**不必等待本模块的迁移脚本** —— 本模块没有迁移脚本。
+
+### 9.2 本模块使用的表
+
+#### 1. `notify_message`（主表，只写）
+
+本模块是本表的主要写入方（AI 冲突预警与智能通知）。
+
+| 字段名 | 类型 | 本模块用法 |
+| :--- | :--- | :--- |
+| `id` | BIGINT UNSIGNED | 自增主键，不做业务使用 |
+| `receiver_id` | BIGINT UNSIGNED | 收件人。由后端按订单与角色解析得出，**绝不取自请求体或事件载荷** |
+| `notify_type` | INT | 1 预约提醒（软冲突扫描）／2 变更致歉（取消、改期）／3 故障告警（设备故障事件） |
+| `order_id` | BIGINT UNSIGNED | 关联订单。设备故障等无订单上下文的事件写 `NULL` |
+| `title` | VARCHAR(255) | 写入前统一截断至 200 字符（留足安全边界） |
+| `content` | TEXT | 写入前统一截断至 2000 字符 |
+| `is_read` | INT | 新建通知一律写 `0`（未读） |
+| `create_time` | DATETIME | 由数据库 `DEFAULT CURRENT_TIMESTAMP` 生成，不显式赋值 |
+
+**写入规范**：一条通知只写一行，同一批次的多条记录在一个事务内提交（`generate_and_dispatch` 内逐条 `flush`，由调用方 `commit`）。
+
+#### 2. `reserve_order`（只读）
+
+软冲突判定的数据来源。本模块**全程只读**，不修改任何预约状态 —— 预约的创建 / 变更 / 取消由预约管理模块的事务与唯一索引负责，本模块只负责发现冲突并生成通知文案（主文档 4.4）。
+
+**有效订单口径 = `order_status IN (1, 2, 4)`**，即排除 `3 已取消`，但**保留 `4 已完成`**。代码中该口径定义为 `ACTIVE_ORDER_STATUSES`（`app/models/reservation.py`），服务层引用常量而非裸数字，避免「两个模块各自写一套状态码」。理由：本模块的扫描窗口是「前 7 天 ~ 后 7 天」，窗口内的「已完成」订单同样是「连续活动无休息」「单日累计占用超 8 小时」的事实依据，排除它会漏报。这与 4.6 节硬冲突占位的 `IN (1, 2)` 口径**不同且各自成立**，详见 4.6 节的对照表。
+
+读取方式：按扫描窗口一次性批量读取，配合 `ORDER BY start_time LIMIT 2000` 保护 2 核 2G 服务器的内存；不使用任何 ORM 惰性加载（异步会话下会抛 `MissingGreenlet`，故模型上的 `relationship()` 一律 `lazy="raise"`，让错误在调用点直接暴露）。
+
+#### 3. `space_resource` / `device_resource` / `sys_user` / `sys_role`（只读）
+
+用于补全文案所需的场地名、容量、设备名与设备类型、预约人姓名与角色名。均为种子数据量级（个位数到十几行），全量读取后在内存中做映射，不做 N+1 查询。
+
+### 9.3 本模块使用的索引
+
+| 表 | 索引 | 用途 |
+| :--- | :--- | :--- |
+| `notify_message` | `idx_receiver_read` (receiver_id, is_read) | 消息列表与未读数查询 |
+| `reserve_order` | `idx_status` (order_status) | 扫描时过滤有效订单（排除已取消） |
+| `reserve_order` | `idx_space_time` (space_id, start_time, end_time) | 扫描窗口内的订单范围查询 |
+
+三条均为第五节既有索引，本模块**未新增任何索引**。
+
+> ⚠️ **但「规范列了」不等于「库里有」。** 见 6.2：`backend/alembic/` 的初始迁移脚本没有创建任何索引。其中 `idx_space_time` 的缺失会实打实影响本模块的扫描窗口查询性能，也会影响模块 3 的并发预约正确性。**该项已单独登记待办。**
+
+### 9.4 去重状态为什么不入库
+
+同一冲突需要「24 小时内只提醒一次」，但 `notify_message` 没有去重列，且按 6.7 的流程新增列需由集成组统一执行。
+
+本模块的取法：**去重状态放 Redis，不入库。**
+
+- 主：Redis `SET <指纹> 1 NX EX <TTL>`，原子占位（`CONFLICT_DEDUP_BACKEND=redis` 或默认 `auto`）
+- 兜底：Redis 不可用时降级为按 `(receiver_id, title, create_time)` 查库近似判重（`=db`），本地无 Redis 环境再退化为进程内实现（`=memory`）
+
+指纹 = `sha1(source | rule_code | notify_type | order_ids | space_id | receiver_id)`。其中 `title` 取**模板**渲染出的标题而非 AI 标题 —— 模板标题是确定性的、可在调用大模型前算出，而 AI 标题每次都可能不同，无法用于判重。
+
+Redis 键前缀 `conflict:notify:`，TTL 由 `CONFLICT_DEDUP_TTL_SECONDS` 配置（默认 86400 秒）。
+
+### 9.5 验证方式
+
+```sql
+-- 确认本模块只写 notify_message，且未产生任何表结构变更
+SHOW CREATE TABLE notify_message;
+SHOW INDEX FROM notify_message;
+
+-- 验证一轮扫描后确实落库（第二轮不应重复写入）
+SELECT id, receiver_id, notify_type, order_id, LEFT(title, 40), is_read, create_time
+FROM notify_message
+ORDER BY id DESC
+LIMIT 20;
+```
+
+### 9.6 本模块相关的配置项
+
+均为应用层配置，**不涉及数据库结构**：
+
+| 配置项 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `CONFLICT_SCAN_ENABLED` | `true` | 是否启用后台周期扫描 |
+| `CONFLICT_SCAN_INTERVAL_SECONDS` | `300` | 扫描间隔 |
+| `CONFLICT_SCAN_INITIAL_DELAY_SECONDS` | `20` | 启动后首次扫描延迟 |
+| `CONFLICT_PAST_WINDOW_DAYS` / `CONFLICT_FUTURE_WINDOW_DAYS` | `7` / `7` | 扫描窗口 |
+| `CONFLICT_MAX_ORDERS_IN_SNAPSHOT` | `2000` | 单轮快照订单上限（内存保护） |
+| `CONFLICT_DEDUP_BACKEND` | `auto` | 去重后端：`auto` / `redis` / `db` / `memory` |
+| `CONFLICT_DEDUP_TTL_SECONDS` | `86400` | 同一冲突的去重窗口（秒） |
+
+阈值类配置（连续活动间隔、容量倍数、高价值设备白名单、单日占用小时数、闲置天数）见 `.env.example`。
+
+---
+
+## 十、变更记录
 
 | 日期 | 变更 | 执行人 | 是否已同步主文档 |
 | --- | --- | --- | --- |
 | 2026-09-24 | 本文件建立，转录主文档 6.3 / 6.6 / 6.7；新增 `docs/seed.sql` | 徐川（代集成组整理） | 待集成组确认 |
+| 2026-09-27 | 与模块 7 分支合并：追加第九节（模块 7 无 DDL 变更声明）；修正第二节 `DB_PORT` 口径为隧道入口 `3308` 并删除 `.env` 中的 `DATABASE_URL` 行；第一节「见第三节」更正为「见第二节」；补充 4.6 两套有效订单口径对照表、新增 6.2 与 Alembic 迁移的关系（索引缺失） | 黄嵩（模块 7） | 待集成组确认 |
 
 > 本文件由核心调度 Agent 模块负责人依主文档 6.5 要求整理成稿。**表结构与 DDL 的最终解释权在基础支撑与集成组**，如与主文档冲突，以主文档为准并立即修正本文。
