@@ -184,7 +184,11 @@ def test_generate_works_without_order_info(client_with_llm, session, patch_notif
 # ---------- 校验 ----------
 
 
-def test_missing_type_returns_business_code_422(client_with_llm, patch_notify):
+def test_missing_type_returns_business_code_400(client_with_llm, patch_notify):
+    """缺 type 属请求参数校验失败。主干把它统一收敛成 code=400 + 固定文案
+    「请求参数有误，请检查后重试」（见 core/exceptions.py 的 handler，以及
+    docs/摄像头空间感知模块设计.md 的接口约定）—— 不要改回 422。
+    """
     patch_notify(snapshot=None)
 
     body = client_with_llm.post(
@@ -193,8 +197,8 @@ def test_missing_type_returns_business_code_422(client_with_llm, patch_notify):
         headers=auth_header(make_token()),
     ).json()
 
-    assert body["code"] == 422
-    assert "参数校验失败" in body["message"]
+    assert body["code"] == 400
+    assert "请求参数有误" in body["message"]
 
 
 def test_unknown_type_returns_business_code_400(client_with_llm, patch_notify):
