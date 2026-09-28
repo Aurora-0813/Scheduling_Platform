@@ -8,6 +8,7 @@
 不连任何真库：用假驱动连接驱动**真实的**包装器与**真实的**方言 `do_ping`
 （触发链与修法见 `patch_asyncmy_ping` 的注释）。
 """
+
 import inspect
 import os
 import pathlib
@@ -18,13 +19,13 @@ import pytest
 
 pytest.importorskip("asyncmy", reason="补丁只与 mysql+asyncmy 这条路径有关")
 
-from sqlalchemy.dialects.mysql.asyncmy import (  # noqa: E402
+from sqlalchemy.dialects.mysql.asyncmy import (
     AsyncAdapt_asyncmy_connection,
     MySQLDialect_asyncmy,
 )
-from sqlalchemy.util import greenlet_spawn  # noqa: E402
+from sqlalchemy.util import greenlet_spawn
 
-from app.core.database import patch_asyncmy_ping  # noqa: E402
+from app.core.database import patch_asyncmy_ping
 
 # 本文件位于 tests/module3/，上溯三层才是 backend/（用例下沉一层后此处曾算错）
 BACKEND_DIR = pathlib.Path(__file__).resolve().parent.parent.parent

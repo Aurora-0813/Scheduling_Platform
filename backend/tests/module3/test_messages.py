@@ -1,4 +1,5 @@
-"""消息通知 / 扫描（docs/test.md TC-13 ~ TC-19）。"""
+"""消息通知 / 扫描（docs/模块3-test.md TC-13 ~ TC-19）。"""
+
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
@@ -155,15 +156,30 @@ async def test_tc19_conflict_scan(client, db_session):
     创建接口已硬编码拦截冲突，这里直连库构造重叠数据，验证扫描兜底能力。
     """
     start = time_dt(1, 9)
-    db_session.add_all([
-        ReserveOrder(user_id=MOCK_USER_ID, space_id=1, device_ids=[],
-                     start_time=start, end_time=start + timedelta(hours=2),
-                     order_status=1, agent_request="", agent_trace=[]),
-        ReserveOrder(user_id=MOCK_USER_ID, space_id=1, device_ids=[],
-                     start_time=start + timedelta(hours=1),
-                     end_time=start + timedelta(hours=3),
-                     order_status=2, agent_request="", agent_trace=[]),
-    ])
+    db_session.add_all(
+        [
+            ReserveOrder(
+                user_id=MOCK_USER_ID,
+                space_id=1,
+                device_ids=[],
+                start_time=start,
+                end_time=start + timedelta(hours=2),
+                order_status=1,
+                agent_request="",
+                agent_trace=[],
+            ),
+            ReserveOrder(
+                user_id=MOCK_USER_ID,
+                space_id=1,
+                device_ids=[],
+                start_time=start + timedelta(hours=1),
+                end_time=start + timedelta(hours=3),
+                order_status=2,
+                agent_request="",
+                agent_trace=[],
+            ),
+        ]
+    )
     await db_session.commit()
 
     r = await client.get("/api/v1/conflicts/scan")
@@ -180,9 +196,16 @@ async def test_tc19b_conflict_scan_ignores_finished_orders(client, db_session):
     start = time_dt(1, 9)
     for status in (3, 4):
         db_session.add(
-            ReserveOrder(user_id=MOCK_USER_ID, space_id=1, device_ids=[],
-                         start_time=start, end_time=start + timedelta(hours=2),
-                         order_status=status, agent_request="", agent_trace=[])
+            ReserveOrder(
+                user_id=MOCK_USER_ID,
+                space_id=1,
+                device_ids=[],
+                start_time=start,
+                end_time=start + timedelta(hours=2),
+                order_status=status,
+                agent_request="",
+                agent_trace=[],
+            )
         )
     await db_session.commit()
 

@@ -1,4 +1,5 @@
-"""预约创建 / 校验 / 状态机（docs/test.md TC-01 ~ TC-12）。"""
+"""预约创建 / 校验 / 状态机（docs/模块3-test.md TC-01 ~ TC-12）。"""
+
 from datetime import time
 
 import pytest
@@ -60,7 +61,7 @@ async def test_tc01_create_order_success(client):
     assert d["orderStatus"] == 1
     assert d["deviceIds"] == [1]
     assert d["userId"] == MOCK_USER_ID
-    assert d["agentTrace"] == []            # §5.3 trace 必须是数组
+    assert d["agentTrace"] == []  # §5.3 trace 必须是数组
     # create_time 由 server_default 生成，经 refresh 回填
     assert d["createTime"]
     assert d["updateTime"]
@@ -177,33 +178,34 @@ async def test_tc09_duplicate_confirm_rejected(client):
     assert r.json()["message"] == "当前状态不允许确认"
 
 
-async def test_tc10_cancel_pending_order(client, monkeypatch):
-    """TC-10 取消待确认单 → 3；未确认过，不应触发释放占用 hook。"""
-    from app.api import orders as orders_api
-
-    released = []
-    monkeypatch.setattr(orders_api, "release_occupancy", lambda o: released.append(o.id))
-
+async def test_tc10_cancel_pending_order(client):
+    """TC-10 取消待确认单 → 3；未确认过，无需任何释放动作。"""
     _, oid = await _create(client)
     r = await client.put(f"/api/v1/orders/{oid}/cancel")
     assert r.status_code == 200
     assert r.json()["data"]["orderStatus"] == 3
-    assert released == []
 
 
-async def test_tc11_cancel_confirmed_releases_occupancy(client, monkeypatch):
-    """TC-11 取消已确认单 → 3，且触发释放场地/设备占用 hook。"""
-    from app.api import orders as orders_api
+async def test_tc11_cancel_confirmed_releases_the_slot(client):
+    """TC-11 取消已确认单 → 3，且**该单立刻不再占名额**。
 
-    released = []
-    monkeypatch.setattr(orders_api, "release_occupancy", lambda o: released.append(o.id))
+    这条原先断言的是「触发了 `release_occupancy` hook」（monkeypatch 观测调用）。
+    按 2026-09-28 定的口径，`available_count` 只读不写、占用用时推导，取消单离开
+    `ACTIVE_ORDER_STATUSES` 即自动释放 —— 没有 hook 可触发（函数本身已删除）。
 
-    _, oid = await _create(client)
+    所以改成断言**可观测的结果**而不是内部调用：取消后同一时段、同一设备能再下一单。
+    这比原来那条更结实：它不依赖任何内部实现，钩子换成别的做法也照样成立。
+    """
+    _, oid = await _create(client, spaceId=1, deviceIds=[1])
     await client.put(f"/api/v1/orders/{oid}/confirm")
+    assert (await _create(client, spaceId=2, deviceIds=[1]))[0].status_code == 409
+
     r = await client.put(f"/api/v1/orders/{oid}/cancel")
     assert r.status_code == 200
     assert r.json()["data"]["orderStatus"] == 3
-    assert released == [oid]
+
+    after, _ = await _create(client, spaceId=2, deviceIds=[1])
+    assert after.status_code == 200, "取消已确认单后，名额必须立刻可用"
 
 
 @pytest.mark.parametrize("action", ["confirm", "cancel"])
@@ -240,19 +242,19 @@ async def test_agent_c01_02_capacity_and_cancel_roundtrip(client, db_session):
     await db_session.commit()
     third_space = await _add_space(db_session)
 
-    first, first_id = await _create(client, spaceId=1, deviceIds=[1])      # 判据 1、2
+    first, first_id = await _create(client, spaceId=1, deviceIds=[1])  # 判据 1、2
     second, _ = await _create(client, spaceId=2, deviceIds=[1])
     assert (first.status_code, second.status_code) == (200, 200), "cap=2 时前两单必须成功"
 
-    third, _ = await _create(client, spaceId=third_space, deviceIds=[1])   # 判据 3
+    third, _ = await _create(client, spaceId=third_space, deviceIds=[1])  # 判据 3
     assert third.status_code == 409
     assert third.json()["code"] == ErrorCode.RESOURCE_CONFLICT
 
-    cancelled = await client.put(f"/api/v1/orders/{first_id}/cancel")      # 判据 4
+    cancelled = await client.put(f"/api/v1/orders/{first_id}/cancel")  # 判据 4
     assert cancelled.status_code == 200, "取消路由必须存在（404 = 路由没注册）"
     assert cancelled.json()["data"]["orderStatus"] == 3
 
-    after, _ = await _create(client, spaceId=third_space, deviceIds=[1])   # 判据 5
+    after, _ = await _create(client, spaceId=third_space, deviceIds=[1])  # 判据 5
     assert after.status_code == 200, "取消后名额必须回落"
 
 
@@ -269,8 +271,12 @@ async def test_list_my_orders_only_mine(client):
     # 另一个用户的单（断言状态码：这里静默失败过一次，列表用例会照常变绿）
     theirs = await client.post(
         "/api/v1/orders/create",
-        json={"spaceId": 1, "deviceIds": [], "startTime": time_str(2, 9),
-              "endTime": time_str(2, 10)},
+        json={
+            "spaceId": 1,
+            "deviceIds": [],
+            "startTime": time_str(2, 9),
+            "endTime": time_str(2, 10),
+        },
         headers=auth_headers(OTHER_USER_ID),
     )
     assert theirs.status_code == 200, theirs.text

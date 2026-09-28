@@ -79,9 +79,9 @@ import tempfile
 #
 # 本文件自己的 `engine` / `db_session` 夹具走 `db_path(tmp_path)`，每个用例一个
 # 独立文件库，**不受**这一行影响；受影响的是「直接用模块级引擎」的那部分用例。
-_MODULE3_TEST_DB = os.path.join(
-    tempfile.gettempdir(), "smart_scheduler_module3_test.db"
-).replace("\\", "/")
+_MODULE3_TEST_DB = os.path.join(tempfile.gettempdir(), "smart_scheduler_module3_test.db").replace(
+    "\\", "/"
+)
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_MODULE3_TEST_DB}"
 
 # 关掉 Redis：默认走内存实现，且 /ready 探针不会去连 127.0.0.1:6380 白等超时
@@ -96,28 +96,39 @@ os.environ["AI_RISK_ENABLED"] = "false"
 # SQL 回显关闭：否则每条用例都会往日志里打带 bcrypt 哈希的 INSERT
 os.environ["SQL_ECHO"] = "false"
 
-from collections.abc import AsyncGenerator, Callable, Iterator
-from pathlib import Path
-from typing import Any
-from datetime import datetime
+# 下面这一整段都带 noqa: E402（前缀 `#` 这里略去，免得被当成真的指令去解析）：
+# **含义是「这个顺序是刻意的」，不是「可以随便挪」**。
+# 为什么非加不可：ruff 的 E402 只豁免「`os.environ[...] = "字面量"` 之后的 import」，
+# 而上面那条 `DATABASE_URL` 的值是 f-string，豁免条件不成立，于是从这一行起全部报
+# E402。既不能靠重排消掉（重排就会破坏「环境变量先于 import app」这条功能约束），
+# 也不能只给第一行加（E402 逐行报），所以整段显式标注。
 
-import httpx
-import pytest
-from sqlalchemy.dialects.sqlite.base import SQLiteTypeCompiler
-from sqlalchemy.ext.asyncio import (
+from collections.abc import AsyncGenerator, Callable, Iterator  # noqa: E402
+from datetime import datetime  # noqa: E402
+from pathlib import Path  # noqa: E402
+from typing import Any  # noqa: E402
+
+import httpx  # noqa: E402
+import pytest  # noqa: E402
+from sqlalchemy.dialects.sqlite.base import SQLiteTypeCompiler  # noqa: E402
+from sqlalchemy.ext.asyncio import (  # noqa: E402
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import NullPool  # noqa: E402
 
-import app.models  # noqa: F401  —— 导入以注册全部 ORM 模型
-from app.api.deps import get_token_store, reset_token_store
-from app.core.config import settings
-from app.core.database import Base, get_db
-from app.core.metrics import InMemoryMetricStore, configure_metric_store, reset_metric_store
-from app.services.rules.base import (
+import app.models  # noqa: E402, F401  —— 导入以注册全部 ORM 模型
+from app.api.deps import get_token_store, reset_token_store  # noqa: E402
+from app.core.config import settings  # noqa: E402
+from app.core.database import Base, get_db  # noqa: E402
+from app.core.metrics import (  # noqa: E402
+    InMemoryMetricStore,
+    configure_metric_store,
+    reset_metric_store,
+)
+from app.services.rules.base import (  # noqa: E402
     ConflictRuleConfig,
     DeviceView,
     OrderView,
@@ -739,18 +750,18 @@ from sqlalchemy import event  # noqa: E402
 #   reserve_order  10 行
 SEED = {
     # 场地
-    "space_hall_40": 4,        # A栋3楼展厅，type=2，cap=50，¥800
-    "space_hall_35": 5,        # C栋1楼展厅，type=2，cap=35，¥600
-    "space_small_hall": 7,     # 综合楼小多功能厅，type=3，cap=25
-    "space_big_hall": 6,       # 综合楼大礼堂，type=3，cap=80
+    "space_hall_40": 4,  # A栋3楼展厅，type=2，cap=50，¥800
+    "space_hall_35": 5,  # C栋1楼展厅，type=2，cap=35，¥600
+    "space_small_hall": 7,  # 综合楼小多功能厅，type=3，cap=25
+    "space_big_hall": 6,  # 综合楼大礼堂，type=3，cap=80
     # 设备
     "projectors": [1, 2, 3, 4],
     "speakers": [5, 6, 7, 8],
     "screens": [9, 10, 11],
-    "drone_ok": 12,            # 无人机01，status=1，available=2
-    "drone_broken": 13,        # 无人机02，status=2（损坏）→ 必须被 Tool 滤掉
-    "live_ok": 14,             # 直播设备01，status=1，available=1
-    "live_exhausted": 15,      # 直播设备02，status=1，available=0 → 必须被 Tool 滤掉
+    "drone_ok": 12,  # 无人机01，status=1，available=2
+    "drone_broken": 13,  # 无人机02，status=2（损坏）→ 必须被 Tool 滤掉
+    "live_ok": 14,  # 直播设备01，status=1，available=1
+    "live_exhausted": 15,  # 直播设备02，status=1，available=0 → 必须被 Tool 滤掉
 }
 
 #: 一个**已被占用**的时段：`reserve_order` id=9（space=4，order_status=1）。
@@ -804,11 +815,22 @@ def _offline_guard() -> Any:
 # --------------------------------------------------------------------------
 #: 会被拦下的语句首关键字。故意**不含** `select` / `show` / `set` / `begin` 等
 #: ——`SELECT ... FOR UPDATE` 是读，必须放行（真实 `create_order` 靠它）。
-_FORBIDDEN_HEADS = frozenset({
-    "insert", "update", "delete", "replace",
-    "create", "drop", "alter", "truncate", "rename",
-    "grant", "revoke", "call",
-})
+_FORBIDDEN_HEADS = frozenset(
+    {
+        "insert",
+        "update",
+        "delete",
+        "replace",
+        "create",
+        "drop",
+        "alter",
+        "truncate",
+        "rename",
+        "grant",
+        "revoke",
+        "call",
+    }
+)
 
 
 class WriteForbiddenError(AssertionError):
@@ -835,7 +857,7 @@ def _db_readonly_guard() -> Any:
 
     written: list[str] = []
 
-    def _guard(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+    def _guard(conn, cursor, statement, parameters, context, executemany):
         head = statement.lstrip().split(None, 1)[0].lower() if statement.strip() else ""
         if head in _FORBIDDEN_HEADS:
             written.append(statement)
@@ -897,7 +919,7 @@ class ScriptedChatModel(BaseChatModel):
     def _llm_type(self) -> str:
         return "scripted-chat-model"
 
-    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:  # noqa: ANN401 - 对齐父类签名
+    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
         return self
 
     def _next(self) -> ChatResult:
@@ -905,10 +927,14 @@ class ScriptedChatModel(BaseChatModel):
         self._cursor += 1
         return ChatResult(generations=[ChatGeneration(message=self.responses[idx])])
 
-    def _generate(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any) -> ChatResult:  # noqa: ANN401
+    def _generate(
+        self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any
+    ) -> ChatResult:
         return self._next()
 
-    async def _agenerate(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any) -> ChatResult:  # noqa: ANN401
+    async def _agenerate(
+        self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any
+    ) -> ChatResult:
         if self.delay:
             await asyncio.sleep(self.delay)
         return self._next()
@@ -921,6 +947,7 @@ def scripted() -> Any:
     写成工厂而不是直接给实例：用例需要按场景现编响应序列，
     一个固定内容的夹具会让所有用例被同一串 tool_call 绑死。
     """
+
     def _make(responses: list[AIMessage], delay: float = 0.0) -> ScriptedChatModel:
         return ScriptedChatModel(responses=responses, delay=delay)
 
@@ -1007,7 +1034,6 @@ def seed() -> dict[str, Any]:
 def slots() -> dict[str, tuple[str, str]]:
     """被占用 / 空闲的两个时段。"""
     return {"occupied": OCCUPIED_SLOT, "free": FREE_SLOT}
-
 
 
 # ===========================================================================

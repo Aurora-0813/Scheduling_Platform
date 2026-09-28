@@ -3,6 +3,7 @@
 本文件只描述**传输契约**：字段名、类型、默认值。业务规则（时间能不能解析、
 开始是否早于结束、场地/设备存不存在）一律不在这里判，见下方说明。
 """
+
 from pydantic import BaseModel
 
 
@@ -30,5 +31,5 @@ class OrderCreate(BaseModel):
     deviceIds: list[int] = []
     startTime: str
     endTime: str
-    agentRequest: str = ""     # 用户原始需求（Agent 创建时填入）
-    agentTrace: list = []      # AI 思考过程追踪（JSON 数组）
+    agentRequest: str = ""  # 用户原始需求（Agent 创建时填入）
+    agentTrace: list = []  # AI 思考过程追踪（JSON 数组）

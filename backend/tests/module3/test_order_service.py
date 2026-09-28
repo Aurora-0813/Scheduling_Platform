@@ -11,9 +11,12 @@
 （对方模块的 Tool 直接依赖），参数名、顺序、关键字限定的任何变动都会让那个模块
 在运行时静默错位，而不是报错。
 """
+
+import asyncio
 from datetime import time
 from inspect import Parameter, signature
 
+import pytest
 from sqlalchemy import func, select
 
 from app.core.database import AsyncSessionLocal
@@ -119,7 +122,9 @@ def test_frozen_signature_is_keyword_only():
     required = {"user_id", "space_id", "start_time", "end_time"}
     for p in params:
         assert p.annotation is not Parameter.empty, f"{p.name} 缺类型标注"
-        assert (p.default is Parameter.empty) is (p.name in required), f"{p.name} 默认值不符合冻结表"
+        assert (p.default is Parameter.empty) is (p.name in required), (
+            f"{p.name} 默认值不符合冻结表"
+        )
 
 
 async def test_result_keys_identical_on_success_and_failure():
@@ -159,8 +164,12 @@ async def test_create_success_persists_and_returns_order_id():
 async def test_order_status_defaults_to_pending_and_can_be_overridden():
     """order_status 默认 1（待确认）；调用方可显式传 2（Agent 的 needConfirm 为 false 时）。"""
     default = await _call()
-    explicit = await _call(space_id=2, start_time=time_str(2, 9), end_time=time_str(2, 10),
-                           order_status=OrderStatus.CONFIRMED.value)
+    explicit = await _call(
+        space_id=2,
+        start_time=time_str(2, 9),
+        end_time=time_str(2, 10),
+        order_status=OrderStatus.CONFIRMED.value,
+    )
 
     async with AsyncSessionLocal() as db:
         assert (await db.get(ReserveOrder, default["orderId"])).order_status == 1
@@ -227,7 +236,7 @@ async def test_device_time_overlap_is_rejected():
     情形见下面 AGENT-C-01/02 那一组。
     """
     await _call(space_id=1, device_ids=[1])
-    r = await _call(space_id=2, device_ids=[1])   # 换场地，但设备仍是 1
+    r = await _call(space_id=2, device_ids=[1])  # 换场地，但设备仍是 1
 
     assert r["ok"] is False
     assert r["conflictType"] == "device_conflict"
@@ -277,7 +286,7 @@ async def test_device_without_stock_rejected():
     assert r["conflictDetail"]["conflicts"] == [{"deviceId": did, "reason": "exhausted"}]
 
     async with AsyncSessionLocal() as db:
-        assert (await db.get(DeviceResource, did)).available_count == 0   # 未被扣减
+        assert (await db.get(DeviceResource, did)).available_count == 0  # 未被扣减
 
 
 # ------------------------------------------------ AGENT-C-01/02：设备容量（用时推导）
@@ -297,22 +306,20 @@ async def test_capacity_allows_up_to_available_count():
     did = await _add_device(total_count=2, available_count=2, device_name="双份投影仪")
     third_space = await _add_space()
 
-    first = await _call(space_id=1, device_ids=[did])                    # 判据 1
-    second = await _call(space_id=2, device_ids=[did])                   # 判据 2
+    first = await _call(space_id=1, device_ids=[did])  # 判据 1
+    second = await _call(space_id=2, device_ids=[did])  # 判据 2
 
     assert first["ok"] is True
     assert second["ok"] is True, "cap=2 时第 2 单必须成功（旧实现会误拒）"
 
-    third = await _call(space_id=third_space, device_ids=[did])          # 判据 3
+    third = await _call(space_id=third_space, device_ids=[did])  # 判据 3
     assert third["ok"] is False
     assert third["conflictType"] == "device_conflict"
 
-    # 形状按 `docs/api.md` 里 `create_order` 的冻结契约：一单一条，列出占着这台
+    # 形状按 `docs/模块3-api.md` 里 `create_order` 的冻结契约：一单一条，列出占着这台
     # 设备的那些单（不是「一台一条」的计数条目 —— 改形状要走 §5.3）
     conflicts = third["conflictDetail"]["conflicts"]
-    assert sorted(c["orderId"] for c in conflicts) == sorted(
-        [first["orderId"], second["orderId"]]
-    )
+    assert sorted(c["orderId"] for c in conflicts) == sorted([first["orderId"], second["orderId"]])
     assert all(c["deviceIds"] == [did] for c in conflicts)
 
 
@@ -331,12 +338,12 @@ async def test_cancel_frees_a_slot_without_any_refund_code():
     await _call(space_id=2, device_ids=[did])
     assert (await _call(space_id=third_space, device_ids=[did]))["ok"] is False
 
-    async with AsyncSessionLocal() as db:                                # 判据 4
+    async with AsyncSessionLocal() as db:  # 判据 4
         order = await db.get(ReserveOrder, first["orderId"])
         order.order_status = OrderStatus.CANCELLED.value
         await db.commit()
 
-    after = await _call(space_id=third_space, device_ids=[did])          # 判据 5
+    after = await _call(space_id=third_space, device_ids=[did])  # 判据 5
     assert after["ok"] is True, "取消后名额必须回落"
 
 
@@ -405,7 +412,7 @@ async def test_time_check_runs_before_device_check():
     """
     await _call(space_id=1, device_ids=[1])
 
-    r = await _call(space_id=1, device_ids=[999])   # 同场地同时段 + 设备不存在
+    r = await _call(space_id=1, device_ids=[999])  # 同场地同时段 + 设备不存在
     assert r["conflictType"] == "time_conflict"
 
 
@@ -514,12 +521,12 @@ async def test_duplicate_device_ids_rejected():
 
 async def test_failed_creation_leaves_nothing_behind():
     """§5.5：校验失败必须 ROLLBACK —— 失败的几次调用不能在库里留下任何行。"""
-    await _call()                      # 1 条
+    await _call()  # 1 条
     before = await _count_orders()
 
-    await _call()                                  # 时间冲突
-    await _call(space_id=2, device_ids=[999])      # 设备不存在
-    await _call(space_id=999)                      # 场地不存在
+    await _call()  # 时间冲突
+    await _call(space_id=2, device_ids=[999])  # 设备不存在
+    await _call(space_id=999)  # 场地不存在
 
     assert await _count_orders() == before
 
@@ -534,7 +541,7 @@ def test_lock_is_emitted_on_mysql_and_compiled_away_on_sqlite():
     """
     from sqlalchemy.dialects import mysql, sqlite
 
-    stmt = order_service._lock_space_stmt(1)   # noqa: SLF001 - 冻结期的机械护栏
+    stmt = order_service._lock_space_stmt(1)
 
     mysql_sql = str(stmt.compile(dialect=mysql.dialect()))
     sqlite_sql = str(stmt.compile(dialect=sqlite.dialect()))
@@ -543,6 +550,120 @@ def test_lock_is_emitted_on_mysql_and_compiled_away_on_sqlite():
     assert "FOR UPDATE" not in sqlite_sql, "SQLite 不支持行锁，此处应被方言编译掉"
     # 锁的对象必须是场地行本身，不是整张表、也不是别的表
     assert "space_resource" in mysql_sql
+
+
+def test_device_lock_is_emitted_on_mysql_and_compiled_away_on_sqlite():
+    """`§5.5` 第 2 步的设备侧行锁也必须真的出现在 SQL 里（MySQL 方言下）。
+
+    与场地锁那条同一个理由：SQLite 方言把 `FOR UPDATE` 编译掉，所以「删掉
+    `with_for_update()`」在临时库上照样全绿，而云库上的超卖防护已经没了。
+
+    设备锁漏了比场地锁漏了更隐蔽：同场地的并发还有场地锁兜着，只有**跨场地共用
+    同一台设备**时才超卖 —— 而设备是全局资源（`device_resource` 没有 `space_id`），
+    这种订单在正常使用里就会出现。
+    """
+    from sqlalchemy.dialects import mysql, sqlite
+
+    stmt = order_service._lock_devices_stmt([2, 1])
+
+    mysql_sql = str(stmt.compile(dialect=mysql.dialect()))
+    sqlite_sql = str(stmt.compile(dialect=sqlite.dialect()))
+
+    assert "FOR UPDATE" in mysql_sql, "§5.5 第 2b 步的设备行锁丢了吗？"
+    assert "FOR UPDATE" not in sqlite_sql, "SQLite 不支持行锁，此处应被方言编译掉"
+    assert "device_resource" in mysql_sql
+    # 加锁顺序必须确定：两个事务若按各自顺序锁同一组设备行，会互相等对方手里的锁
+    # → 死锁。编译出来是 `ORDER BY device_resource.id`（主键升序 = 加锁顺序）。
+    assert "ORDER BY device_resource.id" in mysql_sql
+
+
+async def test_row_locks_are_taken_before_any_non_locking_read():
+    """两条行锁都必须排在事务里的**第一处非加锁读**之前 —— 这才是防超卖的关键。
+
+    完整推演见 `_lock_devices_stmt` 的 docstring：云库是 InnoDB 默认的
+    `REPEATABLE READ`，非加锁 SELECT 读的是「本事务第一条非加锁读」时定下的读视图，
+    只有 `FOR UPDATE` 读最新已提交版本。于是设备行锁**排到第 4 步校验时才加是不够
+    的**：那时 `db.get(SysUser, ...)` 与 `_time_conflicts` 已经把读视图钉死在对方
+    提交之前，等锁等到了也不会刷新视图，随后数出来的重叠单还是旧值 —— 锁白加、
+    照旧超卖。
+
+    场地锁同理，而且更脆：它**今天就靠这条纪律**才对（`_time_conflicts` 也是
+    「锁 A 行、查 B 表」，场地行锁并不锁 `reserve_order` 的时段范围）。日后谁在
+    场地锁之前插一句非加锁读（哪怕只是查一次配置），同场地的时段冲突就会一起失效
+    —— 而所有用例跑在 SQLite 上，**照样全绿**。所以这条断言覆盖两条锁。
+
+    钉的是**语句顺序**：`space_resource` → `device_resource` → `sys_user`。
+    SQLite 把 `FOR UPDATE` 编译掉了，但**语句顺序不受方言影响**，所以这条断言在
+    临时库上是真实有效的，保护的是唯一能在离线环境里守住的那条性质。
+    """
+    from sqlalchemy import event
+
+    from app.core.database import async_engine
+
+    seen: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        seen.append(statement)
+
+    event.listen(async_engine.sync_engine, "before_cursor_execute", _record)
+    try:
+        r = await _call(device_ids=[1])
+    finally:
+        event.remove(async_engine.sync_engine, "before_cursor_execute", _record)
+    assert r["ok"] is True
+
+    def _first(table: str) -> int:
+        for i, sql in enumerate(seen):
+            if f"FROM {table}" in sql:
+                return i
+        raise AssertionError(f"这次创建里没有读到 {table} 的语句：{seen}")
+
+    space, device, user = (
+        _first("space_resource"),
+        _first("device_resource"),
+        _first("sys_user"),
+    )
+    assert device < user, (
+        "设备行锁排到非加锁读之后了 —— 在云库上等于没加锁（见 _lock_devices_stmt）"
+    )
+    assert space < device, "场地锁必须排在设备锁之前，否则加锁顺序不定会死锁"
+    assert space < user, (
+        "场地锁排到非加锁读之后了 —— `_time_conflicts` 是「锁 A 行、查 B 表」，"
+        "场地行锁并不锁 reserve_order 的时段范围，它今天就靠这条顺序才对"
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "SQLite 上验证不了设备行锁：方言把 FOR UPDATE 编译掉，且 pysqlite 默认不为 "
+        "SELECT 开启事务（不持有读锁），三个协程因此都读到「还差一个名额」→ 3 单全成。"
+        "这不是实现没修，是本测试环境的已知边界（tests/conftest.py 已写明行锁与"
+        "事务并发无法在此验证）。在云库（MySQL/InnoDB）上跑：若它通过，strict 会把"
+        "XPASS 变成 FAILED —— 那就是该删掉本标记的信号。"
+    ),
+)
+async def test_concurrent_device_creation_does_not_oversell():
+    """3 个协程跨场地抢同一台 `available_count=2` 的设备：应恰好 2 单成功。
+
+    对应模块 4 的 AGENT-C-01/02 第 2、5、7 条判据（容量 2 台时两单都成功）。
+    刻意**跨三个场地**：同场地还有场地行锁兜着，串不到设备这一维；设备是全局资源，
+    只有跨场地才会暴露「设备维度没有任何串行化」。
+    """
+    device_id = await _add_device(device_name="共享投影仪", total_count=2, available_count=2)
+    spaces = [await _add_space(space_name=f"并发场地{i}") for i in range(3)]
+
+    async def _one(space_id: int):
+        return await _call(
+            space_id=space_id,
+            start_time=time_str(5, 9),
+            end_time=time_str(5, 10),
+            device_ids=[device_id],
+        )
+
+    results = await asyncio.gather(*[_one(s) for s in spaces])
+
+    assert sum(1 for r in results if r["ok"]) == 2
 
 
 async def test_write_identity_is_never_taken_from_caller_body():
@@ -564,9 +685,7 @@ async def _call_trace(**overrides):
     kwargs = {
         "order_id": 1,
         "user_id": MOCK_USER_ID,
-        "agent_trace": [
-            {"step": 1, "result": "解析需求", "timestamp": "2026-01-01 09:00:00"}
-        ],
+        "agent_trace": [{"step": 1, "result": "解析需求", "timestamp": "2026-01-01 09:00:00"}],
     }
     kwargs.update(overrides)
     return await order_service.update_agent_trace(**kwargs)

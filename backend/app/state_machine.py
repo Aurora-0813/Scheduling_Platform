@@ -7,25 +7,25 @@
         │                │
         └──取消──▶ 3已取消 ◀──取消──┘
 """
+
 from enum import IntEnum
-from typing import Dict, Set
 
 from .core.exceptions import OrderStatusConflictError
 
 
 class OrderStatus(IntEnum):
-    PENDING = 1      # 待确认
-    CONFIRMED = 2    # 已确认
-    CANCELLED = 3    # 已取消
-    COMPLETED = 4    # 已完成
+    PENDING = 1  # 待确认
+    CONFIRMED = 2  # 已确认
+    CANCELLED = 3  # 已取消
+    COMPLETED = 4  # 已完成
 
 
 # 合法流转表：from -> {to ...}
-TRANSITIONS: Dict[int, Set[int]] = {
+TRANSITIONS: dict[int, set[int]] = {
     OrderStatus.PENDING: {OrderStatus.CONFIRMED, OrderStatus.CANCELLED},
     OrderStatus.CONFIRMED: {OrderStatus.COMPLETED, OrderStatus.CANCELLED},
-    OrderStatus.COMPLETED: set(),   # 终态
-    OrderStatus.CANCELLED: set(),   # 终态
+    OrderStatus.COMPLETED: set(),  # 终态
+    OrderStatus.CANCELLED: set(),  # 终态
 }
 
 
@@ -54,10 +54,9 @@ def transition(order, to_status: OrderStatus) -> None:
     order.order_status = int(to_status)
 
 
-def release_occupancy(order) -> None:
-    """释放场地/设备占用（预留 hook）。
-
-    取消「已确认」预约时触发；真实占用管理接入后在此实现通知/释放逻辑。
-    """
-    # TODO: 通知资源模块释放场地/设备占用
-    pass  # pragma: no cover - 预留 hook，当前为空实现
+# 这里原先有一个 `release_occupancy(order)` 空 hook（取消「已确认」单时调用，函数体是
+# `pass`），2026-09-28 删除。理由：占用口径是「用时推导、不扣减」——
+# `available_count` 只读不写，剩余量按 `ACTIVE_ORDER_STATUSES` 现算，取消单离开该集合
+# 即自动释放，**没有可回补的东西**。函数名暗示的「释放占用」在新口径下没有语义，
+# 留着反而危险：将来真有人往里写 `available_count += 1`，就同时破坏了「只读不写」
+# 和「不产生第二份真值」两条。判据见 `docs/available_count口径判据.md`。

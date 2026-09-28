@@ -11,6 +11,7 @@
   认证层只回答「你是谁」，回答不了「这单是不是你的」——只注入身份而不比对，
   等于任何人拿到别人的 orderId 就能读、能确认、能取消。越权一律 404，不泄露存在性。
 """
+
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,7 +36,6 @@ from ..services.message_service import create_message
 from ..state_machine import (
     OrderStatus,
     can_transition,
-    release_occupancy,
     transition,
 )
 from .deps import CurrentUser, get_current_user
@@ -69,8 +69,8 @@ def _order_out(o: ReserveOrder) -> dict:
 #: `_STATUS_MESSAGES` 把 detail 覆盖成通用文案（`预约不存在` -> `接口或资源不存在`），
 #: 前端拿不到具体原因。
 _CONFLICT_ERRORS: dict[str, type[BizError]] = {
-    "invalid_param": ParamInvalidError,        # 400 / 40001
-    "time_conflict": ResourceConflictError,    # 409 / 40901
+    "invalid_param": ParamInvalidError,  # 400 / 40001
+    "time_conflict": ResourceConflictError,  # 409 / 40901
     "device_conflict": ResourceConflictError,  # 409 / 40901
 }
 
@@ -78,8 +78,8 @@ _CONFLICT_ERRORS: dict[str, type[BizError]] = {
 #: 业务码不同（40401 用户 / 40402 场地 / 40403 设备 / 40404 订单），
 #: 前端据此决定提示语与跳转，所以不能在路由层拍平成同一个 404。
 _NOT_FOUND_ERRORS: dict[str, type[BizError]] = {
-    "user": UserNotFoundError,      # 404 / 40401
-    "space": SpaceNotFoundError,    # 404 / 40402
+    "user": UserNotFoundError,  # 404 / 40401
+    "space": SpaceNotFoundError,  # 404 / 40402
     "device": DeviceNotFoundError,  # 404 / 40403
 }
 
@@ -239,16 +239,19 @@ async def cancel_order(
     current: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """取消预约（契约）。仅限本人的单；取消「已确认」单时释放占用（§5.3 模块3）。"""
+    """取消预约（契约）。仅限本人的单。
+
+    **取消不需要「释放占用」这一步**：占用口径是用时推导（`available_count`
+    只读不写，剩余量按 `ACTIVE_ORDER_STATUSES` 现算），取消单离开该集合即自动
+    释放，没有可回补的东西。原先这里调过一个空 hook `release_occupancy`，
+    2026-09-28 已连函数一起删除，理由见 `app/state_machine.py` 的注释。
+    """
     order = await _get_owned_order(db, orderId, current.id)
 
-    was_confirmed = order.order_status == OrderStatus.CONFIRMED.value
     if not can_transition(order.order_status, OrderStatus.CANCELLED):
         raise OrderStatusConflictError("当前状态不允许取消")
 
     transition(order, OrderStatus.CANCELLED)
-    if was_confirmed:
-        release_occupancy(order)  # 释放场地/设备占用（预留 hook）
     await db.commit()
     await db.refresh(order)
 
