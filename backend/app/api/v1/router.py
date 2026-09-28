@@ -1,35 +1,17 @@
-"""
-v1 聚合路由
+"""模块 7 的聚合路由。
 
-各业务模块把自己的路由挂到这里，最终统一以 /api/v1 前缀暴露。
+⚠️ 本文件不含 /health。健康检查由 app/main.py 统一提供（/api/v1/health）。
+   此处原有一份同名路由，合并时已删除，避免「后注册者静默覆盖先注册者」。
 """
-from __future__ import annotations
-
 from fastapi import APIRouter
 
 from app.api.v1.conflict import router as conflict_router
 from app.api.v1.notify import router as notify_router
-from app.core.config import settings
-from app.core.response import ApiResponse, ok
 
 api_router = APIRouter()
-api_router.include_router(conflict_router)
-api_router.include_router(notify_router)
+api_router.include_router(conflict_router)   # → /conflicts/*
+api_router.include_router(notify_router)     # → /notify/*
 
-
-@api_router.get(
-    "/health",
-    response_model=ApiResponse[dict],
-    summary="健康检查",
-    tags=["系统"],
-)
-async def health() -> ApiResponse[dict]:
-    """供部署自检与前端联通性检查使用"""
-    return ok(
-        {
-            "status": "ok",
-            "app": settings.APP_NAME,
-            "env": settings.APP_ENV,
-            "aiEnabled": settings.AI_ENABLED,
-        }
-    )
+# ---- 已删除：@api_router.get("/health", response_model=ApiResponse[dict], ...) ----
+#   该路由原先还 import 了 ApiResponse 与 settings（两者只被它使用），
+#   删除路由后这两个 import 一并去掉，避免留下未使用的 import。
