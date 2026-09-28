@@ -75,7 +75,7 @@ async def generate_notification(
     - 数据库里有的事实以库为准，请求载荷不能覆盖
     """
     tone = resolve_tone(payload.notify_type)
-    requester_role = role_key_for(user.role_name)
+    requester_role = role_key_for(user.role)
     order_id = extract_order_id(payload.order_info)
 
     # 段1：短事务读订单与收件人
@@ -116,7 +116,7 @@ async def generate_notification(
             Recipient(
                 user_id=user.user_id,
                 username=user.username or f"用户#{user.user_id}",
-                role_name=user.role_name,
+                role_name=user.role,
                 role_key=requester_role,
             )
         )

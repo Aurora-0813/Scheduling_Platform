@@ -13,6 +13,7 @@ FastAPI 依赖注入模块
 
 本文件当前提供的能力：
     get_current_user() —— 从 Authorization: Bearer {token} 解析出当前用户
+    get_llm()          —— 文本 LLM（通知 / 抽取链）；视觉 LLM 见 app/core/llm.py
     注意：这里**只做 Token 解析**，不做「查库确认用户状态」「角色权限校验」，
          那些属于集成组的完整实现（模块 9）。
 """
@@ -20,7 +21,9 @@ from dataclasses import dataclass
 
 import jwt
 from fastapi import Header
+from langchain_core.language_models import BaseChatModel
 
+from app.agent.chains.llm import build_llm
 from app.core.config import settings
 from app.core.exceptions import AuthError
 
@@ -104,11 +107,30 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
     except (TypeError, ValueError):
         user_id = None
 
+    # ⚠️ 这一句是主干明确的拒绝分支，绝不能省：省掉它等于放行
+    #    「签名合法但没有用户标识」的凭证 —— 比「无 token 放行」更隐蔽。
     if user_id is None:
         raise AuthError("身份凭证缺少用户标识，请重新登录")
 
+    # ---- 4. 角色字段：入站兼容 role / roleName / role_name，出站统一为 role ----
+    #    兼容不是保险而是硬需求：tests/api/conftest.py:31 签发的就是 "roleName"，
+    #    若只读 payload.get("role") 会得到 None，tests/api/test_notify_api.py
+    #    的 role_key 断言（ROLE_OWNER / ROLE_RESOURCE_ADMIN）会失败。
+    role = payload.get("role") or payload.get("roleName") or payload.get("role_name")
+
     return CurrentUser(
         user_id=user_id,
-        username=payload.get("username"),
-        role=payload.get("role"),
+        username=payload.get("username"),      # 主干原文；刻意不加 `or ""`，那是行为变化
+        role=str(role) if role else None,
     )
+
+
+async def get_llm() -> BaseChatModel:
+    """模块 7 注入用：文本 LLM（通知 / 抽取链）。视觉 LLM 见 app/core/llm.py。"""
+    return build_llm()
+
+
+# ⚠️ feat 的 __all__ 里有 "get_db"，但实测全仓【0 处】从本模块 import get_db，
+#    且主干版 deps.py 既不 import 也不定义 get_db —— 故此处不带 get_db，
+#    避免引入一个无人使用的 re-export（模块 docstring 亦只列两个能力）。
+__all__ = ["CurrentUser", "get_current_user", "get_llm"]
