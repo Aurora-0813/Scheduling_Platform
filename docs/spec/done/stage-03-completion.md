@@ -215,7 +215,7 @@ create_order —— 9 条路径（★ 为 §5.5 口径争议的关键证据）
 | 4 | **`conflictType` 五个取值枚举、`conflictDetail` 类型**（暂定 object） | 待确认 | 前端屏 3 要按 `conflictDetail` 渲染；契约全文（`docs/api.md` 模块 3 小节）**尚不存在**，`接口文档` 里模块 3 仍在待补充表 | 蔡玉礼 | 阶段 6 前 |
 | 5 | **`update_agent_trace(order_id, trace)` 之类的 service 函数缺失**——`agent_trace` 在 `create_order` 被调用的时刻**注定残缺**（Agent 运行未结束），完整 trace 只有跑完才存在；而 Tool 不能直接改库（主文档 4.3），只能走 service 层。该函数不在冻结签名里 | 阻塞 | **不补则阶段 5 组装 trace 落库时必然撞上** | 蔡玉礼 | 阶段 5 前 |
 | 6 | 4 个桩 + `__init__.py` **尚未入库** | 流程 | 分支未定；阶段 4 若从 `main` 起手会拿不到桩 | 徐川 | 阶段 4 开始前 |
-| 7 | **未决 #4：`space_resource` 是否补 `tags` 字段** | 待确认 | 4.4 模块 5 的 AI 标签推荐成空转；场景检索精度不足。实测 `SELECT * FROM space_resource` **无 `tags` 列**（字段为 id/space_name/space_type/capacity/location/budget/open_start_time/open_end_time/status） | 杨睿坤 + 集成组 | 阶段 4 前 |
+| 7 | **未决 #4：`space_resource` 是否补 `tags` 字段** | **已裁定（2026-09-28）：不补列，改文档降级** | A（补 `tags` 列）**不做**——DDL 变更须经集成组，本轮不排，且「标签」只是 4.4 模块 5 的 AI 触点说明，不是任何验收项的判据；B（文档降级）**已执行**：`docs/开发流程.md:295-297` 已改为三行 ⚠️ 降级说明。实测依据：`app/models/` 与 `alembic/versions/` 里 `tags` 0 命中，经 3308 隧道查开发库 10 张表 `COLUMN_NAME LIKE '%tag%'` 命中 0 条。**登记为硬卡点 #14（已闭环）**，见 `README.md` | 徐川（已完成）；A 如需重启归集成组 | 已闭环（2026-09-28） |
 | 8 | **未决 #6：`notify_type` 中文枚举与 INT 字典不一致**，「延期致歉」不在字典内 | 待确认 | 通知落库类型映射错误。桩已以「延期致歉 → `None`」显式暴露，**不猜一个数字顶上** | 黄嵩 + 集成组 | 阶段 4 `generate_notification` 前 |
 
 **第 1、2、5 条为阻塞项，已同步项目群。** 第 3、4 条为需蔡玉礼拍板的口径问题（见 `order_service.py` docstring「待蔡玉礼确认」4 条）。
@@ -236,7 +236,7 @@ create_order —— 9 条路径（★ 为 §5.5 口径争议的关键证据）
 | --- | --- | --- | --- |
 | 1 | `lock_resources` 的 `user_id` 如何传入 | **是** | 蔡玉礼 2026-09-27 把 `user_id` 正式写进 `create_order` 签名，由 Agent 调用上下文注入；Tool 签名（§5.3）不含 `user_id`，保持不变。长期挂账的未决 #1 就此闭环 |
 | 2 | `TraceStep` 是否含 `thought`/`action`/`actionInput`/`observation` | 否 | 前端书面回执仍未来。已按 `app/schemas/agent.py` 自行冻结（E1），风险挂账 |
-| 4 | `space_resource` 是否补 `tags` 字段 | 否 | **本阶段未取得杨睿坤 / 集成组结论**。实测该表无 `tags` 列。阶段文档 §7 要求"本阶段就要问"，未能问到，转入第 6 节第 7 条 |
+| 4 | `space_resource` 是否补 `tags` 字段 | **是（2026-09-28 闭环）** | **裁定：不补列、改文档降级。** 本阶段（阶段 3）未问到结论，转入第 6 节第 7 条挂账；2026-09-28 由本模块推进闭环：`docs/开发流程.md:295-297` 降级说明已落地，实测 `tags` 列在文件与库里都不存在。**登记为硬卡点 #14**（`README.md`）。原先的责任人（杨睿坤 + 集成组）不再需要动作 |
 | 6 | `notify_type`(INT) 与 §5.3 模块 7 中文枚举不一致 | 否 | 桩以「延期致歉 → `None`」显式暴露，待黄嵩 + 集成组拍板 |
 | 3 | 40 秒思考过程回放 vs SSE | 不适用 | 影响阶段 5 → 8，本阶段不涉及 |
 | 5 | SQLite 兜底与"禁止本地数据库"冲突 | 不适用 | 影响阶段 8，本阶段不涉及 |

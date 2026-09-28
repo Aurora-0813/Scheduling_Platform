@@ -75,10 +75,27 @@
 3. **`conftest._db_readonly_guard` 对写库放开**（依赖第 2 条）：它现在拦下一切写语句
    （`WriteForbiddenError`），真实现即便落地，INSERT 也会被这道拦截打死。
 
-断言 4/5 还多第四道：**模块 3 的取消入口 `PUT /api/v1/orders/{orderId}/cancel` 未交付**
-（路径见 `开发流程.md:381`，与 `Permission.ORDER_CANCEL`、`mock.py:93` 的镜像一致）。
-本仓库没有这条真实路由，调用会 404。**不要为了让它过而改成直接改库**——
-测试禁写正式表（主文档 6.8）。
+**〔2026-09-28 更正〕原来记的「第四道锁：模块 3 未交付取消入口」不成立。**
+该路由在 `origin/integrate/module3` 上**存在且可用**（`backend/app/api/orders.py:235`），
+本机实测：建单 → `PUT .../cancel` → HTTP 200，库里 `order_status` 由 1 变 3。
+之前看到的 404 是**本分支**的现象——本分支**没有 `backend/app/api/orders.py` 这个文件**
+（`git show feature/agent-xuchuan:./backend/app/api/orders.py` → not in branch），
+打到一条不存在的路由上，得到的是**框架层 404**。
+
+**区分方法（两种 404 的 HTTP 状态码相同，只能看业务码）**：
+
+| 业务码 | 含义 | 什么情况 |
+| --- | --- | --- |
+| `40400` | 接口或资源不存在 | 路由**没注册**（框架层） |
+| `40404` | 预约不存在 | 路由在，业务层 `_get_owned_order` 查不到单（越权也走这条，不泄露存在性） |
+
+**路由没注册的话，业务码不会是 `40404`。** 这是判「路由到底在不在」的唯一可靠手段。
+另一条实测（同样是 2026-09-28）：`orderId` 传 `None`（桩期「orderId 恒 None」的形状）
+**不是 404**，而是 **HTTP 400 + `40001`「参数校验未通过」**——路径参数声明成 `int`，
+`None` 过不了校验；`40404` 只由**格式合法但不存在的 orderId** 产生。
+
+本分支上断言 4/5 仍会红（要等模块 3 的订单 API 合入本分支），但**不要为了让它过而改成
+直接改库**——测试禁写正式表（主文档 6.8），那样验的是测试自己而不是实现。
 
 在此之前，**不得声称 `AGENT-C-01` / `AGENT-C-02` 已通过**——阶段 7 的通过标准里有它们。
 口径全文见 `docs/spec/done/README.md` 的《附录：`available_count` 口径》与 `docs/test.md` §3.5。
@@ -122,7 +139,8 @@ _XFAIL_REASON = (
     "不按「时段重叠」计数），_device_conflicts 尚未改成计数比较；"
     "② smart_scheduler_test 无权访问（1044，申云飞），用例只能连开发库；"
     "③ conftest._db_readonly_guard 据此拦下一切写语句，桩落库必然 WriteForbiddenError。"
-    "（断言 4/5 另需模块 3 的 PUT /api/v1/orders/{orderId}/cancel。）"
+    "（断言 4/5 另需模块 3 的订单 API 合入本分支——路由本身已在 integrate/module3 上可用，"
+    "原先记的「模块 3 未交付」已于 2026-09-28 更正，见模块 docstring。）"
     "三处到位后本用例应转为通过并摘掉本标记。"
 )
 
@@ -176,9 +194,14 @@ async def _cancel(client, order_id: int, auth: dict[str, str]):
 
     该路径取自 `开发流程.md:381` 的冻结接口清单，与 `Permission.ORDER_CANCEL`、
     `app/api/v1/mock.py:93` 的 mock 镜像一致——**不是我现编的**。
-    本仓库当前没有这条真实路由（模块 3 未交付），调用会 404；**这是断言 4 现在
-    必然失败的原因之一，不要为了让它过而改成直接 `UPDATE reserve_order`**
-    （测试禁写正式表，主文档 6.8，且那样验的是测试自己而不是实现）。
+
+    〔2026-09-28 更正〕这条路由在 `origin/integrate/module3` 上**存在且能用**
+    （`backend/app/api/orders.py:235`；实测建单→取消 HTTP 200、库里状态 1→3）。
+    **本分支**之所以调不通，是因为本分支**没有 `backend/app/api/orders.py` 这个文件**
+    （模块 3 的 API 尚未合入），404 的业务码是**框架层的 `40400`**，不是 `40404`。
+    两种 404 的 HTTP 状态码一样，判别看业务码，详见模块 docstring 的表。
+    **不要为了让它过而改成直接 `UPDATE reserve_order`**（测试禁写正式表，主文档 6.8，
+    且那样验的是测试自己而不是实现）。
     """
     return await client.put(f"/api/v1/orders/{order_id}/cancel", headers=auth)
 
@@ -248,7 +271,10 @@ async def test_assert_1_first_order_on_free_slot_succeeds_and_is_persisted(dev_d
 async def test_assert_2_second_order_same_device_same_slot_succeeds_at_capacity() -> None:
     """**断言 2**：已有 1 单占用 T，建第 2 单**同设备**同 T → 成功（`2 ≤ cap`）。
 
-    「同设备」才能占满容量，所以两单必须落在不同场地（见 `_seed_two_orders_...` 的说明）。
+    「同设备」才能占满容量，所以两单必须落在**不同场地**（本用例 space 6 → space 7）。
+    ⚠️ 这条约束不是可选写法：`create_order` 的 §5.5 第 2 步**先查场地时段重叠**，
+    同场地同 T 的第 2 单会先撞 `CONFLICT_TIME`，那时红的是**场地冲突**，验不到设备容量。
+    2026-09-28 已在 `origin/integrate/module3` 的真实现上复验过这一点。
     这一条把「cap = 2 是**上限**而不是独占」钉住：写成独占（第 2 单就拒）会在这里红。
     """
     first = await _lock(_SPACES[0], *_SLOT, user_id=1, device_ids=[_DEV_CAP2])
@@ -325,7 +351,10 @@ async def test_assert_4_cancel_one_of_two_frees_the_device_slot(
 
     resp = await _cancel(dev_client, order_ids[0], auth)
 
-    assert resp.status_code == 200, f"取消接口没通（模块 3 未交付时为 404）：{resp.text}"
+    assert resp.status_code == 200, (
+        "取消接口没通。看业务码区分：`40400` = 本分支没有这条路由（模块 3 的 API 未合入）；"
+        f"`40404` = 路由在但查不到单。响应：{resp.status_code} {resp.text}"
+    )
     assert await _order_status(dev_db_session, order_ids[0]) == 3
 
 
@@ -339,6 +368,10 @@ async def test_assert_5_after_cancel_third_order_succeeds_capacity_is_derived(
     **不需要任何回补代码**。若实现走了「扣减 + 回补」而回补漏了，
     断言 4 可能照样绿，这一条会红——这正是两条要分开写的原因。
 
+    ⚠️ **第 3 单必须落在不同场地**（本用例 space 8；前置两单在 space 6/7）——
+    同场地同 T 会先撞 §5.5 第 2 步的**场地**时段重叠，红的是场地冲突而非设备容量，
+    与断言 2 是同一个坑。2026-09-28 在 `origin/integrate/module3` 的真实现上复验过。
+
     ⚠️ 2026-09-28 修一处**自己埋的坑**（ruff `F821` 报出来的）：本用例下一行要用
     `auth`（`_cancel` 的第 3 个参数），但签名里**漏了这个夹具** —— 于是它每次都死在
     `NameError` 上。因为挂了 `xfail(strict=True)`，NameError 也算「如期失败」，
@@ -347,7 +380,10 @@ async def test_assert_5_after_cancel_third_order_succeeds_capacity_is_derived(
     """
     order_ids = await _seed_two_orders_on_the_same_device()
     resp = await _cancel(dev_client, order_ids[0], auth)
-    assert resp.status_code == 200, f"取消接口没通（模块 3 未交付时为 404）：{resp.text}"
+    assert resp.status_code == 200, (
+        "取消接口没通。看业务码区分：`40400` = 本分支没有这条路由；"
+        f"`40404` = 路由在但查不到单。响应：{resp.status_code} {resp.text}"
+    )
 
     third = await _lock(_SPACES[2], *_SLOT, user_id=3, device_ids=[_DEV_CAP2])
 
@@ -392,6 +428,10 @@ async def test_assert_7_other_device_same_slot_succeeds_capacity_is_per_device()
 
     备用设备 id=7（音响03）的 `available_count` 是 **1** 且 T 内零占用，
     所以它上面只建**一单**——建两单会撞它自己的 cap，那是断言 3 的事，不是本条的。
+
+    ⚠️ 第 3 单同样**必须落在不同场地**（本用例 space 8；前置两单在 space 6/7）：
+    同场地同 T 会先撞 §5.5 第 2 步的**场地**时段重叠（`CONFLICT_TIME`），
+    那样验的是场地而不是「容量按设备各算」。2026-09-28 在真实现上复验过。
     """
     await _seed_two_orders_on_the_same_device()
 

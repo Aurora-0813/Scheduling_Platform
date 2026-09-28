@@ -254,16 +254,82 @@ Required test coverage of 80% reached. Total coverage: 92.29%
    `test_resource_conflict_maps_to_40901_with_http_409` 单独把关（`code == 40901`、
    `http_status == 409`），服务层用例只断言「拒绝」这件事本身。
    **不能拿「反正 40901 存在」当作断言 3 通过。**
-3. **断言 4/5 多一道卡**：取消要调模块 3 的 `PUT /api/v1/orders/{orderId}/cancel`
-   （`docs/开发流程.md:381` 的冻结路径，本仓库无此真实路由）。**不改成直接
-   `UPDATE reserve_order`**——测试禁写正式表（主文档 6.8），改成改库验的就不是实现了。
+3. ~~**断言 4/5 多一道卡**：取消要调模块 3 的 `PUT /api/v1/orders/{orderId}/cancel`
+   （`docs/开发流程.md:381` 的冻结路径，本仓库无此真实路由）。~~
+   **〔2026-09-28 更正，详见 §5.3〕这一条不成立**：该路由在 `integrate/module3` 上
+   **存在且可用**（`backend/app/api/orders.py:235`）。后半句**仍然有效**——**不改成直接
+   `UPDATE reserve_order`**：测试禁写正式表（主文档 6.8），改成改库验的就不是实现了。
 
-**对本阶段结论的影响：无。** §5 的三条前提一条没少，另加第 4 条（取消入口），
+**对本阶段结论的影响：无。** §5 的三条前提一条没少（原记的第 4 条「取消入口」已更正为
+不成立，见 §5.3），
 偏差 5 照旧；§5 末尾「两条 `*_stub_state_...` 用例」现为 1 条（两条合并），
 其中「`available_count` 不变」一句**从桩期现象升格为长期期望**，真实现落地后要保留，
 另两句随 `stub` 键删除。
 已用 `--runxfail` 复核：8 条**都因桩不落库**（`ok=True` 但 `orderId=None`）而失败，
 不是用例自身写错；断言 3b 的输出正好显示桩让 3 单**全成**——正是这段代码要抓的假绿。
+
+### 5.3 补记（2026-09-28 再更）：把 8 条用例跑在**真实现**上 —— 7 条通过
+
+§5.1/§5.2 都还是「实现没到，只能在桩上验」。这一条是**第一次跑在蔡玉礼的真实现上**：
+临时分支 `tmp-verify-c01-02`（= `origin/integrate/module3` @ `1919428`，**用后即删、未推**），
+配一份一次性 SQLite 夹具（顶层 `tests/conftest.py` 已把 `DATABASE_URL` 指向临时库，
+**不碰开发库**），只改一处 import（见下「合并风险 2」）。他分支自带的整套用例在本机
+**全绿**（`exit=0`，无 fail）。
+
+**结果：8 条里 7 条通过。** 唯一红的是
+`test_assert_3b_three_concurrent_orders_on_a_cap_two_device_exactly_two_win`
+——三个协程抢同一台 cap=2 的设备，实测 **3 单全成**（应为恰好 2）。红因分两层，
+**都不能归给 SQLite**：
+
+1. 他唯一的行锁在**场地行**上（`order_service.py:142` 的
+   `SELECT ... FOR UPDATE`，`:504` 同），而 `_check_devices`（`:262`）读
+   `DeviceResource` **不加锁**，`_device_conflicts`（`:195`）是在 Python 里数重叠单。
+   3b 的三单**刻意跨三个不同场地**（同场地会先撞场地冲突），那把场地行锁**串行不到**它们。
+2. 他自带的夹具跑在临时 SQLite 上，`FOR UPDATE` 会被 SQLite 编译掉（他的 conftest 已注明），
+   所以这条在那边**本来就验不了锁**。
+
+**故 3b 的 `xfail` 先不摘**：要让它过，得有设备行锁或等价的串行化。补不补、怎么补由蔡玉礼定——
+本条只如实记录实测，不代替拍板。
+
+**更正：取消入口不是卡点（即上面第 3 条的更正）。** 该路由在 `integrate/module3` 上
+**存在且可用**：本机实测建单 → `PUT .../cancel` → HTTP 200，库里 `order_status` 由 1 变 3
+（`backend/app/api/orders.py:235`）。此前看到的 404 是**本分支没有
+`backend/app/api/orders.py` 这个文件**造成的（`git show feature/agent-xuchuan:./backend/app/api/orders.py`
+→ not in branch）。**两种 404 的 HTTP 状态码相同，只能看业务码区分**：
+
+| 业务码 | 含义 | 什么情况 |
+| --- | --- | --- |
+| `40400` | 接口或资源不存在 | 路由**未注册**（框架层） |
+| `40404` | 预约不存在 | 路由在，业务层 `_get_owned_order` 查不到单（越权同码，不泄露存在性） |
+
+**路由没注册的话，业务码不会是 `40404`。** 另一条实测：`orderId` 传 `None`（桩期
+「orderId 恒 None」的形状）走到的**不是 404**，而是 **HTTP 400 + `40001`「参数校验未通过」**
+（路径参数声明为 `int`）；`40404` 只由**格式合法但不存在的 orderId** 产生。
+
+**§5.2 第 1 条（多单必须落在不同场地）已在真实现上复验**：同场地同时段会先撞 §5.5 第 2 步的
+**场地**时段重叠（`CONFLICT_TIME`），红的是场地冲突而非设备容量。该约束已写进用例注释
+（断言 2/5/7 的 docstring 与模块 docstring）。
+
+**合并风险两条（合回本分支前必须确认）**：
+
+1. **`409` 映射**：`_BUSINESS_ERROR_HTTP_STATUS` 里的 `ErrorCode.RESOURCE_CONFLICT: 409`
+   这条**只在我们分支上**；他分支的表里没有它，故
+   `test_resource_conflict_is_409_on_both_exception_paths` 在他那边红。合并时这条映射必须留住
+   （它是集成侧 2026-09-28 的裁定）。
+2. **`CONFLICT_DEVICE_SHORTAGE` 常量**：我们的用例文件
+   `from app.services.order_service import CONFLICT_DEVICE_SHORTAGE`，而**该常量只在我们分支的
+   `order_service.py` 里**（他分支用的是同值字面量 `"device_conflict"`）。两边不合，
+   这条 import 会在**收集期** `ImportError`，整套用例一条都跑不起来。
+
+### 5.4 补记（同日再更）：`release_occupancy` 裁定「删」
+
+口径既然定为「用时推导、不扣减」，**从不扣减就没有回补需求**；而函数名暗示的「释放占用」
+在新口径下没有语义——留着会误导读代码的人。**查证（`origin/integrate/module3` @ `1919428`）**：
+`app/state_machine.py:57-63` 的函数体**就是 `pass`**（既不回补 `available_count`、也不改状态、
+也不释放锁），唯一调用点是取消「已确认」单时的 `app/api/orders.py:251`，
+`tests/module3/test_orders.py:185/199` 只断言「hook 被调到」。
+**删除动作由蔡玉礼执行**（模块 3 的文件，模块 4 不碰）。全文见
+`docs/spec/contract-alignment.md` §10 与 `docs/spec/done/README.md` 的附录。
 
 ## 6. 偏差与如实登记
 

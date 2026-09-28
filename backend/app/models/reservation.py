@@ -31,6 +31,57 @@ ACTIVE_ORDER_STATUSES: tuple[int, ...] = (
     OrderStatus.CONFIRMED.value,
 )
 
+#: `reserve_order.order_status` 中「占位」的状态（主文档 6.3 表 6）。
+#: 1待确认、2已确认；3已取消与4已完成都不占位。
+#:
+#: ⚠️ 这里取 (1, 2) **比主文档 5.5 第 3 步更严**——5.5 原文写的是
+#: 「该场地在目标时段是否存在**已确认**订单」，字面只覆盖 status=2。
+#: 但 create_order 的 `order_status` 默认值是 1，若真实实现照 5.5 字面只查 status=2，
+#: **Agent 落下的待确认订单就不占位**，并发下会被别人重复预约（模块 7 黄嵩的
+#: 冲突监控也会漏报）。二者必须统一，见 `services/order_service.py` 的
+#: 「待蔡玉礼确认」第 2 条。
+#:
+#: **本常量当前有两处定义**：此处，以及 `services/order_service.py`（模块 3）。
+#: 「哪些状态占位」是 `order_status` 这个字段本身的性质，模块 3 的 `create_order`
+#: 与模块 5 的 `query_spaces`（时段重叠排除）都要用它，而 service 子模块之间不宜
+#: 互相 import（见 `services/__init__.py` 的「叶子」约定），故在两边都能 import 的
+#: 模型层再声明一份。
+#:
+#: 之所以没有直接把 `order_service.py` 那行改成 import 本名来合并成一处：那个文件
+#: 归属模块 3，且当前**不满足 ruff-format**，一旦改动它，pre-commit 的 `ruff-format`
+#: 钩子会连带重排其内多处注释与推导式，给正在改它的同学制造无关冲突。故两份并存，
+#: 由 `tests/test_space_service.py::test_occupying_status_matches_order_service`
+#: 断言相等 —— 靠测试防漂移，不靠注释。
+#:
+#: ⚠️ **合入 `main` 时本常量要整体删掉**，改用蔡玉礼分支
+#: （`origin/feat/module3-caiyuli`）**同一文件**里的 `ACTIVE_ORDER_STATUSES` ——
+#: 那边已把收敛做完了，取值引 `app.state_machine.OrderStatus.PENDING/CONFIRMED`，
+#: 比这里的字面量好，且他的注释已声明那是唯一真值、供 `order_service` /
+#: `api/conflicts.py`（模块 7）/ `api/agent.py` 共用。
+#:
+#: ⚠️ 但**别「直接取他的版本」**——实测（2026-09-28）他那版 `reservation.py` 里
+#: `__table_args__` / `Index(` / `idx_` 的出现次数**都是 0**：四条索引声明
+#: （`idx_user_id` / `idx_space_time` / `idx_status` / `idx_status_start`）一条没有，
+#: 他分支上也没有建这些索引的迁移。而 `main` 上四条俱在（`idx_status_start` 见迁移
+#: `b7f1c4a92e35`），且本文件在 `main` 与徐川分支上**逐字节一致** —— 可见那是集成组
+#: 后加的、他的分支较旧。盲取他的版本 = 静默丢掉四条索引声明：库里的索引还在
+#: （迁移建的），但模型不再声明，`alembic autogenerate` 会反过来提议 **DROP** 它们。
+#:
+#: 故本文件的冲突要**三方合并**，最终须同时含：
+#:   · 他的：`ACTIVE_ORDER_STATUSES`（引 `app.state_machine.OrderStatus`）、`PK_TYPE`
+#:     主键、`device_ids` / `agent_trace` 的 `Mapped[list | None]` 标注（他把 `dict`
+#:     改成 `list` 有理由：模块 8 看板要按它反推设备占用率）；
+#:   · `main` 的：四条 `Index(...)` 与 `idx_status_start` 那段注释；
+#:   · 删掉本段注释与 `OCCUPYING_STATUS`。
+#:
+#: 另需改三处引用：① `services/space_service.py` 的 import 与 `in_()` 用名；
+#: ② `tests/test_space_service.py` 的 import 与护栏用例（改为比 `ACTIVE_ORDER_STATUSES`）；
+#: ③ 本常量自身（连带本段注释）。
+#:
+#: 这里**故意保持字面量、且不与他的常量同名**：同名会让冲突从「两个常量取哪个」
+#: 退化成「同一个名字两份定义」，反而更难判。故不预先改名，只在合并时收敛。
+OCCUPYING_STATUS = (1, 2)
+
 
 class ReserveOrder(Base):
     """预约订单表"""

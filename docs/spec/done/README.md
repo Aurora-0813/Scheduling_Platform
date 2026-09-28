@@ -60,7 +60,7 @@
 | **11** | ~~`AGENT_TIMEOUT` 默认 30 秒，真冒烟实测余量不足（2026-09-28 登记）~~ → **已裁定并已执行：30 → 60（2026-09-28）** | **低优先、非阻塞（演示前处理）→ 本轮已处理。** 本模块 `app/core/config.py:189` 的默认值已由 `30.0` 改为 **`60.0`**，`.env.example:216` 由 `30` 改为 **`60`**，本机 `backend/.env` 已补 `AGENT_TIMEOUT=60`（该文件未跟踪、不入库）；实测 `settings.AGENT_TIMEOUT = 60.0`、`LLM_TIMEOUT = 60`（两者同值）。**改前的记录照录**：**本地 `.env` 未设该键**，所以本次真冒烟跑的就是这个 30 秒默认值——场景 A 实测 `latency_ms=29845`，**余量仅 155 ms**。<br>**为什么危险**：真实耗时几乎全在网络与模型排队，超时后走的是**降级路径**（`builder.py:398` 的 `asyncio.wait_for` → `_degrade(..., "timeout")`），返回 `200` + 友好提示并保留已收集的 trace。接口层**看不出异常**，现场只会发现「方案没出来」，而成功率/告警都不响。<br>**建议**：演示环境 `AGENT_TIMEOUT=60`。**改哪几处待裁定**：① `config.py` 默认值（本模块自有文件）② `backend/.env.example:216`（本模块的「Agent 运行参数」段，该文件最近两次修改均为本模块 `xuchuan`）③ 本地 `.env`（不入库，需演示机各自加）。<br>**⚠️ 改之前要知道的两件事**：<br>① 这个值**同时**喂两处——`ChatOpenAI(timeout=)` 的**单次请求**超时（`builder.py:96`）与 `run_schedule` 的**整体**超时（`builder.py:398`），`config.py:184-189` 的注释写明「整体超时必须不小于单次，否则模型还在正常生成、外层先把协程掐了」。30→60 是两者同抬，方向安全；但 `LLM_MAX_RETRIES=1` 之下，「单次 60 / 整体 60」意味着**一次慢请求就能吃满全部预算**、模型没第二次机会。若要更稳，组合应是「整体 90 / 单次 60」，那需要把这一个键**拆成两个**（本模块可做，但属接口变更，待裁定）。<br>② **「30 是否正式版默认」的核查结论：目前不成立。** `origin/main` 上模块 4 的实现**尚未并入**（只有 `app/agent/` 的空骨架：`__init__.py` × 3 + `prompts/image_prompt.py`），`git grep AGENT_TIMEOUT origin/main` 只命中 `docs/api.md:134` 一句文档描述，`config.py` 与 `.env.example` 里都没有这个键。**并入 `main` 之后，本处的 30.0 才会成为正式版默认**——按这个口径记为本条卡点。 <br>**2026-09-28 已执行（三项）**：① `config.py` 默认值 → `60.0`（并把「为何上调」写进注释）② `.env.example` → `60`（注释附 155 ms 的实测依据）③ 本机 `.env` → 追加 `AGENT_TIMEOUT=60`。**未采用**「拆成两个键（整体 90 / 单次 60）」的方案——属接口变更，留作后续选项（见下方「⚠️ 改之前要知道的两件事」①）。**回归**：`pytest` 全套 `521 passed / 4 deselected / 8 xfailed`（改后复跑），无用例依赖该默认值（两条相关用例用 `monkeypatch` 设为 0.05） | 徐川（**已完成**，2026-09-28） |
 
 | **12** | ~~`generate_notification` 归属分叉：黄嵩侧另给过一份 `(order_id, notify_type, reason) -> str` 的冲突签名，且"交付 Tool 还是 service"未澄清（阶段 3 的 E2）~~ → **已裁定：选 A（唯一与主文档一致）（2026-09-28 黄嵩核对主文档后确认），本项闭环** | **裁定内容**：**Tool 层归模块 4**（按主文档 5.3 的**冻结签名**，`app/agent/tools/generate_notification.py` 留在本模块）；**模块 7 的 service 层保留**（`app/services/notify_service.py` 的桩由黄嵩真实实现替换，**只换函数体、签名不动**）；黄嵩的 `notify_tools.py` **不挂进 `AGENT_TOOLS`**。<br>**本模块零代码变更**（2026-09-28 实测）：`AGENT_TOOLS` 仍是 **5 个**（`query_spaces` / `query_devices` / `lock_resources` / `generate_notification` / `submit_plan`），`app/agent/tools/` 下无 `notify_tools.py`，`generate_notification(order_info: OrderInfo) -> dict` 签名未动。<br>**为什么选 A**：5.3 已冻结 Tool 签名，且模块 3 / 5 / 7 走的是同一个形状——「模块 4 定 Tool 签名、对方实现 service」；改由模块 7 提供通知 Tool 会让工具清单与 5.3 分叉，**「谁在何时把通知落库」出现两套**。通知 Tool 的入参是 `OrderInfo`（含 `orderId`），其触发时机是 Agent 决策链的一环，留在本模块才谈得上「一轮内锁单 → 通知」这个顺序。<br>**注意**：裁定是**口径**层面的，黄嵩的**书面回执仍缺**（阶段 8 交接清单第 3 项）<br>**2026-09-28 黄嵩复核后的两条补充（全文见 `docs/spec/contract-alignment.md` §8.1）**：① **选 A 是唯一与主文档一致的方案** —— 他核对了主文档 5.3 模块 4 的原文，`docs/开发流程.md:391` 写的就是 `generate_notification(order_info)`（`-` 之后的那一条），与 Tool 层冻结签名**逐字相同**；B 方案的 `(order_id, notify_type, reason) -> str` 在主文档里**没有任何出处**。② **更正他上一轮「模块 7 单方面冻结」的说法** —— 那条结论来自一次**漏检**：`git grep` 在 `core.quotepath` 默认 `true` 时会把中文路径**转义**成八进制串（`"docs/\345\274\200\345\217\221\346\265\201\347\250\213.md"`），扫结果时认不出是哪个文件，`开发流程.md` 于是被当成「没提过这件事」；复现见 §8.1 | 黄嵩（确认，**已完成**）+ 徐川（登记） |
-| **13** | **`notify_type` 映射：「延期致歉」在 6.3 的 INT 字典（1 预约提醒 / 2 变更致歉 / 3 故障告警）内无对应值（未决 #6）** | **已裁定：不扩字典（2026-09-28，黄嵩）**，`延期致歉` 映射到既有值 **2（变更致歉）**。模块 7 已按此实现（`notify_templates.py` 的 `ToneSpec(key="延期致歉", notify_type=2)`）并有落库断言 `notify_type == 2`。<br>**本分支的状态**：`app/services/notify_service.py` **仍是桩**，该类型仍返回 `ok=False` + 原因说明——**这是预期状态**，桩就是按「字典外取值一律失败并说明原因」设计的；**改它没有意义**（service 未替换，改成映射 2 是与未落地实现对齐）。等模块 7 落 `main`、service 层映射生效后**自然消解**。<br>**待办（模块 4 侧）**：届时把 `backend/tests/test_agent_tools.py` 里 `test_generate_notification_unmapped_type_fails_closed` 的 `assert result["ok"] is False` 改为断言 **Tool 返回值** `result["notifyType"] == 2`（键名是**驼峰 `notifyType`**，不是 DB 列名 `notify_type`），用例名与 docstring 一并改<br>⚠️ **同时要核一个契约点**：本模块 Tool 用 `result.get("notifyType")` 从 service 返回值取值（`backend/app/agent/tools/generate_notification.py:71`）。若模块 7 的真实 service 返回 `notify_type`（与其 DB 列同名），这里会**静默拿到 `None`** —— `ok=True` 但 `title`/`content` 为 `None`，不报错，模型只看到空文案。模块 7 落 `main` 时需连同键名一并核<br>**2026-09-28 黄嵩确认补充（全文见 `contract-alignment.md` §8.2）**：主文档 5.3 模块 7 的端点原文是 `POST /api/v1/notify/generate`：`{ "type": "延期致歉", "orderInfo": {} }` → `{ "title": "...", "content": "..." }`（`docs/开发流程.md:409`）——**入参用中文枚举、响应体不含 `notify_type`**，故「延期致歉 → 2」的 INT 取值是**模块 7 的纯内部存储**，不对外构成契约，两端无需在此对齐字段 | 黄嵩（裁定 + 实现，**已完成**）+ 集成组（落 `main`，待）+ 徐川（用例期望值同步，待） |
+| **13** | **`notify_type` 映射：「延期致歉」在 6.3 的 INT 字典（1 预约提醒 / 2 变更致歉 / 3 故障告警）内无对应值（未决 #6）** | **已裁定：不扩字典（2026-09-28，黄嵩）**，`延期致歉` 映射到既有值 **2（变更致歉）**。模块 7 已按此实现（`notify_templates.py` 的 `ToneSpec(key="延期致歉", notify_type=2)`）并有落库断言 `notify_type == 2`。<br>**本分支的状态**：`app/services/notify_service.py` **仍是桩**，该类型仍返回 `ok=False` + 原因说明——**这是预期状态**，桩就是按「字典外取值一律失败并说明原因」设计的；**改它没有意义**（service 未替换，改成映射 2 是与未落地实现对齐）。等模块 7 落 `main`、service 层映射生效后**自然消解**。<br>**待办（模块 4 侧）**：**位置实测 `backend/tests/test_agent_tools.py:459`**（2026-09-28 更正：此前流传的 `:399-405` **有误** —— `:397` 是 `test_lock_resources_free_slot_passes_validation`，`:399-405` 落在它体内、断言的是 `ok is True`，与通知无关；**文档里原先根本没有行号引用**，这几行只出现在消息往来里，故这里补上准确位置）。届时把 `backend/tests/test_agent_tools.py` 里 `test_generate_notification_unmapped_type_fails_closed` 的 `assert result["ok"] is False` 改为断言 **Tool 返回值** `result["notifyType"] == 2`（键名是**驼峰 `notifyType`**，不是 DB 列名 `notify_type`），用例名与 docstring 一并改（**2026-09-28 已在本用例 docstring 里加 TODO 注释**）<br>⚠️ **同时要核一个契约点**：本模块 Tool 用 `result.get("notifyType")` 从 service 返回值取值（`backend/app/agent/tools/generate_notification.py:71`）。若模块 7 的真实 service 返回 `notify_type`（与其 DB 列同名），这里会**静默拿到 `None`** —— `ok=True` 但 `title`/`content` 为 `None`，不报错，模型只看到空文案。模块 7 落 `main` 时需连同键名一并核<br>**2026-09-28 黄嵩确认补充（全文见 `contract-alignment.md` §8.2）**：主文档 5.3 模块 7 的端点原文是 `POST /api/v1/notify/generate`：`{ "type": "延期致歉", "orderInfo": {} }` → `{ "title": "...", "content": "..." }`（`docs/开发流程.md:409`）——**入参用中文枚举、响应体不含 `notify_type`**，故「延期致歉 → 2」的 INT 取值是**模块 7 的纯内部存储**，不对外构成契约，两端无需在此对齐字段 | 黄嵩（裁定 + 实现，**已完成**）+ 集成组（落 `main`，待）+ 徐川（用例期望值同步，待） |
 | **14** | **主文档 4.4「模块 5：资源与设备管理」第 3 条「标签用于 Agent 检索时过滤」无实现落点** —— `space_resource` / `device_resource` **无 `tags` 列**，模块 4 的 `query_spaces` / `query_devices` **无按标签过滤的入参** | **已裁定（2026-09-28）：A 补列不做、B 文档降级已执行。**<br>**A（补 `tags` 列）不做**：DDL 变更须经集成组，本轮不排；且「标签」在 4.4 里只是模块 5 的 AI 触点说明，不是任何验收项的判据。<br>**B（文档降级）已执行**：`docs/开发流程.md:296` 原为 `- 标签用于 Agent 检索时过滤`，已改为带 ⚠️ 的**三行降级说明**（本条已降级 / 本轮不落库、不参与检索 / 补列后再恢复该语义）。<br>**实测依据（文件 + 库两侧，2026-09-28）**：① `grep -rn tags backend/app/models/ backend/alembic/versions/` **0 命中**（全仓唯一 `tag` 命中是 alembic 模板自带的 `branch_labels`）；② 经 3308 隧道直连开发库，全库 **10 张表**（`alembic_version` / `device_resource` / `inspect_record` / `notify_message` / `repair_ticket` / `reserve_order` / `space_resource` / `sys_permission` / `sys_role` / `sys_user`）的 `information_schema.COLUMNS` 里 **`COLUMN_NAME LIKE '%tag%'` 命中 0 条**。<br>⚠️ **同一段落在 `backend/开发流程.md:295-297` 另有一份副本**（1122 行、LF，最后一次改动是集成组 `9f30d3a`），与主文档 `docs/开发流程.md`（1146 行、CRLF）**已分叉**；本次**只改主文档，副本未动** —— 团队若以副本为准需另行同步 | 徐川（**已完成**：B 降级 + 登记）；A（补列）如需重启，责任人集成组 |
 
 原「阶段 3 唯一硬卡点」（`backend/app/core/` 为空）**已解除**：`config.py` 与 `database.py` 已就位，阶段 3 据此通过。
@@ -98,6 +98,23 @@
 用时推导天然不会产生两份真值，也天然与「过期订单不再占用」一致。这与模块 3 在
 `docs/待集成组确认清单.md` P2 节里的**建议 (b)** 是同一件事，口径一致。
 
+**〔2026-09-28 裁定〕`release_occupancy` 删。**
+理由：口径既然是「用时推导、不扣减」，**从不扣减就没有回补需求**；而这个名字暗示的
+「释放占用」在新口径下**没有任何语义**，留着只会误导读代码的人（看起来在做资源释放，实际是空操作）。
+**查证（`origin/integrate/module3` @ `1919428`）**：
+
+| 项 | 事实 |
+| --- | --- |
+| 定义 | `backend/app/state_machine.py:57-63`，函数体**就是 `pass`**（`# TODO: 通知资源模块释放场地/设备占用` + `# pragma: no cover`） |
+| 实际行为 | **既不回补 `available_count`、也不改状态、也不释放任何锁**——空 hook，`_BUSY` 与它无关 |
+| 调用点 | 唯一一处：`backend/app/api/orders.py:251`，取消「**已确认**」单时（`was_confirmed` 分支）；import 在同文件 `:38` |
+| 测试 | `backend/tests/module3/test_orders.py:185/199` 把它 monkeypatch 掉，只为断言「TC-11 调到了 / TC-10 不该调到」 |
+| 他的文档 | `docs/available_count口径判据.md` §6「仍未解决的一项」、`docs/待集成组确认清单.md` P2 节末「仍需集成组定的是 `release_occupancy`」 |
+
+**删除范围 = 函数定义 + 调用点 + import + 上面那两处 hook 断言**（全在模块 3 的文件里，
+**由蔡玉礼执行**；模块 4 不碰他的文件）。这条也是他 P2 节「待集成组定」的最后一项，
+裁定后该节可以收尾。
+
 **对判据与用例的影响**：
 
 - `AGENT-C-02` 的原判据「锁定后 `available_count` 正确递减、回滚时不减」**整条作废**——
@@ -132,10 +149,19 @@
   **能过、不挂 xfail** 的契约用例 `test_resource_conflict_maps_to_40901_with_http_409`
   单独把关（`code==40901`、`http_status==409`），服务层用例只断言「拒绝」这件事本身。
   **不能拿「反正 40901 存在」当作断言 3 通过。**
-- **断言 4/5 多一道卡**：取消要调模块 3 的 `PUT /api/v1/orders/{orderId}/cancel`
-  （路径见 `docs/开发流程.md:381`，与 `Permission.ORDER_CANCEL`、`mock.py:93` 的镜像一致），
-  本仓库**没有这条真实路由**，调用即 404。**不改成直接 `UPDATE reserve_order`**——
-  测试禁写正式表（主文档 6.8），改成改库验的就不是实现了。
+- **〔2026-09-28 更正〕断言 4/5 的「第四道卡」原判不成立。** 取消入口
+  `PUT /api/v1/orders/{orderId}/cancel`（路径见 `docs/开发流程.md:381`，与
+  `Permission.ORDER_CANCEL`、`mock.py:93` 的镜像一致）在 `origin/integrate/module3` 上
+  **存在且可用**（`backend/app/api/orders.py:235`）——本机实测：建单 → 取消 → HTTP 200，
+  库里 `order_status` 由 1 变 3。此前看到的 404 是**本分支**现象：本分支**没有
+  `backend/app/api/orders.py` 这个文件**（`git show feature/agent-xuchuan:./backend/app/api/orders.py`
+  → not in branch），打到不存在的路由上得的是**框架层 404，业务码 `40400`**。
+  **两种 404 的 HTTP 状态码相同，只能看业务码区分**：`40400`「接口或资源不存在」= 路由没注册；
+  `40404`「预约不存在」= 路由在、业务层查不到单（越权也走这条）。**路由没注册的话业务码不会是
+  `40404`。** 另一条实测：`orderId` 传 `None`（桩期「orderId 恒 None」的形状）不是 404，
+  而是 **HTTP 400 + `40001`「参数校验未通过」**（路径参数是 `int`）；`40404` 只由**格式合法但
+  不存在的 orderId** 产生。**仍不改成直接 `UPDATE reserve_order`**——测试禁写正式表
+  （主文档 6.8），改成改库验的就不是实现了。
 
 **已核实：`40901` 与 409 映射都在正式版里**
 
@@ -155,8 +181,16 @@
 | --- | --- | --- | --- |
 | 1 | `order_service.py` 的 `_device_conflicts` 要按「时段重叠」推导剩余量（现在是 `available_count > 0` 的静态校验），并把只读桩换成真实现 | 蔡玉礼 | 全部 8 条 |
 | 2 | `smart_scheduler_test` 1044 无权 → `_db_readonly_guard` 仍拦真库写入；或改走降级路径 | 申云飞 | 全部 8 条 |
-| 3 | 模块 3 的取消入口 `PUT /api/v1/orders/{orderId}/cancel` 未交付（`开发流程.md:381` 的冻结路径，本仓库无此真实路由） | 蔡玉礼 | 仅断言 4/5 |
+| 3 | **〔2026-09-28 更正〕取消入口本身已交付且可用**：`integrate/module3` 的 `backend/app/api/orders.py:235`，实测建单→取消 HTTP 200、状态 1→3。卡的是**模块 3 的 API 未合入本分支**——本分支没有 `backend/app/api/orders.py`，调它得框架层 `40400`（**不是** `40404`） | 模块 3 合入本分支 | 仅断言 4/5 |
 | 4 | 断言 4/5 的「取消」只能走上面的真实入口，**不得改成直接改库**（测试禁写正式表，主文档 6.8） | 徐川（守线） | 仅断言 4/5 |
+
+**〔2026-09-28 临时分支实测〕** 在 `origin/integrate/module3` 上（临时分支 `tmp-verify-c01-02`，
+已删、未推）把这 8 条用例跑在蔡玉礼的**真实现**上：**7 条通过**，仅
+`test_assert_3b_three_concurrent_orders_on_a_cap_two_device_exactly_two_win` 红（3 单全成）。
+即上表第 1 条（真实现）与第 3 条（路由）在**他那边**已具备，第 2 条则由他自带的夹具绕开
+（临时 SQLite，不碰开发库）——但这些**都还没合回本分支**，故上表在本分支上仍逐条成立。
+3b 的红因、以及「判据 2/5/7 必须落在不同场地」这条约束的复验记录，见
+`docs/spec/stage-07-testing.md`。
 
 ### 2026-09-28 ruff 清理结果与残留归属
 
