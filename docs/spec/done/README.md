@@ -50,13 +50,72 @@
 | 2 | 阶段 8 五项交接回执全空 | 联调当天才会暴露口径不一致，而这正是阶段 8 存在的意义 | 徐川（发起）+ 蔡玉礼 / 杨睿坤 / 黄嵩 / 前端 / 申云飞（回执） |
 | 3 | 模块 3 的 `create_order` 仍是只读桩（`orderId` 恒为 `None`） | 并发与库存扣减（`AGENT-C-01/02`）无法验证——**阶段 7 因此未完全达标**；`agent_trace` 补写链路只能走到「跳过」分支。**补充（2026-09-27）**：① `needConfirm` 已裁定 **(a)**（Agent 一轮内锁 `status=1`，确认只是 1→2 的流转），**但 1→2 这段还没接通**——`PUT /api/v1/orders/{orderId}/confirm` 已在 `origin/feat/module3-caiyuli` 上实现，而 `/api/v1/agent/schedule` 的响应体**不透出 `orderId`**（只有 `plan`/`backupPlan`/`trace`/`needConfirm`），前端拿不到订单号。**该条已实现（`d626966`，2026-09-27）**：`ScheduleData` 新增 `orderId`，取自最后一次成功的 `lock_resources`，降级路径**照样透出**（`plan` 为空但已锁单时仍报，避免落库的单成孤儿）；`docs/api.md` 模块 4 的 data 结构表、示例与 mock 已同步。**仍未接通**的是端到端那一段——本分支的 `create_order` 还是桩，真值要等模块 3 并库；② 蔡玉礼的真实现已在 `origin/feat/module3-caiyuli` 分支上（`core/utils.py` / `state_machine.py` / `ACTIVE_ORDER_STATUSES` 三样本分支**都没有**），等并入 `main` | 蔡玉礼（推）+ 集成组（合入） |
 | 4 | `smart_scheduler_test` 访问被拒 | 模块 4 的 `dev_db_session` 只能连只读开发库（强制手段已实现：`_db_readonly_guard` 前置拒绝全部写语句）。**但它同时会把并发用例要验的真实写入一起打死**——测试库权限到位后须对本用例收窄拦截，否则 `AGENT-C-01/02` 仍过不了。**合并后（2026-09-28）夹具分成两套**：正式版的 `db_session` / `client` 走 SQLite 空库（全离线），模块 4 的改名为 `dev_db_session` / `dev_client` 走开发库——两者名字不能再合并，理由写在同一文件 `tests/conftest.py` 的模块 4 段开头 | 申云飞 |
-| 5 | **`available_count` 扣减/回补口径未定**（字段与列**已存在**：`device_resource.available_count` / `total_count` 都有映射，缺的是**规则**——谁扣、何时扣、取消/过期如何回补，以及主文档 §5.5 六步是否补第 7 步） | **待裁定**：`AGENT-C-01/02` 的**判据本身不存在**；`_db_readonly_guard` 即使放开写入，也验不了 C-02——「锁定后递减 / 失败不减」这条断言没有可供对照的依据。**阶段 7 因此未完全达标** | 集成组（口径）+ 蔡玉礼（实现） |
+| 5 | ~~`available_count` 扣减/回补口径未定~~ → **口径已定：用时推导，不扣减（2026-09-28 蔡玉礼给出，方案接受）** | **口径（四条，见下方附录）**：① `available_count` 是**静态上限**，不是实时剩余；② **剩余量 = `available_count` − 该时段重叠订单数**（算出来的，不是存的）；③ **不扣减、不回补、不加 §5.5 第 7 步**；④ 取消后名额**自动回来**，无需任何回补代码。<br>**对 `AGENT-C-01/02` 的影响**：C-02 的原判据「锁定后 `available_count` 递减」**作废**——字段本来就不该变，断言它变才是在验一个不存在的实现。新判据照蔡玉礼的 7 条断言改，见附录。<br>**仍未闭环的部分**：判据明确了，**真实现还没到**——`order_service.py` 的 `_device_conflicts` 要按「时段重叠」推导剩余量（蔡玉礼改），且 `_db_readonly_guard` 仍拦真库写入（测试库权限未到位）。**故 C-01/02 继续 `xfail(strict)`，注明「等蔡玉礼改 `_device_conflicts`」**。阶段 7 仍未完全达标 | 蔡玉礼（`_device_conflicts` 实现）+ 申云飞（测试库权限） |
+
 | 6 | ~~`backend/.env.example` 出厂即 `AUTH_BYPASS=true`~~ **已在 `origin/main` 修复，且已随合并消解，本项闭环** | 本分支的 `backend/.env.example:45` 仍是 `AUTH_BYPASS=true`（`2474343`「贾世杰：完成模块」），任何人 `cp` 即带放行模式；**但集成组已在 `origin/main`（`9f30d3a`，2026-09-28）改掉**：`.env.example:125` 为 `false`，`config.py:297` 另加硬拦——`AUTH_BYPASS=true` 且非 dev 环境直接报错。**2026-09-28 已 rebase 到 `9f30d3a`，合并后本分支 `.env.example:125` 实测为 `false`，该项自然消解。** 本机 `backend/.env` 未显式设置该项，取 `config.py` 默认 `False`。**裁定：暂缓，不阻塞推送**（已报项目群，报告当日即由集成组闭环） | 集成组（**已完成**）+ 徐川（答辩/部署前自检 `.env` 实为 `false`） |
 | 7 | **同名实现：三份 `get_current_user`、两份 `register_exception_handlers`、两份路由注册中枢** | **本项已在合并中闭环（2026-09-28，rebase 到 `9f30d3a`）**。身份依赖：模块 4 的两份已先删掉（`cfb75f0` 删 `core/security.py` 的 `CurrentUser` / `get_current_user`，`dcc89e7` 把 agent 改指 `api/deps.py`），合并时冲突直接取正式版，**全应用只剩 `api/deps.py` 一份**；异常体系：`register_exception_handlers` 收敛到 `core/response.py`，`core/exceptions.py` 只留 `BizError` 层级与码表。**模块 4 自建的 `core/response.py::ApiError` / `CODE_OK` 与 `core/security.py::create_access_token` / `create_refresh_token` 在正式版里都不存在**，调用点已就地改掉：`api/v1/agent.py` 的 503 路径改用 `BusinessError(code=41003)`（正式版码表里 41003 已映射 503），路由补上 `response_model=ApiResponse[ScheduleData]`（原先写 `-> dict` 返回值注解，正式版严格校验会把它判成 500）；用例改用 `create_token` / `ErrorCode`。路由中枢：`api/v1/router.py`（模块 4 的第二份）已删除，只留 `api/v1/__init__.py` | 徐川（**已完成**） |
 | 8 | **本机 `smart_dev` 环境缺 `requirements.txt` 已声明的测试依赖（`aiosqlite==0.22.1` / `alembic==1.20.0`）**；另叠加 `backend/alembic/` 目录遮蔽同名包 | 合并前只有模块 4 的用例跑得动（连真库、不用 SQLite），正式版重写的 `conftest` 与 image / voice / auth 用例全部依赖 `aiosqlite`，缺失时**整个套件在收集阶段就 ERROR**，红数无从谈起（此前记的「image/voice 用例继承红」根因即此）。`alembic` 缺失另叠一层：`backend/alembic/`（迁移目录，无 `__init__.py`）在 `python -m pytest` 下会**遮蔽**同名安装包，`tests/integration/test_migrations.py` 报 `No module named 'alembic.autogenerate'`。**本次已在本机补装这两项**（`pip install --no-deps aiosqlite==0.22.1 alembic==1.20.0 Mako MarkupSafe`，未动其他依赖），补装后全套 **503 passed / 覆盖率 92.37%**。**`test_migrations.py` 的目录遮蔽问题未修**（属仓库结构：需给 `backend/alembic/` 加 `__init__.py`，或调 `pythonpath` / `--import-mode`），留给集成组 | 申云飞 / 集成组（环境与仓库结构） |
 | 9 | **模块 4 的 mock / 监控两处契约，被 `origin/main` 的正式版实现推翻，文档已按现实改写，但两处「素材与实现不一致」待裁定** | **（2026-09-28 合并后登记）** 合并时 `api/v1/mock.py` / `mock_data.py` / `api/v1/monitor.py` 均取正式版（模块 4 的分支版只有本模块一段，覆盖会删掉模块 5/6/7/8/10 的 mock 路由）。由此产生两处不一致：<br>①**mock 响应体**——正式版端点是 **`POST /api/v1/mock/agent/schedule`**，`mock_data.AGENT_SCHEDULE` 是 **4 步 trace、跨 2 秒、无 `thought`/`action`/`observation`/`orderId`**；而 `docs/mock/agent_schedule.json`（**7 步 / 39 秒**）才是前端屏 3 渲染、40 秒回放、13.1 应急预案三处共用的权威素材，**但它不是本端点返回的内容**，演示当天会暴露（按 4 步渲染回放不出 40 秒）。**建议**：把 `AGENT_SCHEDULE.trace` 换成该 JSON 的 7 步数据，路由与方法保持正式版不变（模块 10 的 `tests/api/test_mock_routes.py` 只断言路由与响应头，不受影响）。**未擅自改动——`mock_data.py` 已属集成组地盘。**<br>②**监控口径四处不同**——`/monitor/agent` **不鉴权**（模块 4 原设计要 JWT）；`avgLatency` 单位是**秒**（原设计是毫秒）；`successRate` 仅按 HTTP 状态码判定、降级单列 `degradedCalls`（原设计要求 `plan` 非空且未降级）；存储走 Redis + 中间件（原设计是 `agent_service` 进程内计数）。**这四处已按正式版改写 `docs/api.md` 模块 10 整节**，并有回归用例（`tests/api/test_mock_routes.py::test_mock_traffic_is_not_counted_as_agent_traffic` 等）兜底。**遗留**：模块 4 的 `agent_service.record_call` 已无读端（`agent.py` 仍在调），属待清理项 | 集成组（mock 数据口径裁定）+ 徐川（文档已改完；`record_call` 清理待裁定） |
 
 原「阶段 3 唯一硬卡点」（`backend/app/core/` 为空）**已解除**：`config.py` 与 `database.py` 已就位，阶段 3 据此通过。
+
+### 附录：`available_count` 口径（2026-09-28 蔡玉礼给出，方案接受）
+
+> 本附录是硬卡点 #5 的正式口径记录。**后续任何关于设备库存的判定、文档措辞与用例断言，
+> 一律以本节为准**；与它冲突的旧表述（含 `docs/spec/stage-04-tools.md` 与模块 3 分支上
+> `docs/待集成组确认清单.md` P2 节的「待定」描述）均已作废。
+
+**口径：用时推导，不扣减。**
+
+| # | 规则 | 含义 |
+| --- | --- | --- |
+| 1 | `available_count` 是**静态上限**，不是实时剩余 | 它描述「这类设备总共有几台可借」，一旦导入就不再随下单变化 |
+| 2 | **剩余量 = `available_count` − 该时段重叠订单数** | 剩余是**算出来的**，不是存下来的。统计口径是「与该时段重叠的订单」 |
+| 3 | **不扣减、不回补、不加 §5.5 第 7 步** | 主文档 §5.5 的事务六步**保持六步**，不新增占用维护步骤 |
+| 4 | 取消后名额**自动回来**，无需回补代码 | 订单不再是「重叠订单」，推导结果自然还原——不存在漏回补导致永久少库存的路径 |
+
+**为什么取这个方案**：单方面扣减会造出**第二份真值**——场地/设备占用已经能从 `reserve_order`
+按「状态 + 时间窗口」派生，再维护一个计数器就是同一件事存两遍，一旦不一致无法判断谁对。
+用时推导天然不会产生两份真值，也天然与「过期订单不再占用」一致。这与模块 3 在
+`docs/待集成组确认清单.md` P2 节里的**建议 (b)** 是同一件事，口径一致。
+
+**对判据与用例的影响**：
+
+- `AGENT-C-02` 的原判据「锁定后 `available_count` 正确递减、回滚时不减」**整条作废**——
+  按本口径该字段根本不该变，断言它变是在验一个不存在的实现。新判据照下节的 7 条断言改。
+- 硬卡点 #5 里「`AGENT-C-01/02` 的判据本身不存在」这一条**已解除**：判据现在存在了。
+  但**真实现仍未到位**，C-01/02 继续 `xfail(strict)`，详见下表。
+
+**蔡玉礼的判据文档（7 条断言）**
+
+> ⚠️ **原文未到位**：蔡玉礼的判据文档**没有随本次消息传来，也不在仓库任何分支上**
+> （已查 `origin/feature/agent-xuchuan`、`origin/main`、`origin/feat/module3-caiyuli`
+> 三个分支的 tip 与近期提交，均无此文档；`origin/feat/module3-caiyuli` 的最新一份是
+> `693ce0a`「补记合并实际执行结果与两处待集成组签字的口径」，其中的 P2 节是**提问**，
+> 不是结论）。**为避免把推测写成他人结论，此处留空位、等原文补入**，不下笔。
+> 补齐后本节直接贴在下面，并据此改写 `AGENT-C-01/02` 的断言。
+>
+> **我已能独立确认的一条**（见下）：第 3 条的 `409 + code=40901` **正式版里存在**，
+> 不需要新造，详见下一节。
+
+**已核实：`40901` 与 409 映射都在正式版里**
+
+| 项 | 位置 | 实测 |
+| --- | --- | --- |
+| 业务码 `40901` | `backend/app/core/error_codes.py:72` | `RESOURCE_CONFLICT = 40901` ✅ |
+| HTTP 映射 409 | `backend/app/core/exceptions.py:181-183` | `class ResourceConflictError(BizError)`，`code = ErrorCode.RESOURCE_CONFLICT`，`http_status = 409` ✅ |
+
+同段还确认了 409xx 一族的其余三个（`CONFLICT = 40900` / `USERNAME_EXISTS = 40902` /
+`ORDER_STATUS_CONFLICT = 40903`，同样各自 `http_status = 409`），因此 409 这一档
+**不是只有 40901 能走**——判据里若出现 409 但码不是 40901，需按上表核对是不是撞了另外三个。
+**无需新增任何码，也无需改 `error_codes.py` 或 `exceptions.py`。**
+
+**仍卡着 C-01/02 真跑通的两件事**
+
+| # | 卡点 | 归属 |
+| --- | --- | --- |
+| 1 | `order_service.py` 的 `_device_conflicts` 要按「时段重叠」推导剩余量（现在是 `available_count > 0` 的静态校验） | 蔡玉礼 |
+| 2 | `smart_scheduler_test` 1044 无权 → `_db_readonly_guard` 仍拦真库写入；或改走降级路径 | 申云飞 |
 
 ### LLM 配置 baseline（模块 4 公布 · 2026-09-27）
 

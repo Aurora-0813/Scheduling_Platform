@@ -201,6 +201,40 @@ Required test coverage of 80% reached. Total coverage: 92.29%
 （`orderId` 为 `None`、`stub=True`、库存不变），是**桩期临时用例**。真实现落地后会失败
 ——那时应当**删除**，而不是放宽断言。
 
+### 5.1 补记：`available_count` 口径已定（2026-09-28，蔡玉礼给出，方案接受）
+
+硬卡点 #5 在本阶段是「**待裁定**」——本阶段因此记的是「C-01/02 的**判据本身不存在**」。
+**该卡点现在解除了，但只解除了一半**：判据有了，实现还没到。
+
+**口径：用时推导，不扣减。** 四条：
+
+1. `available_count` 是**静态上限**，不是实时剩余——它描述「这类设备总共有几台可借」，
+   导入后不再随下单变化；
+2. **剩余量 = `available_count` − 该时段重叠订单数**，是**算出来的**，不是存下来的；
+3. **不扣减、不回补、不加 §5.5 第 7 步**——主文档 §5.5 的事务**保持六步**；
+4. 取消后名额**自动回来**，无需任何回补代码（订单不再是「重叠订单」，推导结果自然还原）。
+
+完整口径与理由见 `docs/spec/done/README.md` 的**附录：`available_count` 口径**（两份表共用同一份）。
+
+**对本阶段结论的三点修正**：
+
+| 原记录 | 修正后 |
+| --- | --- |
+| §5 标题「为什么未通过」下的三条前提（真实实现 / 测试库权限 / 放开 `_db_readonly_guard`） | **仍然成立**，一条都没减少。测试库权限与守卫放开仍归申云飞 |
+| C-02 的判据「锁定后 `available_count` 正确递减、回滚时不减」 | **整条作废**——按新口径该字段根本不该变，断言它变是在验一个不存在的实现。新判据照蔡玉礼的 7 条断言改，**替换后再摘 `xfail`** |
+| §5 末尾两条 `test_c0*_stub_state_is_recorded_not_glossed_over` 那句「库存不变」 | **仍然正确**——「库存不变」在新口径下是**应该的**，不再是桩期临时现象。但这两条整体仍是桩期用例（`stub=True` / `orderId` 为 `None`），真实现落地后照旧**删除** |
+
+**仍未闭环**：`order_service.py` 的 `_device_conflicts` 现在是 `available_count > 0` 的
+**静态校验**，要按「时段重叠」推导剩余量才能支撑新判据——**归蔡玉礼**。
+在它改完之前，`AGENT-C-01/02` **继续 `xfail(strict)`，并注明「等蔡玉礼改 `_device_conflicts`」**。
+阶段 7 的「未完全达标」结论**不变**。
+
+**另已核实**（判据第 3 条要用到的码，正式版已有，无需新造）：业务码
+`ErrorCode.RESOURCE_CONFLICT = 40901`（`core/error_codes.py:72`）与 HTTP 409 映射
+（`core/exceptions.py:181-183` 的 `ResourceConflictError`）**都在**。同族另有
+`CONFLICT = 40900` / `USERNAME_EXISTS = 40902` / `ORDER_STATUS_CONFLICT = 40903`，
+同样各映射 409——判据里出现 409 时要核对是不是撞了另外三个。
+
 ## 6. 偏差与如实登记
 
 | # | 阶段文档要求 | 实际做法 | 原因 | 影响 |
@@ -263,7 +297,7 @@ Required test coverage of 80% reached. Total coverage: 92.29%
 
 | # | 事项 | 归属 | 卡住什么 |
 | --- | --- | --- | --- |
-| 1 | `create_order` / `update_agent_trace` 真实实现 | 蔡玉礼（模块 3） | `AGENT-C-01/02` 无法通过；`agent_trace` 补写恒失败 |
+| 1 | `create_order` / `update_agent_trace` 真实实现 | 蔡玉礼（模块 3） | `AGENT-C-01/02` 无法通过；`agent_trace` 补写恒失败。**（2026-09-28 拆分**：`available_count` 口径已定「用时推导、不扣减」（见 §5.1），判据随之明确；**剩下的是 `order_service._device_conflicts` 要按「时段重叠」推导剩余量**——这一条单独归蔡玉礼。在该函数改完前，C-01/02 继续 `xfail(strict)`） |
 | 2 | `smart_scheduler_test` 访问权限 | 集成组 | 阶段 7 §3.2 合规性；并发用例的写入前提 |
 | 3 | `.env` 的 LLM 三项 | 徐川（本地填即可） | 五场景的**决策质量**回归 |
 | 4 | DDL 版本与 6.7 的逐条比对 | 集成组 | 种子数据基线（`docs/test.md` 第一节） |

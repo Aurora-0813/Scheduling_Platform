@@ -21,6 +21,22 @@
 这个「本该摘掉的标记」就会一直留着，把已通过的事实伪装成「已知不可用」。
 `strict` 下 XPASS 即失败，等于一个「该摘标记了」的提醒。
 
+## 2026-09-28：`available_count` 口径已定，C-02 的断言随之作废
+
+集成组裁定（蔡玉礼给出，方案接受）：**用时推导，不扣减**。
+① `available_count` 是**静态上限**，不是实时剩余；② 剩余量 = `available_count` −
+**该时段重叠订单数**，是**算出来的**；③ **不扣减、不回补、不加 §5.5 第 7 步**；
+④ 取消后名额**自动回来**，无需回补代码。
+
+这直接推翻了 `AGENT-C-02` 原有的两段断言（「锁定后递减 / 失败时不减」）——按新口径
+该字段本就不该变，断言它变是在验一个不存在的实现。**新判据照蔡玉礼的 7 条断言改，
+改完再摘 `xfail`。** `AGENT-C-01` 的判据不受影响，只是冲突码确认为 **409 + `code=40901`**
+（正式版 `core/error_codes.py:72` 与 `core/exceptions.py:181-183` 已有，无需新造）。
+
+**两条都还卡在同一件事上：`order_service._device_conflicts` 要按「时段重叠」推导剩余量
+（蔡玉礼）**，外加测试库权限（申云飞）。口径全文见
+`docs/spec/done/README.md` 的《附录：`available_count` 口径》。
+
 ## 还有第二道锁挡在前面（必须一并解除，否则这两条永远过不了）
 
 阶段 7 §3.2 要求用例连**测试库** `smart_scheduler_test` 并回滚，该库当前
@@ -78,6 +94,10 @@ async def _available_count(session, device_id: int) -> int:  # noqa: ANN001
         "create_order 仍是只读桩：没有 SELECT ... FOR UPDATE，也没有 INSERT，"
         "两次并发锁定都会返回 ok=True，因此「恰好一个成功」必然不成立。"
         "真实现落地 + 测试库权限到位 + 写库拦截放开后，本用例应转为通过并摘掉本标记。"
+        "（2026-09-28：冲突码已确认用 409 + code=40901，正式版 core/error_codes.py:72 与 "
+        "core/exceptions.py:181-183 已有，无需新造；**还等蔡玉礼改 order_service._device_conflicts"
+        "（按「时段重叠」推导剩余量）**，判定口径见 docs/test.md §3.5 与 "
+        "docs/spec/done/README.md 的《附录：available_count 口径》。）"
     ),
 )
 async def test_c01_concurrent_locks_on_the_same_slot_exactly_one_wins(slots) -> None:  # noqa: ANN001
@@ -132,13 +152,24 @@ async def test_c01_stub_state_is_recorded_not_glossed_over(slots) -> None:  # no
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "create_order 桩不扣减 available_count（5.5 六步里本来也没写这一步，口径待集成组给），"
-        "锁定后库存不变，因此本用例必然不成立。"
+        "create_order 桩不扣减 available_count，锁定后库存不变，因此本用例必然不成立。"
+        "（2026-09-28 更新：口径已定「用时推导，不扣减」——available_count 是**静态上限**，"
+        "剩余量 = available_count − 该时段重叠订单数，是算出来的；本用例下面这两段断言"
+        "**本身已作废**（按新口径该字段不该变）。新判据照蔡玉礼的 7 条断言改，改完再摘本标记。"
+        "**还等蔡玉礼改 order_service._device_conflicts（按「时段重叠」推导剩余量）**，"
+        "外加测试库权限。口径全文见 docs/spec/done/README.md《附录：available_count 口径》。）"
     ),
 )
 async def test_c02_device_count_decrements_on_lock_and_survives_failure(dev_db_session, slots, seed) -> None:  # noqa: ANN001
     """`AGENT-C-02` 设备数量扣减：锁定成功后 `available_count` 递减；**失败时（回滚）不减**。
 
+    ⚠️ **2026-09-28：本用例的两段断言已作废，等改写。** 口径定为「用时推导，不扣减」——
+    `available_count` 是静态上限，剩余量 = `available_count` − 该时段重叠订单数（算出来的），
+    该字段本就**不该**随锁定变化。断言它递减，是在验一个不存在的实现。
+    新判据照蔡玉礼的 7 条断言改后再摘 `xfail`；在那之前保留本文件并保持 `xfail(strict)`
+    ——`strict` 保证改写落地后若仍红会直接报错，不会静默错过。
+
+    下面这段是作废前的原文，保留以记录判据沿革：
     两段都必要，只验前一段会把「减了但失败时没回补」这种实现判为通过——
     那正是设备数会越用越少（或越多）的成因。
     """
