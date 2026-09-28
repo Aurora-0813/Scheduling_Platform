@@ -38,14 +38,27 @@ from app.core.database import Base
 #: 比这里的字面量好，且他的注释已声明那是唯一真值、供 `order_service` /
 #: `api/conflicts.py`（模块 7）/ `api/agent.py` 共用。
 #:
-#: 届时本文件的冲突**直接取他的版本**（他这版另有 `PK_TYPE` 等改动），然后改三处：
-#:   1. `services/space_service.py` 的 import 与 `in_()` 那一处用名；
-#:   2. `tests/test_space_service.py` 的 import 与护栏用例（改为与
-#:      `ACTIVE_ORDER_STATUSES` 比较）；
-#:   3. 删掉本段注释与 `OCCUPYING_STATUS`。
+#: ⚠️ 但**别「直接取他的版本」**——实测（2026-09-28）他那版 `reservation.py` 里
+#: `__table_args__` / `Index(` / `idx_` 的出现次数**都是 0**：四条索引声明
+#: （`idx_user_id` / `idx_space_time` / `idx_status` / `idx_status_start`）一条没有，
+#: 他分支上也没有建这些索引的迁移。而 `main` 上四条俱在（`idx_status_start` 见迁移
+#: `b7f1c4a92e35`），且本文件在 `main` 与徐川分支上**逐字节一致** —— 可见那是集成组
+#: 后加的、他的分支较旧。盲取他的版本 = 静默丢掉四条索引声明：库里的索引还在
+#: （迁移建的），但模型不再声明，`alembic autogenerate` 会反过来提议 **DROP** 它们。
 #:
-#: 这里**故意保持字面量、且不与他的常量同名**：同名会让冲突从「取他的版本」退化成
-#: 「同一个名字两份定义」，反而更难判。故不预先改名，只在合并时收敛。
+#: 故本文件的冲突要**三方合并**，最终须同时含：
+#:   · 他的：`ACTIVE_ORDER_STATUSES`（引 `app.state_machine.OrderStatus`）、`PK_TYPE`
+#:     主键、`device_ids` / `agent_trace` 的 `Mapped[list | None]` 标注（他把 `dict`
+#:     改成 `list` 有理由：模块 8 看板要按它反推设备占用率）；
+#:   · `main` 的：四条 `Index(...)` 与 `idx_status_start` 那段注释；
+#:   · 删掉本段注释与 `OCCUPYING_STATUS`。
+#:
+#: 另需改三处引用：① `services/space_service.py` 的 import 与 `in_()` 用名；
+#: ② `tests/test_space_service.py` 的 import 与护栏用例（改为比 `ACTIVE_ORDER_STATUSES`）；
+#: ③ 本常量自身（连带本段注释）。
+#:
+#: 这里**故意保持字面量、且不与他的常量同名**：同名会让冲突从「两个常量取哪个」
+#: 退化成「同一个名字两份定义」，反而更难判。故不预先改名，只在合并时收敛。
 OCCUPYING_STATUS = (1, 2)
 
 
