@@ -63,6 +63,19 @@ _counters = _Counters()
 def record_call(outcome: AgentOutcome) -> None:
     """记一次 Agent 调用。API 层在拿到 `AgentOutcome` 后立刻调用。
 
+    ⚠️ **本地调试用，正式埋点走 `app/middlewares/agent_metrics.py`。**
+    本函数与 `snapshot()` / `reset()` 是模块 4 阶段 6 自建的**进程内计数**；
+    rebase 到 `origin/main`（`9f30d3a`）后监控链路取的是集成组正式版
+    （`middlewares/agent_metrics.py` 自动收集 → `core/metrics.py` 的 `MetricStore`
+    存 Redis，`services/monitor_service.py` 换算，`GET /api/v1/monitor/agent` 读它）。
+    **正式版那套才是线上口径**，本进程内计数**已无任何读端**——保留它是因为
+    直调 Agent 时想快速看一眼「跑了几次、成功几次」很顺手，删掉会让本地排障少个抓手。
+
+    ⚠️ **不要拿它当监控数据源**：两个口径数字不同（正式版按 HTTP 状态码判成功、
+    降级单列不计入 `successRate`、`avgLatency` 单位是秒；这里按 `outcome.success`
+    判定、单位是毫秒），且本计数**进程重启即清零、多 worker 各报一份**。
+    清理与否见 `docs/spec/done/README.md` 硬卡点表（低优先、非阻塞）。
+
     **必须在阶段 6 就埋上**（阶段 6 §3.4）：事后补埋要重跑一遍联调。
     """
     _counters.total_calls += 1
