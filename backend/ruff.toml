@@ -19,7 +19,10 @@ line-length = 100
 # 自动生成的迁移文件不检查也不格式化。
 # 理由：它们是 alembic autogenerate 的产物，下一次 autogenerate 会重新生成，
 # 手工格式化出来的差异会被冲掉，只留下无意义的 diff。
-exclude = ["alembic/versions"]
+# alembic/versions 见上。legacy/ 是模块 6 早期独立实现的归档副本：
+# 它按「backend 还在仓库根」的旧布局写成同步 SQLAlchemy 直连，与 backend/app
+# 的异步规范不是一套东西，只为留档而存在，不参与运行、也不应被格式化。
+exclude = ["alembic/versions", "legacy"]
 
 [format]
 # Markdown 里围栏代码块中的 Python **不参与格式化**。
