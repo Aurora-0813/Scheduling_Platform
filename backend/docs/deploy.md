@@ -239,7 +239,7 @@ alembic upgrade head
 
 ```
 8969262c9d0c  init_tables_single_role         ← 已存在（9 张表）
-b7f1c4a92e35  add_doc66_indexes_idempotent    ← 本次新增（补 开发流程.md 6.6 的 10 个索引）
+b7f1c4a92e35  add_doc66_indexes_idempotent    ← 本次新增（补 11 个索引：6.6 的 10 个 + database.md 3.4 的 1 个）
 ```
 
 第二条是**幂等**的：先查 `information_schema.statistics`，索引已存在就跳过。
@@ -298,8 +298,11 @@ mysql -h 127.0.0.1 -P 3308 -u <DB_USER> -p smart_scheduler_dev < docs/seed.sql
 | prod | `smart_scheduler_prod` | 演示与验收 | 同上，部署时创建 |
 
 > 本项目当前**全部测试离线运行**（SQLite 临时库 + 假 Redis），
-> 因此 `smart_scheduler_test` **尚未被使用**，它是否已建、账号有无建库权限**待确认**
-> （已列入 `docs/汇报文档.md`）。
+> 因此 `smart_scheduler_test` **未被使用**。真库测试的口径已定：不建 `test_` 前缀表，
+> 改用「外层事务 + savepoint 回滚」（见 `docs/database.md` 9.1）；
+> 确需真库写权限时由模块负责人向管理员申请。
+> `test` 这一行**保留在表里是为了对照 `开发流程.md` 12.2 的三环境定义**，
+> 不是当下有库在用；`DB_NAME` 仍然只从 `.env` 读，不硬编码。
 > 真实 MySQL 的行锁语义（`SELECT ... FOR UPDATE`）与方言差异**必须在真库上验证**，见 4.5。
 
 ### 4.5 云库上的人工验证清单（**必须由人执行**）
@@ -308,9 +311,9 @@ mysql -h 127.0.0.1 -P 3308 -u <DB_USER> -p smart_scheduler_dev < docs/seed.sql
 
 | # | 验证项 | 命令 | 期望 |
 | --- | --- | --- | --- |
-| 1 | 索引已建齐 | `SHOW INDEX FROM sys_user;` 等 9 张表 | 出现 `docs/database.md` 三节的 10 个索引 |
+| 1 | 索引已建齐 | `SHOW INDEX FROM sys_user;` 等 9 张表 | 出现 `docs/database.md` 三节的 **11** 个索引（6.6 的 10 个 + 3.4 的 `idx_status_start`）。注意 `inspect_record.space_id` / `repair_ticket.device_id` 上可能只有 MySQL 外键自动索引（`..._ibfk_N`），**同列即等效**，不算缺失 |
 | 2 | 迁移版本 | `SELECT * FROM alembic_version;` | `b7f1c4a92e35` |
-| 3 | 种子数据行数 | `SELECT (SELECT COUNT(*) FROM sys_user), (SELECT COUNT(*) FROM space_resource), (SELECT COUNT(*) FROM device), (SELECT COUNT(*) FROM reserve_order);` | `3, 8, 15, 10` |
+| 3 | 种子数据行数 | `SELECT (SELECT COUNT(*) FROM sys_user), (SELECT COUNT(*) FROM space_resource), (SELECT COUNT(*) FROM device_resource), (SELECT COUNT(*) FROM reserve_order);` | `5, 8, 15, 10`（用户 5 个：3 正常 + 2 个演示异常账号，见 `docs/database.md` 8.7） |
 | 4 | 角色权限层次 | `SELECT role_name, JSON_LENGTH(permissions) FROM sys_role;` | `admin=26, resource_admin=19, user=10`（**用 `JSON_LENGTH` 而非 `LENGTH`**：后者是字节数） |
 | 5 | 云库时区 | `SELECT @@global.time_zone, @@session.time_zone, NOW();` | 决定是否给连接加 `init_command=SET time_zone`（待确认项） |
 | 6 | 字符集 | `SELECT @@character_set_database, @@collation_database;` | `utf8mb4` / `utf8mb4_0900_ai_ci` |
@@ -507,7 +510,7 @@ if settings.DEBUG:
 | 1 | **云服务器真实 IP** | 隧道命令必需（`.env` 里没有） |
 | 2 | **云库真实端口** | 隧道目标必需（`开发流程.md` 只给示例 3307） |
 | 3 | **Redis 实例/端口/密码/DB index** | 决策 6 依赖它；未配置时降级为内存实现 |
-| 4 | `smart_scheduler_test` 是否已建、账号有无建库权限 | 决定标 `integration` 的真库测试能否写 |
+| 4 | ~~`smart_scheduler_test` 是否已建、账号有无建库权限~~ **已闭**：真库测试改用「外层事务 + savepoint 回滚」，不依赖独立测试库（`docs/database.md` 9.1）。若确需真库写权限，找管理员申请 | —— |
 | 5 | **云库时区**（`SELECT @@global.time_zone, NOW()`） | 决定是否给连接加 `init_command=SET time_zone`。相关：tz-aware 输入目前**不换算**，见 7.2 |
 | 6 | 云服务器上 MySQL 是否跑在 Docker 里 | 若是，隧道目标要写容器名而非 `127.0.0.1`（2.3） |
 | 7 | `.idea/deployment.xml` 的 SSH 目标是 `root@192.168.88.100:22` → 部署路径 `/` | **直接部署到服务器根目录，风险高**。建议改为普通用户 + `/opt/...`。该文件属 IDE 配置，不在本轮改动范围 |

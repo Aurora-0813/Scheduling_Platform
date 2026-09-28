@@ -82,6 +82,25 @@ DOC66_INDEXES: dict[str, tuple[str, tuple[str, ...]]] = {
     "idx_receiver_read": ("notify_message", ("receiver_id", "is_read")),
 }
 
+# 本迁移建出的、**不在 6.6 里**的补充索引。
+# 与 DOC66_INDEXES 分开列而不是并进去：DOC66_INDEXES 的职责是「文档 6.6 原文
+# 的独立复述」，用来回答「文档点名的索引实现都建了吗」。把一条文档里没有的
+# 索引混进去，这个审计问题就答不清了 —— 后人读到这里会以为 6.6 写过它。
+# 这条是集成组确认后补的（理由见迁移的 INDEX_SPECS 与模型里的注释）：
+# 设备维度做时段占用统计时，6.6 的索引全部失效（device_resource 没有
+# space_id，idx_space_time 的最左前缀用不上；device_ids 又是 JSON 列）。
+EXTRA_INDEXES: dict[str, tuple[str, tuple[str, ...]]] = {
+    "idx_status_start": ("reserve_order", ("order_status", "start_time")),
+}
+
+# 本迁移负责创建的全部索引 = 6.6 的 10 条 + 上述补充。
+# 夹具「清空」与回滚断言都要按这一份来：漏掉哪条，对应的 upgrade 断言就会
+# 因为「索引本来就在」而变成空转（见 test_fixture_starts_without_* 的自检）。
+MIGRATION_INDEXES: dict[str, tuple[str, tuple[str, ...]]] = {
+    **DOC66_INDEXES,
+    **EXTRA_INDEXES,
+}
+
 ALL_TABLES = (
     "device_resource",
     "inspect_record",
@@ -112,9 +131,13 @@ def _alembic_executable() -> str:
     先用与当前解释器同环境的那一个（`sys.executable` 旁边），保证跑 pytest 的
     环境就是跑迁移的环境；找不到再退回 PATH。
 
-    注意：不要用 `python -m alembic` —— 本仓库根目录下有个名为 `alembic/` 的
-    迁移目录（无 `__init__.py`），从仓库根执行时它会作为命名空间包遮蔽真正的
-    alembic 包，`python -m alembic` 会报 "No module named alembic.__main__"。
+    注意：优先用同环境的 alembic 可执行文件，而不是 `python -m alembic`。
+    本仓库的迁移目录是 `backend/alembic/`（无 `__init__.py`，命名空间包），
+    它**不会**遮蔽 site-packages 里的 alembic —— 命名空间包在整条 `sys.path`
+    扫完前只是候选，命中常规包即让位（实测 `import alembic` 解析到
+    site-packages，`python -m alembic --version` 在仓库根与 `backend/` 下都正常）。
+    用同环境可执行文件是为了避免「跑 pytest 的解释器」与「跑迁移的解释器」
+    不是同一个。
     """
     if os.name == "nt":
         sibling = Path(sys.executable).parent / "Scripts" / "alembic.exe"
@@ -232,15 +255,31 @@ async def _read_schema(url: str) -> dict[str, object]:
         await engine.dispose()
 
 
-async def _drop_doc66_indexes(url: str) -> None:
+async def _create_index(url: str, name: str, table: str, columns: tuple[str, ...]) -> None:
+    """在临时库上建一条索引 —— 用来摆出「同名不同列」或「外键自动索引」的现场。"""
+    engine = create_async_engine(url)
+    try:
+        async with engine.begin() as conn:
+            cols = ", ".join(columns)
+            await conn.execute(sa.text(f"CREATE INDEX {name} ON {table} ({cols})"))
+    finally:
+        await engine.dispose()
+
+
+async def _drop_migration_indexes(url: str) -> None:
     """
-    删掉 ORM 已建出的 doc 6.6 索引，把库还原成「表都在但 6.6 索引未建」的
-    状态 —— 即项目文档 6.4 描述的云库现状。
+    删掉 ORM 已建出的本迁移索引，把库还原成「表都在但索引未建」的状态 ——
+    即项目文档 6.4 描述的云库现状。
+
+    按 MIGRATION_INDEXES（含 6.6 之外的补充索引）而不是 DOC66_INDEXES 删：
+    `create_all` 会把模型声明的索引全建出来，只删 6.6 的 10 条的话，补充索引
+    会带着「已存在」的状态进入 upgrade —— 于是那条索引的 upgrade 断言永远是
+    空转，测的其实是夹具而不是迁移。
     """
     engine = create_async_engine(url)
     try:
         async with engine.begin() as conn:
-            for name in DOC66_INDEXES:
+            for name in MIGRATION_INDEXES:
                 await conn.execute(sa.text(f"DROP INDEX IF EXISTS {name}"))
     finally:
         await engine.dispose()
@@ -268,11 +307,11 @@ async def _compare_against_models(url: str) -> list:
 
 @pytest.fixture()
 def fresh_db(tmp_path: Path) -> TempDb:
-    """建好全部表、并移除 doc 6.6 索引的 SQLite 临时库。"""
+    """建好全部表、并移除本迁移全部索引的 SQLite 临时库。"""
     db_path = tmp_path / "migrate.db"
     db = TempDb("sqlite+aiosqlite:///" + db_path.as_posix(), db_path)
     asyncio.run(_create_schema(db.url))
-    asyncio.run(_drop_doc66_indexes(db.url))
+    asyncio.run(_drop_migration_indexes(db.url))
     return db
 
 
@@ -291,18 +330,19 @@ def _stamp(db: TempDb, revision: str) -> None:
 # --------------------------------------------------------------------------- #
 # 前置条件自检：证明夹具真的模拟出了「缺索引」的云库现状
 # --------------------------------------------------------------------------- #
-def test_fixture_starts_without_doc66_indexes(fresh_db: TempDb) -> None:
+def test_fixture_starts_without_migration_indexes(fresh_db: TempDb) -> None:
     """
     夹具自检。
 
     没有这条用例，`test_upgrade_creates_doc66_indexes` 可能在「索引本来就存在」
-    的情况下通过 —— 那样它其实什么都没验证。
+    的情况下通过 —— 那样它其实什么都没验证。断言覆盖 MIGRATION_INDEXES 全部
+    11 条：漏掉补充的那条，它对应的 upgrade 断言就会退化成空转。
     """
     state = _schema(fresh_db)
     assert state["tables"] == list(ALL_TABLES)
-    assert not set(DOC66_INDEXES) & set(state["indexes"]), (
-        "夹具应已删除 doc 6.6 的全部索引，实际仍存在："
-        f"{sorted(set(DOC66_INDEXES) & set(state['indexes']))}"
+    assert not set(MIGRATION_INDEXES) & set(state["indexes"]), (
+        "夹具应已删除本迁移的全部索引，实际仍存在："
+        f"{sorted(set(MIGRATION_INDEXES) & set(state['indexes']))}"
     )
 
 
@@ -325,6 +365,30 @@ def test_upgrade_creates_doc66_indexes(fresh_db: TempDb) -> None:
         assert indexes[name] == (table, columns), (
             f"索引 {name} 定义不符：期望 {table}{columns}，实际 {indexes[name]}。"
             "复合索引的列顺序影响可用性（最左前缀），必须与文档 6.6 一致。"
+        )
+
+
+def test_upgrade_creates_the_extra_index(fresh_db: TempDb) -> None:
+    """6.6 之外的那 1 条补充索引（`idx_status_start`）也必须建出来、且列序正确。
+
+    单独一条而不是并进上面：上面那条回答的是「文档 6.6 点名的都建了吗」，
+    这条索引不在文档里（集成组确认后补，理由见迁移的 INDEX_SPECS）。合并成
+    一条会让前一个问题失去焦点 —— 后人也无法判断某条索引究竟出自文档还是补充。
+
+    列序 (order_status, start_time) 不能反：模块 3 的谓词是
+    `order_status IN (...) AND start_time < :end`，status 是等值列必须在前，
+    反了这条索引就退化成全表扫描加排序。
+    """
+    _stamp(fresh_db, INIT_REVISION)
+
+    _assert_ok(_run_alembic("upgrade", "head", db_url=fresh_db.url), "alembic upgrade head")
+
+    indexes = _schema(fresh_db)["indexes"]
+    for name, (table, columns) in EXTRA_INDEXES.items():
+        assert name in indexes, f"补充索引 {name} 未被创建"
+        assert indexes[name] == (table, columns), (
+            f"补充索引 {name} 定义不符：期望 {table}{columns}，实际 {indexes[name]}。"
+            "等值列必须排在范围列之前，否则用不上索引。"
         )
 
 
@@ -351,6 +415,49 @@ def test_upgrade_is_idempotent_when_indexes_already_exist(fresh_db: TempDb) -> N
     assert _schema(fresh_db)["indexes"] == indexes_after_first, (
         "重复执行后索引集合发生变化，说明幂等逻辑有漏洞"
     )
+
+
+def test_upgrade_skips_columns_already_indexed_under_another_name(fresh_db: TempDb) -> None:
+    """
+    列已被别的名字的索引覆盖时，不再建 6.6 点名的同列索引。
+
+    这是本迁移真实踩过的坑，也是 `_index_on_columns` 存在的唯一理由：
+    MySQL 会为**每个外键自动建索引**，名字形如 `inspect_record_ibfk_1`，
+    与 6.6 点名的 `idx_space_id` / `idx_device_id` 对不上。若只比名字，就会在
+    `space_id` / `device_id` 上再建一条完全同列的索引 —— 白占空间、拖慢写入，
+    而且这种重复不会报错，只会安静地留在云库里。
+
+    SQLite 不为外键建索引（上面的 `test_migrated_schema_matches_models` 正是
+    靠这一点做严格双向核对），所以这里**手工造出** MySQL 的现场：把两条索引
+    改名为 `..._ibfk_N`。不造这个现场，按列判断的逻辑可以整体退回按名字判断
+    而测试全绿 —— 那等于这条修复没有护栏。
+    """
+    _stamp(fresh_db, INIT_REVISION)
+    asyncio.run(
+        _create_index(fresh_db.url, "inspect_record_ibfk_1", "inspect_record", ("space_id",))
+    )
+    asyncio.run(
+        _create_index(fresh_db.url, "repair_ticket_ibfk_2", "repair_ticket", ("device_id",))
+    )
+
+    completed = _run_alembic("upgrade", "head", db_url=fresh_db.url)
+    _assert_ok(completed, "alembic upgrade head")
+    assert "Duplicate key name" not in completed.stderr
+
+    indexes = _schema(fresh_db)["indexes"]
+    assert indexes["inspect_record_ibfk_1"] == ("inspect_record", ("space_id",))
+    assert indexes["repair_ticket_ibfk_2"] == ("repair_ticket", ("device_id",))
+    assert "idx_space_id" not in indexes, (
+        "inspect_record.space_id 已由外键自动索引覆盖，不该再建同列的 idx_space_id"
+    )
+    assert "idx_device_id" not in indexes, (
+        "repair_ticket.device_id 已由外键自动索引覆盖，不该再建同列的 idx_device_id"
+    )
+    # 其余 9 条不受影响，仍须建出 —— 防止「按列判断」误伤到别处
+    for name, (table, columns) in MIGRATION_INDEXES.items():
+        if name in {"idx_space_id", "idx_device_id"}:
+            continue
+        assert indexes.get(name) == (table, columns), f"索引 {name} 应照常创建"
 
 
 def test_migrated_schema_matches_models(fresh_db: TempDb) -> None:
@@ -397,8 +504,8 @@ def test_downgrade_drops_only_own_indexes(fresh_db: TempDb) -> None:
     )
 
     state = _schema(fresh_db)
-    assert not set(DOC66_INDEXES) & set(state["indexes"]), (
-        f"回滚后仍有本迁移的索引残留：{sorted(set(DOC66_INDEXES) & set(state['indexes']))}"
+    assert not set(MIGRATION_INDEXES) & set(state["indexes"]), (
+        f"回滚后仍有本迁移的索引残留：{sorted(set(MIGRATION_INDEXES) & set(state['indexes']))}"
     )
     # 用「包含」而非「相等」：alembic 自己会在库里建一张 alembic_version 表，
     # 它属于 alembic 而非本迁移，不该出现在断言里。
@@ -410,9 +517,10 @@ def test_downgrade_drops_only_own_indexes(fresh_db: TempDb) -> None:
 # --------------------------------------------------------------------------- #
 # 离线模式（--sql）
 # --------------------------------------------------------------------------- #
-def test_offline_sql_lists_all_doc66_indexes(fresh_db: TempDb) -> None:
+def test_offline_sql_lists_all_migration_indexes(fresh_db: TempDb) -> None:
     """
-    离线模式（`alembic upgrade head --sql`）应输出全部 10 条 CREATE INDEX。
+    离线模式（`alembic upgrade head --sql`）应输出全部 11 条 CREATE INDEX
+    （6.6 的 10 条 + 补充的 1 条）。
 
     离线模式拿不到数据库连接（env.py 里是 MockConnection），无法做存在性判断，
     因此退化为无条件 CREATE INDEX —— 用途仅限于评审与备份参考，
@@ -423,7 +531,7 @@ def test_offline_sql_lists_all_doc66_indexes(fresh_db: TempDb) -> None:
 
     sql = completed.stdout.decode("utf-8")
 
-    for name in DOC66_INDEXES:
+    for name in MIGRATION_INDEXES:
         assert f"CREATE INDEX {name} " in sql, f"离线 SQL 缺少索引 {name}"
 
     assert "-- 离线模式" in sql, "离线 SQL 缺少「不做存在性判断」的警示注释"

@@ -62,7 +62,17 @@
 内存库下两条连接看到的是两个库，这个断言会失去意义。
 
 **不给业务代码建 SQLite 路径**：SQLite 只出现在 `tests/` 与 `alembic` 的测试开关里。
-`开发流程.md` 13.1 那条「切换本地 SQLite 镜像库」是**演示应急预案**，不落进生产代码。
+
+`开发流程.md` 13.1 的「云数据库断连」那一行，原先写的是「切换本地 SQLite 镜像库」。
+**该方案已废弃**（2026-09-28，集成组定），改为**前端回放预置 trace** ——
+数据源就是 `docs/mock/agent_schedule.json`（7 步 / 39 秒，唯一真源），
+回放节奏与屏 3 的思考链、Agent 的 `POST /api/v1/mock/agent/schedule` 三处共用同一份。
+废弃镜像库的理由见 `开发流程.md` 13.1.1（团队文档已同步改写），核心是三条：
+本地要重建 9 张表 + 索引 + 种子数据；MySQL 方言与行锁语义在 SQLite 上**不等价**，
+镜像库跑得起来不等于演示可信；且演示前临时切库本身就是引入新故障的窗口。
+
+对本仓库的约束**没有变化**：SQLite 依然只出现在 `tests/` 与 `alembic` 的测试开关里，
+**不落进生产代码** —— 应急预案是演示动作，不是给业务代码加一条 `if` 分支。
 
 ### 2.2 环境变量守卫（收集期自检）
 
@@ -501,12 +511,14 @@ passlib 被完全封闭在本文件对应的两个函数里（判据：换库时
 
 | 用例 | 断言 |
 | --- | --- |
-| `test_fixture_starts_without_doc66_indexes` | 夹具自检：10 条文档 6.6 索引确实都不存在（否则后续断言无意义） |
-| `test_upgrade_creates_doc66_indexes` | `upgrade` 建出全部 10 个索引，且**列定义与列顺序**一致（复合索引的列顺序即定义顺序） |
+| `test_fixture_starts_without_migration_indexes` | 夹具自检：本迁移的 **11** 条索引确实都不存在（否则后续断言无意义） |
+| `test_upgrade_creates_doc66_indexes` | `upgrade` 建出文档 6.6 的 10 个索引，且**列定义与列顺序**一致（复合索引的列顺序即定义顺序） |
+| `test_upgrade_creates_the_extra_index` | 6.6 **之外**那 1 条（`idx_status_start`）也建出来，且**等值列在范围列之前** |
 | `test_upgrade_is_idempotent_when_indexes_already_exist` | 索引已存在时重复 `upgrade` **不报错**（这就是该迁移写成幂等版的理由） |
+| `test_upgrade_skips_columns_already_indexed_under_another_name` | 列已被**别的名字**的索引覆盖时不再建同列索引 —— 手工造出 MySQL 外键索引（`..._ibfk_N`）的现场，钉住「按列判存在」 |
 | `test_migrated_schema_matches_models` | 迁移后的库结构与 ORM 模型**逐列一致**（`autogenerate` 无噪音） |
 | `test_downgrade_drops_only_own_indexes` | 回滚只删本迁移创建的索引，**不动表与唯一约束** |
-| `test_offline_sql_lists_all_doc66_indexes` | 离线 `--sql` 输出 10 条 `CREATE INDEX` 与「未做存在性判断」的警示注释 |
+| `test_offline_sql_lists_all_migration_indexes` | 离线 `--sql` 输出全部 11 条 `CREATE INDEX` 与「未做存在性判断」的警示注释 |
 | `test_offline_sql_is_utf8` | 离线 SQL 是合法 UTF-8（否则 Windows 下中文注释乱码，评审时看不懂） |
 | `test_non_sqlite_override_is_rejected` | 非 `sqlite` 的 `ALEMBIC_DATABASE_URL` 被**硬拒绝**（安全护栏） |
 
@@ -551,15 +563,22 @@ passlib 被完全封闭在本文件对应的两个函数里（判据：换库时
 > **降级策略在认证链路上的取舍（决策 7）**：`login` 降级（照常发令牌）、`refresh`/`logout` 严格失败。
 > 理由见本文档 4.2 与 `docs/api.md` 第 2.6 节 —— 读不到白名单时凭空签发新令牌等于让登出彻底失效。
 
-### 5.4 「测试使用独立测试库 `smart_scheduler_test`」 — 当前不适用
+### 5.4 「测试使用独立测试库 `smart_scheduler_test`」 — 走的是后半句「或事务内回滚」
 
 `开发流程.md` 10.2 要求「测试使用独立测试库 `smart_scheduler_test`，或事务内回滚」。
-本项目当前**全部测试离线运行**（SQLite 临时文件库），因此：
+本项目当前**全部测试离线运行**（SQLite 临时文件库），不需要独立测试库，因此走的是
+**后半句**：
 
 - 不需要 `smart_scheduler_test`，**也不会污染云库**；
 - 需要真库才能验证的部分（`SELECT ... FOR UPDATE` 的并发行锁语义、真实 MySQL 方言、种子数据）**必须在云库上由人验证**，
   步骤见 `docs/deploy.md`；
-- `smart_scheduler_test` 是否已建、账号有无建库权限**尚未核实**（已列入 `docs/汇报文档.md` 待确认项）。
+- 真库测试的口径已定：**不建 `test_` 前缀表**，改用「外层事务 + savepoint 回滚」，
+  结束时不提交而整体回滚；`_db_readonly_guard` 的收窄方案见模块 3/4 的 stage-07 附录
+  （详见 `docs/database.md` 9.1）。确需真库写权限时找管理员申请，
+  `smart_scheduler_test` 是否已建**不再是推进的前置条件**。
+
+> 为什么不建 `test_` 前缀表：它要手工建、与 ORM 模型是两份定义，模型一改就悄悄偏离；
+> 而 `TRUNCATE` 在 MySQL 中是隐式提交，回滚不掉，清理失败会把脏数据留在云库里。
 
 ### 5.5 「Agent 层测试使用假 LLM 夹具」 — 归属模块 4
 
