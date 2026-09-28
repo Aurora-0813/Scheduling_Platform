@@ -77,6 +77,8 @@
 | 试合并结果 | **3 处冲突**：`backend/app/agent/prompts/image_prompt.py`（**本模块文件**）、`backend/app/api/v1/__init__.py`、`backend/app/core/exceptions.py`。三处都是**两边各跑过一次 `ruff format` 的格式相撞**，非语义分歧，但必须人工解 |
 | main 上有模块 4 的入口吗 | **没有**。main 的 `backend/app/api/v1/` 只有 `__init__ / auth / health / image / mock / mock_data / monitor / voice` |
 | main 上有模块 3 的真实现吗 | **没有**。main 的 `backend/app/services/` 没有 `order_service.py`（也没有 `space_service.py`、`device_service.py`） |
+| 主干漂移 | `origin/main` 由 `b4f4077` 前进到 **`2fd726e`**（`chore(ci): 前端 job 模板的 setup-node 版本更正为 v7`）——实测**只动 `.github/workflows/backend-ci.yml` 一个文件（+5/−1）**，不碰后端代码；本文件所有实测即基于 `2fd726e`，无需重测 |
+| 模块 7 侧的另一条硬前提 | 合模块 7 时 `notify_service.py` 是 **add/add**，且 `generate_notification` 只在 `0db6c18`——详见 `merge-checklist.md` **第 2 条**（不带回即 `app.services` ImportError，整个后端起不来） |
 
 **所以「合 main」会把模块 4 的代码搬到一棵既缺模块 3、也没有模块 4 入口的树上，
 演示主线仍然跑不通。** 建议：**先不要单方面合 main**，等 `develop` 出现（或集成组指定目标分支），
@@ -142,7 +144,7 @@
 
 | # | 前置 | 现状 | 卡在哪 |
 | --- | --- | --- | --- |
-| 1 | 桩函数全部替换 | ☐ 未齐 | `app/agent/` 自身无遗留桩，但 `generate_notification` 仍走模块 7 的**桩**：`notify_service.py` 里 `"延期致歉": None` → 返回 `ok=false`（未决 #6）；`lock_resources` 返回体里也仍带 `stub` 标记（桩期 `orderId` 恒 None 的产物）。责任人：模块 7 落地 + 集成组 |
+| 1 | 桩函数全部替换 | ☐ 未齐 | `app/agent/` 自身无遗留桩，但 `generate_notification` 仍走模块 7 的**桩**：`notify_service.py` 里 `"延期致歉": None` → 返回 `ok=false`。**未决 #6 已裁定（2026-09-28，黄嵩）：不扩字典、映射到 2**，模块 7 已实现（`0db6c18`），故本项**只差「模块 7 落 `main`」**——且它同时是合入的硬前提（见 `merge-checklist.md` 第 2 条）。`lock_resources` 返回体里也仍带 `stub` 标记（桩期 `orderId` 恒 None 的产物）。责任人：模块 7 落地 + 集成组 |
 | 2 | 屏 3 回放联调通过 | ☐ 未做 | 需与前端约定联调时间；阶段 8 的交接项尚无回执 |
 | 3 | `agent_trace` 落库并在后台可展示 | ☐ 未验证 | 代码路径在（`persist_agent_trace` → `update_agent_trace`，按冻结的 §7.6 传裸列表），但**端到端没验过落库**：桩期 `orderId` 恒 None 时直接 `return False`，且要等模块 3 的真 `create_order` 落库才有 id。「后台可展示」依赖前端/模块 10，未见实现 |
 | 4 | 埋点有真实数据 | ☐ 无数据 | 正式链路在 `origin/main`（`middlewares/agent_metrics.py` → `core/metrics.py` → `monitor_service` → `GET /api/v1/monitor/agent`）；本模块自建的**进程内计数已无读端**（仅本地排障用）。**真实数据**要等真实调用（真实 API 调用只在授权下跑过冒烟） |
@@ -160,7 +162,7 @@
 | 3 | 40 秒思考过程：回放 vs SSE | 前端 + 集成组 | ☐ |
 | 4 | `space_resource` 是否补 `tags` 字段 | 杨睿坤 + 集成组 | ✅ **已闭环（2026-09-28）**：不补列，改文档降级（`docs/开发流程.md`），登记硬卡点 #14；同步更正了 `stage-03-completion.md` 里的「待确认」 |
 | 5 | 应急预案 SQLite 与「禁止本地数据库」冲突 | 集成组 | ☐ |
-| 6 | `notify_type`(INT) 与中文枚举不一致 | 黄嵩 + 集成组 | ☐ （本模块的桩按「不擅自映射」处理，见 §6 第 1 项） |
+| 6 | `notify_type`(INT) 与中文枚举不一致 | 黄嵩 + 集成组 | ✅ **已裁定（2026-09-28，黄嵩）：不扩字典，`延期致歉` → 2（变更致歉）**；模块 7 已实现（`0db6c18`），待落 `main`。模块 4 侧用例期望值待同步（`test_agent_tools.py:459`，已加 TODO 注释）——见硬卡点 #13 |
 
 ---
 
