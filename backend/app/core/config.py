@@ -1,131 +1,181 @@
 """
 应用配置模块
-从 .env 文件读取配置，统一管理
+
+从 `.env` 文件读取配置，统一管理。`.env` 严禁提交至仓库（项目文档 8.6 / 9.4），
+仓库中只提供不含真实值的 `.env.example`。
+
+连接串由 DB_* 各项拼接而成，不单独配置 DATABASE_URL，避免两处配置漂移。
 """
+
+from __future__ import annotations
+
+import logging
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
+
+# 非 dev 环境下 JWT 密钥的最小长度
+MIN_JWT_SECRET_LENGTH = 32
+
+# accessToken 有效期超过此值（分钟）时在启动日志中告警
+ACCESS_TOKEN_WARN_MINUTES = 120
 
 
 class Settings(BaseSettings):
     """
     应用配置类
-    字段名对应 .env 里的变量名，大小写敏感
+
+    字段名对应 `.env` 里的变量名，大小写不敏感。
     """
 
-    # ---------- 数据库配置 ----------
-    DB_HOST: str = "127.0.0.1"            # 数据库主机
-    DB_PORT: int = 3308                    # 本地 SSH 隧道端口
-    DB_NAME: str = "smart_scheduler_dev"   # 数据库名
-    DB_USER: str = "smart_dev"             # 数据库用户
-    DB_PASSWORD: str = ""                  # 数据库密码，真实值放 .env
+    # ==================== 数据库配置 ====================
+    # 云服务器统一 MySQL（项目文档 6.1）。开发机通过 SSH 隧道连接，
+    # 因此 DB_HOST / DB_PORT 是隧道本端地址与映射端口，非云服务器真实地址。
+    DB_HOST: str = "127.0.0.1"
+    DB_PORT: int = 3308
+    DB_NAME: str = "smart_scheduler_dev"
+    DB_USER: str = "smart_dev"
+    DB_PASSWORD: str = ""
 
-    # ---------- 应用配置 ----------
+    # 建立 MySQL 连接的超时（秒）。
+    # 不设它时，隧道没起 / 云库不可达会让每个连接尝试都等到操作系统 TCP
+    # 超时（Windows 上可长达 20 秒以上），表现为：进程启动卡住、
+    # `GET /ready` 长时间无响应、Alembic 迁移前先干等半分多钟。
+    # 取 5 秒：局域网与隧道场景足够，故障时能快速失败。
+    DB_CONNECT_TIMEOUT: int = 5
+
+    # ==================== 应用配置 ====================
     APP_NAME: str = "SmartScheduler"
     APP_ENV: str = "dev"
     DEBUG: bool = True
 
-    # ---------- JWT 配置 ----------
-    JWT_SECRET_KEY: str = "change-me"      # 真实值放 .env
-    JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRE_MINUTES: int = 1440
+    # SQL 回显。与 DEBUG 刻意解耦：开启后 SQLAlchemy 会把 SQL 参数打进日志，
+    # 其中含 sys_user.password 的 bcrypt 哈希，因此默认关闭。
+    SQL_ECHO: bool = False
 
-    # ---------- 认证开关（临时，待集成组接管）----------
+    # ==================== JWT 配置 ====================
+    JWT_SECRET_KEY: str = "change-me"
+    JWT_ALGORITHM: str = "HS256"
+    # accessToken 有效期（分钟）
+    JWT_EXPIRE_MINUTES: int = 30
+    # refreshToken 有效期（天）
+    JWT_REFRESH_EXPIRE_DAYS: int = 7
+    # refreshToken 轮换宽限期（秒）。前端并发刷新时旧 token 在此窗口内
+    # 仍可换取一次新 token（消费即失效，不可重放）。
+    JWT_REFRESH_GRACE_SECONDS: int = 60
+
+    # ==================== Redis 配置 ====================
+    # refreshToken 白名单、登录失败计数、Agent 埋点指标的存储。
+    # 置为 False 时退化为进程内内存实现（功能完整，但服务重启后需重新登录）。
+    REDIS_ENABLED: bool = True
+    REDIS_HOST: str = "127.0.0.1"
+    REDIS_PORT: int = 6380
+    REDIS_PASSWORD: str = ""
+    REDIS_DB: int = 0
+    # 短超时：埋点与白名单读写都不能拖慢业务接口
+    REDIS_SOCKET_TIMEOUT: float = 0.5
+
+    # ==================== CORS 配置 ====================
+    # 项目文档 5.4：需允许 Web 前端 localhost 及小程序域名。多个来源用英文逗号分隔。
+    CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
+
+    # ==================== 文件上传配置 ====================
+    MAX_UPLOAD_SIZE_MB: int = 10
+    UPLOAD_DIR: str = "uploads"
+
+    # ==================== 密码哈希配置 ====================
+    # bcrypt cost。12 约需 200-300ms/次；测试环境可降到 4 加速。
+    BCRYPT_ROUNDS: int = 12
+
+    # ==================== AI 增强（可选） ====================
+    # 项目文档 4.4 模块 9：登录异常检测为可选增强，不影响主流程。
+    # 默认关闭时，登录流程完全不读写风控键，行为与没有该模块时一致。
+    AI_RISK_ENABLED: bool = False
+
+    # 连续登录失败多少次后临时锁定（仅在 AI_RISK_ENABLED=true 时生效）。
+    # 取 5 是常见取值：正常用户打错几次不会被锁，在线爆破则很快被拦住。
+    LOGIN_MAX_FAILURES: int = 5
+    # 失败计数的滑动窗口（秒）。停止尝试 15 分钟后计数自动清零。
+    LOGIN_FAIL_WINDOW_SECONDS: int = 900
+
+    # ==================== 模块 1 / 模块 2 引入的配置 ====================
+    # 来源：模块 1（语音输入，百度 ASR + DeepSeek 口语格式化）与
+    #       模块 2（摄像头空间感知，视觉多模态模型）。
+    # 这些字段原先定义在两位负责人自建的临时 app/core/config.py 中，
+    # 合并时整体迁入本文件，默认值保持与模块开发期一致。
+
+    # ---------- 认证开关（仅联调用）----------
     # true 时 get_current_user 直接放行，不校验 Token。
-    # 仅供模块自测与联调使用，**部署与演示前必须改为 false**
+    # ⚠️ 仅限模块自测与联调，**演示与部署前必须保持 false**。
     AUTH_BYPASS: bool = False
 
-    # ---------- 跨域（§5.4）----------
-    # 允许访问后端的前端来源。开发期放 localhost 各端口；
-    # 生产期替换为真实域名。小程序不走浏览器 CORS，不受此项影响。
-    CORS_ORIGINS: list[str] = [
-        "http://localhost:5173",   # Vite 默认端口
-        "http://127.0.0.1:5173",
-        "http://localhost:8080",
-    ]
-
-    # ---------- 视觉多模态模型（模块 2 摄像头空间感知）----------
-    # 规范 §3.5：模型名称与 API 版本在 .env 中集中配置
-    # 规范 §3.3：不训练、不微调模型，全部走公有云 API
-    VISION_MODEL_NAME: str = ""                      # 模型名，如 qwen-vl-max
-    VISION_API_KEY: str = ""                         # 密钥，真实值放 .env
-    VISION_API_BASE: str = ""                        # OpenAI 兼容端点地址
-    VISION_STRUCTURED_OUTPUT: bool = True            # 是否启用 with_structured_output（见 app/core/llm.py）
-    LLM_TIMEOUT: int = 60                            # 单次模型调用超时（秒），视觉任务比纯文本慢，给足
-    LLM_MAX_RETRIES: int = 1                         # SDK 层自动重试次数
+    # ---------- 视觉多模态模型（模块 2）----------
+    VISION_MODEL_NAME: str = ""            # 模型名，如 qwen-vl-max
+    VISION_API_KEY: str = ""               # 密钥，真实值放 .env
+    VISION_API_BASE: str = ""              # OpenAI 兼容端点地址
+    VISION_STRUCTURED_OUTPUT: bool = True  # 是否启用 with_structured_output（见 app/core/llm.py）
+    # 单次模型调用超时（秒）。视觉任务比纯文本慢，给足。
+    LLM_TIMEOUT: int = 60
+    # SDK 层自动重试次数；仍失败则抛异常，由 service 层降级为友好提示。
+    LLM_MAX_RETRIES: int = 1
 
     # ---------- 空间感知策略参数（模块 2）----------
-    IMAGE_CONFIDENCE_THRESHOLD: float = 0.75         # 置信度阈值，低于则触发向用户追问
-    IMAGE_SPACE_CANDIDATE_LIMIT: int = 100           # 注入 Prompt 的候选场地上限，防止 Prompt 超长
-    IMAGE_MAX_SIZE_MB: int = 5                       # 上传图片大小上限
-    IMAGE_UPLOAD_DIR: str = "uploads"                # 图片落盘根目录（相对于 backend/）
-    IMAGE_STORAGE_BASE_URL: str = "/uploads"         # 对外可访问的 URL 前缀
-    IMAGE_ENABLE_AVAILABLE_SLOTS: bool = True        # 是否计算场地空档时段
+    # 置信度阈值，低于则触发向用户追问而不是直接出方案。
+    IMAGE_CONFIDENCE_THRESHOLD: float = 0.75
+    # 注入 Prompt 的候选场地上限，防止 Prompt 超长。
+    IMAGE_SPACE_CANDIDATE_LIMIT: int = 100
+    # 上传图片大小上限（MB）。
+    # 与上面的 MAX_UPLOAD_SIZE_MB 分工见 `image_max_size_bytes` 属性：
+    # 本项覆盖**所有**图片链路（image_storage 落盘校验 + utils.upload 的
+    # validate_image_upload），MAX_UPLOAD_SIZE_MB 覆盖音频与模块 9/10 通用链路。
+    # 两者默认不同（5 vs 10）是**按媒体类型**的差异，不是并行冲突：
+    # 图片要送视觉模型，限制更紧以控制成本与延迟；录音时长天然更长。
+    # 已确认图片链路内部两处校验取值一致（原先 validate_image_upload 误用
+    # 通用上限，会让同一张图得到两种判定，已修正）。
+    IMAGE_MAX_SIZE_MB: int = 5
+    # 图片落盘根目录（相对 backend/）。与 UPLOAD_DIR 默认值恰好相同，
+    # 但语义上属于图片链路专有，故保留独立配置项。
+    IMAGE_UPLOAD_DIR: str = "uploads"
+    # 对外可访问的 URL 前缀（main.py 以它挂载 StaticFiles）。
+    IMAGE_STORAGE_BASE_URL: str = "/uploads"
+    # 是否计算场地未来空档时段（依赖预约数据，关闭可省一次查询）。
+    IMAGE_ENABLE_AVAILABLE_SLOTS: bool = True
 
-    # ---------- 语音识别 ASR（模块 1 语音输入，百度短语音标准版）----------
-    BAIDU_APP_ID: str = ""                           # 百度智能云 AppID
-    BAIDU_API_KEY: str = ""                          # API Key，真实值放 .env
-    BAIDU_SECRET_KEY: str = ""                       # Secret Key，真实值放 .env
-    ASR_MODEL_PID: int = 1537                        # 1537 普通话(含英文/数字，实测最稳)；1737 纯中文
-    ASR_RATE: int = 16000                            # 采样率，与小程序录音参数对齐
-    ASR_MAX_DURATION_S: int = 60                     # 识别音频最长秒数
+    # ---------- 语音识别 ASR（模块 1，百度短语音标准版）----------
+    BAIDU_APP_ID: str = ""        # 百度智能云 AppID
+    BAIDU_API_KEY: str = ""       # API Key，真实值放 .env
+    BAIDU_SECRET_KEY: str = ""    # Secret Key，真实值放 .env
+    # 1537 普通话（含英文/数字，实测最稳）；1737 纯中文。
+    ASR_MODEL_PID: int = 1537
+    # 采样率，需与小程序录音参数对齐。
+    ASR_RATE: int = 16000
+    # 识别音频最长秒数。
+    ASR_MAX_DURATION_S: int = 60
 
     # ---------- 口语格式化（模块 1，DeepSeek 纯文本模型）----------
-    DEEPSEEK_API_KEY: str = ""                       # 真实值放 .env
+    DEEPSEEK_API_KEY: str = ""                                # 真实值放 .env
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
-    DEEPSEEK_MODEL: str = "deepseek-flash"           # 口语清洗所用模型
+    DEEPSEEK_MODEL: str = "deepseek-flash"                    # 口语清洗所用模型
 
-    # 指定 .env 文件位置和编码
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        # .env 中存在未定义的键时忽略，避免队友本地多写的变量导致启动失败
+        extra="ignore",
     )
 
-    # ------------------------------------------------------------------
-    # 路径属性
-    # ------------------------------------------------------------------
-
-    @property
-    def backend_dir(self) -> Path:
-        """
-        后端项目根目录（即 backend/ 的绝对路径）。
-
-        推导过程：
-            本文件位于 backend/app/core/config.py
-            Path(__file__).resolve()      → .../backend/app/core/config.py
-            .parent                       → .../backend/app/core
-            .parent                       → .../backend/app
-            .parent                       → .../backend
-
-        为什么要这个属性：
-            IMAGE_UPLOAD_DIR 配置的是相对路径 "uploads"，
-            如果直接用 Path("uploads").resolve()，解析结果会跟着**进程的工作目录**跑 ——
-            从 backend/ 启动是对的，但从仓库根或别处启动就会写到错误位置。
-            统一以 backend/ 为基准，保证无论从哪启动，图片都落在同一个地方。
-        """
-        return Path(__file__).resolve().parent.parent.parent
-
-    @property
-    def image_upload_path(self) -> Path:
-        """
-        图片落盘目录的绝对路径（自动创建）。
-
-        用法：
-            settings.image_upload_path / "20260924" / "xxx.jpg"
-
-        说明：
-            这里顺带 mkdir，让调用方（image_storage）不必关心目录是否存在，
-            也避免 main.py 在挂载静态目录时因为目录不存在而启动失败。
-        """
-        path = self.backend_dir / self.IMAGE_UPLOAD_DIR
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+    # ==================== 派生属性 ====================
 
     @property
     def database_url(self) -> str:
         """
-        异步数据库连接串，供 FastAPI 运行时使用
-        格式：mysql+asyncmy://用户:密码@主机:端口/库名?charset=utf8mb4
+        异步数据库连接串。
+
+        项目文档 3.4：连接串固定为 `mysql+asyncmy://`，
+        禁止使用同步驱动 PyMySQL / mysqlclient。
         """
         return (
             f"mysql+asyncmy://{self.DB_USER}:{self.DB_PASSWORD}"
@@ -134,18 +184,125 @@ class Settings(BaseSettings):
         )
 
     @property
-    def sync_database_url(self) -> str:
+    def masked_database_url(self) -> str:
+        """隐藏密码的连接串，供日志与探针接口安全展示。"""
+        return f"mysql+asyncmy://{self.DB_USER}:***@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+
+    @property
+    def redis_url(self) -> str:
+        """Redis 连接串。无密码时不拼接认证段。"""
+        auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""
+        return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """把逗号分隔的 CORS_ORIGINS 解析为列表。"""
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+    @property
+    def max_upload_size_bytes(self) -> int:
+        """通用上传大小上限（字节），服务于音频与模块 9/10 的通用校验。"""
+        return self.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+
+    @property
+    def image_max_size_bytes(self) -> int:
         """
-        同步数据库连接串，供 Alembic 迁移使用
-        格式：mysql+pymysql://用户:密码@主机:端口/库名?charset=utf8mb4
+        图片上传大小上限（字节）。
+
+        图片链路上有**两处**校验必须用同一个值，否则同一张图会得到两种判定：
+            1. `app/services/image_storage.py` 落盘前的校验；
+            2. `app/utils/upload.py` 的 `validate_image_upload()`（模块 6 巡检照片复用）。
+        第 2 处原先误用了 `MAX_UPLOAD_SIZE_MB`（10MB），与第 1 处的 5MB 不一致，
+        已随合并遗留项一并修正 —— 统一走本属性。
         """
-        return (
-            f"mysql+pymysql://{self.DB_USER}:{self.DB_PASSWORD}"
-            f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
-            f"?charset=utf8mb4"
-        )
+        return self.IMAGE_MAX_SIZE_MB * 1024 * 1024
+
+    # ---------- 路径属性（模块 2 引入）----------
+
+    @property
+    def backend_dir(self) -> Path:
+        """
+        后端项目根目录（`backend/` 的绝对路径）。
+
+        推导：本文件位于 `backend/app/core/config.py`，
+        向上三层即 `backend/`。
+
+        为什么需要它：
+            `IMAGE_UPLOAD_DIR` 是相对路径 "uploads"，若用 `Path("uploads").resolve()`
+            解析，结果会跟着**进程的工作目录**走 —— 从 backend/ 启动是对的，
+            从仓库根或别处启动就会写到错误位置。统一以 backend/ 为基准，
+            保证无论从哪里启动，图片都落在同一处。
+        """
+        return Path(__file__).resolve().parent.parent.parent
+
+    @property
+    def image_upload_path(self) -> Path:
+        """
+        图片落盘目录的绝对路径（顺带创建目录）。
+
+        用法：
+            settings.image_upload_path / "20260924" / "xxx.jpg"
+
+        这里顺带 mkdir，让调用方（image_storage）不必关心目录是否存在，
+        也避免 main.py 挂载静态目录时因目录缺失而启动失败。
+        """
+        path = self.backend_dir / self.IMAGE_UPLOAD_DIR
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def is_dev(self) -> bool:
+        """是否开发环境。"""
+        return self.APP_ENV.lower() == "dev"
+
+    # ==================== 启动校验 ====================
+
+    @model_validator(mode="after")
+    def _check_security_settings(self) -> Settings:
+        """
+        启动期安全检查。
+
+        设计取舍：
+        - 非 dev 环境密钥强度不足 → 直接拒绝启动（fail fast）。
+        - dev 环境密钥强度不足 → 仅告警。因为本地开发的 `.env` 往往沿用旧值，
+          硬失败会阻塞所有人联调，代价大于收益。
+        """
+        secret = self.JWT_SECRET_KEY or ""
+        if len(secret) < MIN_JWT_SECRET_LENGTH:
+            message = (
+                f"JWT_SECRET_KEY 强度不足（当前 {len(secret)} 字符，"
+                f"要求至少 {MIN_JWT_SECRET_LENGTH} 字符）。"
+                '生成方式：python -c "import secrets; print(secrets.token_urlsafe(48))"'
+            )
+            if self.is_dev:
+                logger.warning("%s（当前为 dev 环境，暂不阻止启动）", message)
+            else:
+                raise ValueError(f"{message}（当前 APP_ENV={self.APP_ENV}，已拒绝启动）")
+
+        if self.JWT_EXPIRE_MINUTES > ACCESS_TOKEN_WARN_MINUTES:
+            logger.warning(
+                "JWT_EXPIRE_MINUTES=%s 分钟（超过建议上限 %s 分钟）。"
+                "accessToken 有效期过长会削弱登出与强制作废的效果，"
+                "请确认 .env 中的该配置是否预期为此值。",
+                self.JWT_EXPIRE_MINUTES,
+                ACCESS_TOKEN_WARN_MINUTES,
+            )
+
+        if self.BCRYPT_ROUNDS < 4:
+            raise ValueError("BCRYPT_ROUNDS 不得小于 4。")
+
+        # AUTH_BYPASS 是模块 1/2 联调用的「跳过 Token 校验」开关。
+        # 它会让所有请求以管理员身份放行，因此**只允许在 dev 环境使用** ——
+        # 非 dev 环境直接拒绝启动，避免演示/部署时误带着它上线。
+        if self.AUTH_BYPASS and not self.is_dev:
+            raise ValueError(
+                f"AUTH_BYPASS=true 但 APP_ENV={self.APP_ENV}：该开关会跳过全部鉴权，"
+                "仅允许在 dev 环境使用。请把 AUTH_BYPASS 改回 false。"
+            )
+
+        return self
 
 
-# 全局配置实例，其他地方直接：
-# from app.core.config import settings
+# 全局配置实例。其他地方直接：
+#   from app.core.config import settings
 settings = Settings()

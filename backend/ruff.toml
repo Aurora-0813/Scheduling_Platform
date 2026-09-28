@@ -1,0 +1,73 @@
+# ============================================================================
+# ruff 配置（代码检查 + 格式化）
+# ----------------------------------------------------------------------------
+# 本地运行：
+#     pip install ruff==0.16.9      # 版本必须与 .pre-commit-config.yaml 的 rev
+#     ruff check --fix .            # 和 CI 里的固定版本一致，否则规则集会漂移
+#     ruff format .
+#
+# 一般情况下不用手动跑：pre-commit 已经挂好了（见 .pre-commit-config.yaml）。
+# ============================================================================
+
+# 项目运行在 Python 3.11（项目文档 3.6 的 conda 环境 smart_dev）
+target-version = "py311"
+
+# 行宽上限。100 是刻意的折中：本项目大量注释是中文，80 太窄会频繁折行；
+# 再宽则代码块在 13 寸屏上要横向滚动。
+line-length = 100
+
+# 自动生成的迁移文件不检查也不格式化。
+# 理由：它们是 alembic autogenerate 的产物，下一次 autogenerate 会重新生成，
+# 手工格式化出来的差异会被冲掉，只留下无意义的 diff。
+exclude = ["alembic/versions"]
+
+[format]
+# Markdown 里围栏代码块中的 Python **不参与格式化**。
+#
+# 理由：ruff 会把 .md 里的 ```python 块当真实源码来格式化，而文档里的片段是
+# **为了讲清楚一件事而刻意排版的示例**，不是可执行代码。实测它会把
+# `open_start_time: DateTimeStr          # → "2026-09-27 09:30:00"` 这类
+# 对齐注释压成单空格，甚至把 `async def f(...) -> ...: ...` 这种
+# 「省略号占位」的示例改成 `-> ...: ...`（语法错误）。
+# 也就是说：让 ruff 格式化文档，会把**给人看的说明**改成**不可读且不合法**的样子，
+# 而它的收益（统一缩进）对文档并不存在。
+#
+# 注意这只关掉**格式化**。`ruff check` 仍然会扫 Markdown 里的代码块
+# （能抓出未使用的导入这类真实笔误），CI 的 lint 步骤不受影响。
+exclude = ["*.md"]
+
+
+[lint]
+# 规则集的选择标准：**只选能拦住真实缺陷的**，不选纯风格偏好。
+#   E/W  pycodestyle 的错误与警告（含 E501 行宽，由 line-length 控制）
+#   F    pyflakes：未使用的导入/变量、重复定义 —— 最常抓出笔误的一组
+#   I    isort：导入顺序，避免 5 个人各写一种顺序
+#   B    flake8-bugbear：可变默认参数、except 兜住一切等真实陷阱
+#   C4   comprehension：列表推导的常见写法问题
+#   UP   pyupgrade：按 3.11 的写法升级（Optional[X] → X | None、str+Enum →
+#        StrEnum 等）
+#   ASYNC flake8-async：在 async 函数里做阻塞调用（本项目的核心纪律之一）
+#   BLE  flake8-blind-except：`except Exception` 必须写清楚为什么
+#   RUF100 没用的 `# noqa` —— 过期的 noqa 会掩盖真正该看到的告警
+select = ["E", "W", "F", "I", "B", "C4", "UP", "ASYNC", "BLE", "RUF100"]
+
+# 必须关闭的个别规则（不是整族，因此不能靠不 select 来关）：
+#   B008 function-call-in-default-argument
+#       `Depends(...)` / `Query(...)` / `Body(...)` / `File(...)` 写在函数默认值里
+#       是 **FastAPI 唯一支持的依赖注入写法**（框架靠扫描默认值来收集依赖），
+#       不是「默认参数里做调用」这个缺陷。全项目 23 处命中，全部是这个用法。
+#       已在 tests/api/* 里逐个路由验证过行为，见 docs/test.md。
+ignore = ["B008"]
+
+# 刻意**不启用**的规则集，以及为什么：
+#   S (bandit)  用 `--select S` 实测过：命中 337 条 S101「测试里用了 assert」，
+#               而 assert 就是 pytest 的断言方式；要为它写 per-file-ignores 把
+#               tests/ 整目录豁免，等于把这条规则变空。真正有价值的 S110
+#               （try/except/pass）只有 1 处，已在下一条以 BLE001 注释说明。
+#               —— 不为一处收益引入一整族噪音。
+#   RUF 全量    含 RUF001/RUF002（歧义 Unicode 字符），会把中文全角标点
+#               （，。：）全部报出来 —— 对本项目是纯噪音。
+#   D (pydocstyle) 本项目用中文 docstring 说明「为什么」，不追形式化标签，
+#               强制 Google/NumPy 风格只会让大家把注释写得更短更没用。
+#   ANN (annotations) 测试夹具与 mock 函数的注解价值有限。
+#   T20 (print) 只在 app/ 有意义，而当前没有需要拦的 print。

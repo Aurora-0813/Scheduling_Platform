@@ -1,0 +1,67 @@
+# 统一行尾符：仓库内一律 LF，检出时不做转换
+# ---------------------------------------------------------------------------
+# 为什么需要这个文件：
+#   合并模块 1/2 时，远端在 Windows + PyCharm 下提交了 CRLF，本地是 LF，
+#   导致 28 个文件被 `diff` 报成「全文件冲突」，逐个比对（--strip-trailing-cr）
+#   后才发现其中一部分唯一差异就是行尾符。这类噪音会掩盖真正的语义冲突。
+#
+#   本文件显式声明后，Git 在提交时统一存 LF，检出时按 `eol=lf` 保持 LF，
+#   换行符不再进入 diff。
+#
+# 注意：本文件只约束**之后的**提交。已在版本库里的 CRLF 文件不会自动改写，
+# 需要时可用 `git add --renormalize .` 重新规范化一次。
+
+# 默认：自动识别文本文件，仓库内统一用 LF
+* text=auto eol=lf
+
+# --- 明确为文本、且必须是 LF ---
+*.py    text eol=lf
+*.pyi   text eol=lf
+*.md    text eol=lf
+*.rst   text eol=lf
+*.txt   text eol=lf
+*.cfg   text eol=lf
+*.ini   text eol=lf
+*.toml  text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.json  text eol=lf
+*.sql   text eol=lf
+*.sh    text eol=lf
+*.env   text eol=lf
+
+# --- Windows 批处理必须是 CRLF，否则 cmd.exe 会出错 ---
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# --- 二进制：禁止任何行尾转换与文本 diff ---
+*.pyc   binary
+*.pyo   binary
+*.pyd   binary
+*.so    binary
+*.dll   binary
+*.exe   binary
+
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.bmp   binary
+*.ico   binary
+*.pdf   binary
+
+*.wav   binary
+*.mp3   binary
+*.m4a   binary
+*.amr   binary
+*.ogg   binary
+
+*.zip   binary
+*.tar   binary
+*.gz    binary
+*.whl   binary
+
+# --- 锁文件：保持原样，避免合并时产生无意义冲突 ---
+requirements.lock  -diff
+poetry.lock        -diff

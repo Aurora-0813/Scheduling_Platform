@@ -32,7 +32,12 @@ from app.schemas.image import SketchAnalyzeData, SpaceAnalyzeData
 from app.services.image_service import analyze_sketch_image, analyze_space_image
 
 # 路由前缀 + 标签：标签会显示在 /docs 的接口分组标题上
-router = APIRouter(prefix="/api/v1/image", tags=["摄像头空间感知"])
+# 合并说明：本行原为 prefix="/api/v1/image"。
+# 项目约定是「各模块 router 只写自己的相对前缀，统一由 api/v1/__init__.py
+# 汇总后挂到 /api/v1 下」（见 app/api/v1/__init__.py 与 app/main.py 的说明）。
+# 原写法是在临时 main.py（app.include_router(image_router) 无前缀）下定的，
+# 若保持不变，合并后会变成 /api/v1/api/v1/image/...，故对齐为 "/image"。
+router = APIRouter(prefix="/image", tags=["摄像头空间感知（模块 2）"])
 
 
 @router.post(

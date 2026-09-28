@@ -2,9 +2,10 @@
 巡检与工单模型
 包含：inspect_record, repair_ticket
 """
+
 from datetime import datetime
 
-from sqlalchemy import BigInteger, String, Integer, DateTime, JSON, ForeignKey, func
+from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -12,9 +13,12 @@ from app.core.database import Base
 
 class InspectRecord(Base):
     """巡检记录表"""
+
     __tablename__ = "inspect_record"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True, comment="主键"
+    )
     space_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("space_resource.id"), nullable=True, comment="巡检关联的空间ID"
     )
@@ -28,12 +32,18 @@ class InspectRecord(Base):
         DateTime, server_default=func.now(), comment="创建时间"
     )
 
+    # 索引声明（项目文档 6.6）：空间巡检查询
+    __table_args__ = (Index("idx_space_id", "space_id"),)
+
 
 class RepairTicket(Base):
     """维修工单表"""
+
     __tablename__ = "repair_ticket"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True, comment="主键"
+    )
     inspect_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("inspect_record.id"), nullable=True, comment="关联巡检记录ID"
     )
@@ -55,4 +65,10 @@ class RepairTicket(Base):
     )
     update_time: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间"
+    )
+
+    # 索引声明（项目文档 6.6）：设备工单查询、工单状态筛选
+    __table_args__ = (
+        Index("idx_device_id", "device_id"),
+        Index("idx_ticket_status", "ticket_status"),
     )

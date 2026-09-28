@@ -1,138 +1,284 @@
 """
-FastAPI 应用入口
-====================================================================
-⚠️ 临时实现，待基础支撑与集成组接管
+FastAPI 应用入口（模块 10：系统集成与联调）
 
-    集成组交付正式的 app/main.py（挂载全部模块路由 + 完整中间件）后，
-    请把本文件中的「模块 2 相关挂载块」合并进去，然后覆盖本文件。
-    模块 2 需要的挂载内容已在下面用醒目注释标出。
+启动方式
+--------
+    uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
-启动方式：
-    cd backend
-    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+或直接用 `bash scripts/dev.sh`（内含上述命令与常用参数）。
 
-    启动后打开 http://127.0.0.1:8000/docs 即可看到接口文档并直接调测。
+本文件是**全组唯一的集成点**
+---------------------------
+模块 1~8 的接口不需要改本文件：每个人把自己的 router 加进
+`app/api/v1/__init__.py` 的 `api_router` 即可，本文件只 include 那一个汇总 router。
+这样能避免 5 个人反复改同一个 main.py 造成冲突。
+
+中间件的顺序（**顺序即语义，改之前务必读完这段**）
+--------------------------------------------------
+Starlette 的 `add_middleware` 是**前插**：最后添加的在栈的最外层，
+请求先经过它。本项目的顺序（自外向内）：
+
+    CORS  →  RequestContext  →  AgentMetrics  →  ExceptionMiddleware  →  路由
+
+- **CORS 在最外层**：否则 4xx 响应（由内层的 ExceptionMiddleware 生成）
+  不会经过 CORS 中间件、响应里就没有 `Access-Control-Allow-Origin`，
+  浏览器把「401 未登录」报成「跨域错误」，前端排查会被完全带偏。
+- **RequestContext 在 Metrics 外层**：埋点写 Redis 失败时的告警日志
+  也要带上 requestId；反过来的话那条日志就没有 ID 可关联。
+- 两者都在 ExceptionMiddleware 外层：这样 `BizError` 转换出的响应
+  同样会经过它们，被记进访问日志、拿到 `X-Request-Id` 头。
+
+已知边界：**未处理异常（500）的响应没有 CORS 头，也没有 X-Request-Id 头**。
+`app/core/response.py` 注册的 `Exception` 处理器是交给 Starlette 的
+`ServerErrorMiddleware` 调用的，而它位于全部业务中间件**之外**：它生成的
+响应不会再回穿 CORS 与 RequestContext —— 这是框架结构决定的，不是本项目的
+配置疏漏，已由 `tests/api/test_cors.py` 固化为断言。
+
+覆盖范围要说清楚：**凡是走到 `exception_handler` 之外的未预料异常**（即
+`BizError`、`RequestValidationError` 与显式抛出的 `HTTPException` 之外的一切），
+响应都会缺这两个头；`/api/v1/_probe/cors-boom` 那条用例实测的就是这条路径。
+影响可接受：此时响应体仍是规范的信封（500/50000），堆栈在日志里，
+而「缺一个 CORS 头」是次要问题。要消掉它只能在自己的中间件里再造一份
+500 响应体，那会让「统一响应体」出现两个来源 —— 代价更大。
+排查此类故障时，按 `method + path` 关联本中间件那条 **ERROR 级访问日志**
+（它带 requestId）与紧跟其后的堆栈日志即可。
 """
+
+from __future__ import annotations
+
 import logging
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 
-from app.core.config import settings
+from app.api.deps import reset_token_store
+from app.api.v1 import API_V1_PREFIX, api_router
+from app.core.config import MIN_JWT_SECRET_LENGTH, settings
 from app.core.database import async_engine
-from app.core.exceptions import register_exception_handlers
-from app.core.response import success
+from app.core.logging import get_logger, setup_logging
+from app.core.metrics import reset_metric_store
+from app.core.redis import check_health as redis_check_health
+from app.core.response import register_exception_handlers
+from app.middlewares import AgentMetricsMiddleware, RequestContextMiddleware
 
-# ===========================================================================
-# 路由注册
-# ===========================================================================
-# 每接入一个新模块，在这里 import 它的 router 并 include_router
-from app.api.v1.image import router as image_router            # 模块 2 摄像头空间感知
-from app.api.v1.voice import router as voice_router            # 模块 1 语音输入
+__all__ = ["app", "create_app", "lifespan"]
 
-logging.basicConfig(
-    level=logging.DEBUG if settings.DEBUG else logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-logger = logging.getLogger("app.main")
+logger = get_logger(__name__)
+
+# CORS 预检结果缓存时长（秒）。前端一个页面会连发多个不同方法/头的请求，
+# 不缓存的话每个都会先发一次 OPTIONS，白白多一倍请求量。
+_CORS_MAX_AGE = 600
+
+
+# ==========================================================================
+# lifespan：启动与关闭
+# ==========================================================================
+async def _probe_database() -> str:
+    """
+    启动期数据库探活。返回 `"ok"` / `"error"`。
+
+    **失败不阻止启动**，只打日志。理由：库连不上时更需要进程活着 ——
+    否则 `/api/v1/ready` 也打不开，就只能去翻服务器日志才能知道是库的问题。
+    而且 uvicorn 的 `--reload` 会在库还没起好时反复重启进程，硬失败会导致
+    开发期陷入启动/退出循环。真正的「依赖不可用」判定交给 `/ready` 接口。
+    """
+    try:
+        async with async_engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        return "ok"
+    except Exception as exc:  # noqa: BLE001 - 启动探活不能抛
+        # 只打异常类型与消息，不打堆栈：连接失败的栈有 40 行且每次启动都一样，
+        # 真正有用的信息是「哪个地址连不上」，而它已经在 masked_database_url 里。
+        logger.warning(
+            "启动探活：数据库不可用（服务仍会启动，详见 GET /api/v1/ready） target=%s %s: %s",
+            settings.masked_database_url,
+            type(exc).__name__,
+            exc,
+        )
+        return "error"
+
+
+def _warn_about_security_settings() -> None:
+    """
+    启动时把安全配置的问题再喊一遍。
+
+    `app/core/config.py` 的 `model_validator` 在 **import 时**就检查过一次，
+    但那时 `setup_logging()` 还没执行，告警可能落在默认的 handler 上（格式不同、
+    可能被忽略）。这里在日志系统就绪后再打一次，保证它一定以 JSON 日志出现
+    在启动输出里 —— 一个 6 字符的 JWT 密钥不该静悄悄地跑起来。
+    """
+    if len(settings.JWT_SECRET_KEY or "") < MIN_JWT_SECRET_LENGTH:
+        logger.warning(
+            "安全告警：JWT_SECRET_KEY 强度不足（当前 %s 字符，要求至少 %s）。"
+            "该密钥可被暴力破解，进而伪造任意用户的登录令牌。"
+            '生成新密钥：python -c "import secrets; print(secrets.token_urlsafe(48))"',
+            len(settings.JWT_SECRET_KEY or ""),
+            MIN_JWT_SECRET_LENGTH,
+        )
+    if not settings.is_dev:
+        logger.info("当前环境为 %s（非 dev），已启用密钥强度硬校验", settings.APP_ENV)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    """
-    应用生命周期钩子：启动时准备资源，关闭时释放资源。
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """应用生命周期：日志 → 配置自检 → 依赖探活 →（yield）→ 资源释放。"""
+    setup_logging(logging.DEBUG if settings.DEBUG else logging.INFO)
 
-    参数：
-        app : FastAPI  应用实例
-
-    说明：
-        用 lifespan 取代已废弃的 @app.on_event("startup"/"shutdown")，
-        它是 FastAPI 当前推荐的写法，且 with 语句能保证清理逻辑一定被执行。
-    """
-    # ---- 启动阶段 ----
-    # 确保上传目录存在。settings.image_upload_path 内部已做 mkdir，
-    # 这里主要是为了在启动日志里留下痕迹，方便排查路径问题。
-    logger.info("上传目录：%s", settings.image_upload_path)
-    logger.info("视觉模型：%s", settings.VISION_MODEL_NAME or "（未配置）")
-    if settings.AUTH_BYPASS:
-        # 用 warning 级别，确保这条提示在日志里足够显眼
-        logger.warning("⚠️ 鉴权已关闭（AUTH_BYPASS=true），仅限联调使用，部署前必须改回 false")
-
-    yield   # ← 应用运行期间在这里挂起
-
-    # ---- 关闭阶段 ----
-    # 显式释放数据库连接池，避免进程退出时留下未关闭的连接
-    await async_engine.dispose()
-    logger.info("数据库连接池已释放，应用关闭")
-
-
-app = FastAPI(
-    title=settings.APP_NAME,
-    description="AI 全感知·智能空间与设备综合调度平台 —— 后端服务",
-    version="0.1.0-m2",
-    lifespan=lifespan,
-)
-
-# ===========================================================================
-# 中间件与全局处理
-# ===========================================================================
-
-# 统一异常处理（§4.3）：业务异常、参数校验失败、未捕获异常都收敛成统一响应体
-register_exception_handlers(app)
-
-# CORS（§5.4）：允许前端 localhost 及小程序域名访问
-# 注意：小程序原生请求不受浏览器同源策略约束，此项主要服务于 Web 管理端开发
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ===========================================================================
-# 静态目录：让 /uploads/xxx.jpg 可访问（模块 2 图片回放）
-# ===========================================================================
-# 生产环境若改为 Nginx 直接托管 uploads 目录，可删掉这一段以节省后端资源。
-# 目录已在 settings.image_upload_path 中自动创建，不会因目录缺失导致启动失败。
-app.mount(
-    settings.IMAGE_STORAGE_BASE_URL,
-    StaticFiles(directory=str(settings.image_upload_path)),
-    name="uploads",
-)
-
-# ===========================================================================
-# 路由挂载
-# ===========================================================================
-app.include_router(image_router)     # 模块 2 摄像头空间感知
-app.include_router(voice_router)     # 模块 1 语音输入
-
-
-# ===========================================================================
-# 基础接口
-# ===========================================================================
-
-
-@app.get("/api/v1/health", tags=["系统"], summary="健康检查")
-async def health_check():
-    """
-    健康检查接口。
-
-    用途：
-        - 确认服务是否正常启动
-        - 部署后供 Nginx / 监控探活
-        - 前端联调前先打一次，确认地址与端口正确
-
-    返回：
-        统一响应体，data 含服务名、环境、调试开关状态
-    """
-    return success(
-        data={
-            "app": settings.APP_NAME,
-            "env": settings.APP_ENV,
-            "debug": settings.DEBUG,
+    logger.info(
+        "应用启动 name=%s env=%s debug=%s db=%s redis=%s",
+        settings.APP_NAME,
+        settings.APP_ENV,
+        settings.DEBUG,
+        settings.masked_database_url,
+        f"{settings.REDIS_HOST}:{settings.REDIS_PORT}" if settings.REDIS_ENABLED else "disabled",
+        extra={
+            "extra_fields": {
+                "app": settings.APP_NAME,
+                "env": settings.APP_ENV,
+                "database": settings.masked_database_url,
+                "redisEnabled": settings.REDIS_ENABLED,
+            }
         },
-        message="服务运行正常",
     )
+
+    _warn_about_security_settings()
+
+    # 丢弃可能已存在的单例，确保它们按**当前**配置重建。
+    # 测试里会改配置再建 app，不重置就会继续用上一个 app 的实例。
+    reset_token_store()
+    reset_metric_store()
+
+    db_status = await _probe_database()
+    redis_status = await redis_check_health()
+    logger.info(
+        "启动探活完成 db=%s redis=%s（redis=disabled 表示 REDIS_ENABLED=false，属正常）",
+        db_status,
+        redis_status,
+    )
+
+    try:
+        yield
+    finally:
+        # 关闭阶段**不能抛异常**：抛了会让 uvicorn 打印一堆与真实问题无关的
+        # 关闭错误，掩盖真正的退出原因。每个资源各自兜住自己的异常。
+        await _shutdown()
+
+
+async def _shutdown() -> None:
+    """释放数据库连接池与 Redis 连接。"""
+    try:
+        await async_engine.dispose()
+    except Exception as exc:  # noqa: BLE001 - 关闭路径不能抛
+        logger.warning("关闭数据库连接池出错: %s: %s", type(exc).__name__, exc)
+
+    try:
+        from app.core.redis import close as close_redis
+
+        await close_redis()
+    except Exception as exc:  # noqa: BLE001 - 关闭路径不能抛
+        logger.warning("关闭 Redis 连接出错: %s: %s", type(exc).__name__, exc)
+
+    reset_token_store()
+    reset_metric_store()
+    logger.info("应用已关闭")
+
+
+# ==========================================================================
+# 中间件
+# ==========================================================================
+def _register_middlewares(app: FastAPI) -> None:
+    """
+    注册中间件。**顺序即语义**，添加顺序与执行顺序相反（详见模块 docstring）。
+
+    先内后外地添加：AgentMetrics（最内）→ RequestContext → CORS（最外）。
+    """
+    app.add_middleware(AgentMetricsMiddleware)
+    app.add_middleware(RequestContextMiddleware)
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origin_list,
+        # 本项目鉴权走 `Authorization: Bearer` 头，**不使用 Cookie**，
+        # 因此不需要凭据模式。若将来改用 Cookie 会话，必须把这里改成 True，
+        # 否则浏览器不会携带 Cookie，症状是「登录成功但下一个接口 401」。
+        # 当前允许来源是显式白名单（非 "*"），届时可直接开启。
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        # "*" 表示预检时原样回显浏览器请求的头（Starlette 的行为）。
+        # 来源本身已受白名单限制，因此这里不必逐一列举 Authorization / Content-Type。
+        allow_headers=["*"],
+        # 暴露给前端 JS 的响应头。默认只有少数几个「安全头」可读，
+        # 不显式暴露的话前端拿不到 X-Request-Id，报错时就没法把它贴给后端。
+        expose_headers=["X-Request-Id"],
+        max_age=_CORS_MAX_AGE,
+    )
+
+
+# ==========================================================================
+# 应用工厂
+# ==========================================================================
+def create_app() -> FastAPI:
+    """
+    构造应用。
+
+    做成工厂函数而不是模块级的一堆语句，是为了测试能反复调用得到**干净**的
+    实例（不同的配置、不同的依赖覆盖），而不用去动模块级全局状态。
+    """
+    app = FastAPI(
+        title=f"{settings.APP_NAME} 后端接口",
+        version="1.0.0",
+        description=(
+            "AI 全感知·智能空间与设备综合调度平台 —— 后端接口文档。\n\n"
+            "**统一响应体**：所有接口（含错误）都是 "
+            "`{code, message, data}` 结构，`code` 为 5 位业务码，"
+            "成功恒为 `200`，与 HTTP 状态码解耦。\n\n"
+            "**字段命名**：请求与响应字段一律 camelCase。\n\n"
+            "**时间格式**：一律 `YYYY-MM-DD HH:mm:ss`（本地时间，无时区后缀）。\n\n"
+            "**鉴权**：登录接口返回 `accessToken`，后续请求带 "
+            "`Authorization: Bearer <accessToken>`；"
+            "`accessToken` 有效期 30 分钟，用 `POST /api/v1/auth/refresh` 续期。"
+        ),
+        lifespan=lifespan,
+        # 接口文档始终开放。本项目是内网部署的课设系统，接口文档对前端/小程序
+        # 联调是刚需；若将来对外发布，请按 docs/deploy.md 的说明在非 dev 环境关闭。
+        docs_url="/docs",
+        redoc_url="/redoc",
+        openapi_url="/openapi.json",
+    )
+
+    # 异常处理器要在中间件之前注册：ServerErrorMiddleware 在构造中间件栈时
+    # 读取 app.exception_handlers，晚注册会拿不到兜底的 Exception 处理器。
+    register_exception_handlers(app)
+    _register_middlewares(app)
+
+    app.include_router(api_router, prefix=API_V1_PREFIX)
+
+    # ------------------------------------------------------------------
+    # 静态目录：让 /uploads/xxx.jpg 可访问（模块 2 图片回放）
+    # ------------------------------------------------------------------
+    # 目录由 settings.image_upload_path 自动创建，不会因目录缺失导致启动失败。
+    # 生产环境若改为 Nginx 直接托管 uploads 目录，可删掉这一段以节省后端资源。
+    # 注意：mount 的路径不能与 API 路由前缀重叠，"/uploads" 与 "/api/v1" 互不干扰。
+    app.mount(
+        settings.IMAGE_STORAGE_BASE_URL,
+        StaticFiles(directory=str(settings.image_upload_path)),
+        name="uploads",
+    )
+
+    if settings.DEBUG:
+        # 延迟导入：Mock 路由只在开发环境存在，生产环境连模块都不加载。
+        # 放在函数内部而非模块顶部，是为了让 `create_app()` 能在没有 mock 模块
+        # 的情况下也构造成功（模块 10 之外的成员不需要它的实现细节）。
+        from app.api.v1 import mock
+
+        app.include_router(mock.router, prefix=API_V1_PREFIX)
+        logger.info("已注册 Mock 路由（DEBUG=true）: %s/mock/*", API_V1_PREFIX)
+
+    return app
+
+
+app = create_app()

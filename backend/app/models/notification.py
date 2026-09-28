@@ -2,9 +2,10 @@
 消息通知模型
 包含：notify_message
 """
+
 from datetime import datetime
 
-from sqlalchemy import BigInteger, String, Text, Integer, DateTime, ForeignKey, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -12,9 +13,12 @@ from app.core.database import Base
 
 class NotifyMessage(Base):
     """消息通知表"""
+
     __tablename__ = "notify_message"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True, comment="主键"
+    )
     receiver_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("sys_user.id"), nullable=False, comment="接收人ID"
     )
@@ -31,3 +35,8 @@ class NotifyMessage(Base):
     create_time: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), comment="创建时间"
     )
+
+    # 索引声明（项目文档 6.6）：未读消息查询。
+    # 复合索引 (receiver_id, is_read) 让「查我的未读消息」走索引，
+    # 单个 receiver_id 索引无法覆盖 is_read 的过滤。
+    __table_args__ = (Index("idx_receiver_read", "receiver_id", "is_read"),)

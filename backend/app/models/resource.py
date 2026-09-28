@@ -2,10 +2,12 @@
 空间与设备资源模型
 包含：space_resource, device_resource
 """
-from datetime import datetime, time as dt_time
+
+from datetime import datetime
+from datetime import time as dt_time
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, String, Integer, DateTime, JSON, DECIMAL, Time, func
+from sqlalchemy import DECIMAL, BigInteger, DateTime, Index, Integer, String, Time, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -13,9 +15,12 @@ from app.core.database import Base
 
 class SpaceResource(Base):
     """空间资源表（会议室、展厅、多功能厅、户外场地）"""
+
     __tablename__ = "space_resource"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True, comment="主键"
+    )
     space_name: Mapped[str] = mapped_column(String(128), nullable=False, comment="空间名称")
     space_type: Mapped[int] = mapped_column(
         Integer, nullable=False, comment="空间类型：1会议室 2展厅 3多功能厅 4户外场地"
@@ -24,8 +29,12 @@ class SpaceResource(Base):
     location: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="位置")
     budget: Mapped[Decimal | None] = mapped_column(DECIMAL(10, 2), nullable=True, comment="预算")
 
-    open_start_time: Mapped[dt_time | None] = mapped_column(Time, nullable=True, comment="开放起始时间")
-    open_end_time: Mapped[dt_time | None] = mapped_column(Time, nullable=True, comment="开放结束时间")
+    open_start_time: Mapped[dt_time | None] = mapped_column(
+        Time, nullable=True, comment="开放起始时间"
+    )
+    open_end_time: Mapped[dt_time | None] = mapped_column(
+        Time, nullable=True, comment="开放结束时间"
+    )
 
     status: Mapped[int] = mapped_column(
         Integer, default=1, nullable=False, comment="可用状态：1可用 0停用"
@@ -38,12 +47,23 @@ class SpaceResource(Base):
         DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间"
     )
 
+    # 索引声明（项目文档 6.6）。仅供 Agent 按类型/容量检索，
+    # 由 alembic/versions 下的幂等迁移创建；此处声明同时防止
+    # autogenerate 把这些索引当作「多余对象」生成 drop_index。
+    __table_args__ = (
+        Index("idx_space_type", "space_type"),
+        Index("idx_capacity", "capacity"),
+    )
+
 
 class DeviceResource(Base):
     """设备资源表（投影仪、音响、无人机、直播设备等）"""
+
     __tablename__ = "device_resource"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True, comment="主键"
+    )
     device_name: Mapped[str] = mapped_column(String(128), nullable=False, comment="设备名称")
     device_type: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="设备类型")
     device_status: Mapped[int] = mapped_column(
@@ -58,3 +78,6 @@ class DeviceResource(Base):
     update_time: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间"
     )
+
+    # 索引声明（项目文档 6.6）：Agent 按设备类型检索
+    __table_args__ = (Index("idx_device_type", "device_type"),)

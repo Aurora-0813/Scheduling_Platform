@@ -56,11 +56,18 @@ def make_client(monkeypatch):
         用统一夹具会让每个用例拿到不匹配的数据，测出来的行为也就没意义了。
         工厂形式允许每个用例声明自己需要的剧本。
 
-    做了四件事：
-        1. 替换 get_db —— 返回 None 的会话（业务不再查库，够用）
-        2. 替换 get_vision_llm —— 喂入脚本化的假模型
-        3. monkeypatch 候选场地查询 —— 给固定数据
-        4. 关闭空档计算，避免它去查数据库
+    做了五件事：
+        1. 打开 AUTH_BYPASS —— 免 Token 调用（见下方说明）
+        2. 替换 get_db —— 返回 None 的会话（业务不再查库，够用）
+        3. 替换 get_vision_llm —— 喂入脚本化的假模型
+        4. monkeypatch 候选场地查询 —— 给固定数据
+        5. 关闭空档计算，避免它去查数据库
+
+    AUTH_BYPASS 为什么要显式 monkeypatch：
+        合并前本夹具依赖开发者本地 .env 里恰好写着 AUTH_BYPASS=true，
+        那会让「用例是否通过」取决于机器上的私有配置 —— CI 或另一台
+        机器上没有这个变量时，全部用例会集体变成 401。这里显式打开，
+        夹具自身即可复现；需要验证鉴权的用例请用下面的 auth_client。
     """
     clients: list[TestClient] = []
 
@@ -76,6 +83,7 @@ def make_client(monkeypatch):
             )
         ]
 
+    monkeypatch.setattr(settings, "AUTH_BYPASS", True)
     monkeypatch.setattr(settings, "IMAGE_ENABLE_AVAILABLE_SLOTS", False)
     monkeypatch.setattr(image_service, "list_active_space_candidates", _fake_candidates)
 
@@ -183,15 +191,20 @@ def test_sketch_mismatched_schema_degrades(make_client, fake_jpeg):
 
 
 def test_missing_file_returns_friendly_error(make_client):
-    """缺少 file 字段 → 统一响应体 code=400，而不是 FastAPI 默认的 422 结构"""
+    """
+    缺少 file 字段 → 统一响应体，而不是 FastAPI 默认的 422 结构。
+
+    本项目约定（模块 10）：参数校验失败 = HTTP 400 + 业务码 40001，
+    校验明细放在 data.errors 里，前端拿到的结构与其他错误完全一致。
+    """
     client = make_client([SPACE_REPLY])
 
     resp = client.post("/api/v1/image/analyze")
 
-    assert resp.status_code == 200
+    assert resp.status_code == 400
     body = resp.json()
-    assert body["code"] == 400
-    assert body["data"] is None
+    assert body["code"] == 40001
+    assert body["data"]["errors"]
 
 
 def test_unsupported_image_type_returns_41001(make_client):
@@ -203,7 +216,10 @@ def test_unsupported_image_type_returns_41001(make_client):
         files={"file": ("evil.txt", b"not an image at all", "image/jpeg")},
     )
 
-    assert resp.status_code == 200
+    # 业务码 41001 映射到 HTTP 400（见 app/core/exceptions.py 的
+    # _BUSINESS_ERROR_HTTP_STATUS）：本项目 HTTP 状态码与业务码并存，
+    # 前者给网关/浏览器看，后者给业务前端看。
+    assert resp.status_code == 400
     body = resp.json()
     assert body["code"] == 41001
     # 错误提示必须是人话，且不泄露内部堆栈
@@ -221,7 +237,7 @@ def auth_client(monkeypatch):
     构造一个**开启真实鉴权**的测试客户端（AUTH_BYPASS=false）。
 
     单独成一个夹具的原因：
-        make_client 依赖 .env 里的 AUTH_BYPASS=true 才能免 Token 调通，
+        make_client 显式打开 AUTH_BYPASS 才能免 Token 调通，
         而鉴权用例恰恰要验证「关掉放行后必须拦住」。
     """
     monkeypatch.setattr(settings, "AUTH_BYPASS", False)
@@ -240,58 +256,92 @@ def auth_client(monkeypatch):
 
 
 def test_missing_token_returns_401(auth_client, fake_jpeg):
-    """T18：无 Authorization 请求头 → 401"""
+    """T18：无 Authorization 请求头 → HTTP 401 / 业务码 40101（TokenMissingError）"""
     resp = auth_client.post(
         "/api/v1/image/analyze",
         files={"file": ("site.jpg", fake_jpeg, "image/jpeg")},
     )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 401
     body = resp.json()
-    assert body["code"] == 401
+    assert body["code"] == 40101
     assert "登录" in body["message"] or "认证" in body["message"]
 
 
 def test_malformed_auth_header_returns_401(auth_client, fake_jpeg):
-    """T18：Authorization 格式不对（缺 Bearer 前缀）→ 401"""
+    """
+    T18：Authorization 格式不对（缺 Bearer 前缀）→ 40101。
+
+    注意与下一条用例的区别：`HTTPBearer` 认不出这个头，等价于「没带令牌」，
+    因此码是 40101 而不是 40102 —— 前端据此提示「请先登录」而不是「登录已失效」。
+    """
     resp = auth_client.post(
         "/api/v1/image/analyze",
         files={"file": ("site.jpg", fake_jpeg, "image/jpeg")},
         headers={"Authorization": "this.is.not.a.valid.token"},
     )
 
-    assert resp.json()["code"] == 401
+    assert resp.status_code == 401
+    assert resp.json()["code"] == 40101
 
 
 def test_invalid_token_returns_401(auth_client, fake_jpeg):
-    """T18：Token 签名无效 → 401"""
+    """T18：Token 签名无效 → 40102（TokenInvalidError，令牌结构可识别但验签失败）"""
     resp = auth_client.post(
         "/api/v1/image/analyze",
         files={"file": ("site.jpg", fake_jpeg, "image/jpeg")},
         headers={"Authorization": "Bearer this.is.not.a.valid.token"},
     )
 
-    assert resp.json()["code"] == 401
+    assert resp.status_code == 401
+    assert resp.json()["code"] == 40102
 
 
 def test_valid_token_is_accepted(monkeypatch, fake_jpeg):
-    """T18 反向用例：签发一个合法 Token，应当被放行（防止鉴权写死成全拦）"""
+    """
+    T18 反向用例：签发一个合法 Token，应当被放行（防止鉴权写死成全拦）。
+
+    合并时改写了三处，原因见下 —— 原版测不到「放行」这条路径：
+
+    1. **令牌改由 `create_token` 签发**。原版手写 JWT，载荷是
+       `{userId, username, role, exp}`；本项目 `decode_token` 要求的是
+       `{sub, type, jti, iat, exp, ver}`（RFC 7519 的 `sub` + 自定义
+       `type`/`jti` 用于区分 access/refresh 与支持强制下线）。
+       按原载荷签发的令牌，在本项目里就是一枚「结构不符的伪造令牌」，
+       必然得到 40102。
+    2. **补齐用户查询**。`get_current_user` 验签后还要查库取角色与状态，
+       而本文件其他用例把 `get_db` 换成了返回 None 的会话，查库必失败。
+       故这里 monkeypatch 掉 `auth_service` 的三个查询函数。
+    3. **不再依赖 `.env`**。原版靠外部 AUTH_BYPASS=true 才跑得通。
+    """
     import datetime as dt
 
-    import jwt
+    from app.core.security import TokenType, create_token
+    from app.services import auth_service
 
     monkeypatch.setattr(settings, "AUTH_BYPASS", False)
 
-    token = jwt.encode(
-        {
-            "userId": 1,
-            "username": "user01",
-            "role": "user",
-            "exp": dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5),
-        },
-        settings.JWT_SECRET_KEY,
-        algorithm=settings.JWT_ALGORITHM,
+    token, _ = create_token(
+        user_id=1,
+        role="user",
+        token_type=TokenType.ACCESS,
+        expires_delta=dt.timedelta(minutes=5),
     )
+
+    class _FakeUser:
+        """仅提供 get_current_user 会读取的四个字段。"""
+
+        id = 1
+        username = "user01"
+        status = auth_service.USER_STATUS_ACTIVE
+        avatar = None
+
+    async def _fake_get_user_by_id(db, user_id):
+        return _FakeUser()
+
+    monkeypatch.setattr(auth_service, "get_user_by_id", _fake_get_user_by_id)
+    monkeypatch.setattr(auth_service, "role_name_of", lambda user: "user")
+    monkeypatch.setattr(auth_service, "permissions_of", lambda user: [])
 
     async def _fake_db():
         yield None
@@ -335,4 +385,8 @@ def test_health_check(make_client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["code"] == 200
-    assert body["data"]["app"]
+    # 字段名以模块 10 的 health.py 为准：status / service / env。
+    # 模块 2 原版断言的是 data["app"]，那是其开发期临时接口的字段名。
+    assert body["data"]["status"] == "ok"
+    assert body["data"]["service"]
+    assert body["data"]["env"]

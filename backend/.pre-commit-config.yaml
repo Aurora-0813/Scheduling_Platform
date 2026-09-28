@@ -1,0 +1,94 @@
+# ============================================================================
+# 预提交钩子（项目文档 8.10）
+# ----------------------------------------------------------------------------
+# 安装（每人一次，在仓库根目录执行）：
+#     pip install pre-commit        # 清单外的开发工具，不进 requirements.txt
+#     pre-commit install
+#
+# 首次接入时**先全量跑一遍再提交**：
+#     pre-commit run --all-files
+# 这一步会让 end-of-file-fixer / trailing-whitespace / mixed-line-ending
+# 修复既有文件（当前仓库有 6 个 app/models/*.py 是 CRLF 行尾），
+# 修完请把这批格式改动**单独提交一次**，之后每个人的提交就都是干净的了。
+# 不先跑的话，第一次 commit 会被钩子改文件并中断，需要重新 add 再 commit。
+#
+# 钩子失败时**不要**用 `git commit --no-verify` 绕过：见下面第一条。
+# ============================================================================
+repos:
+  # --------------------------------------------------------------------------
+  # 1. 凭证文件（项目文档 8.6 / 9.4）
+  # --------------------------------------------------------------------------
+  # `.env` 里有云库密码与 JWT 密钥，一次 `git add .` 就会永久留在仓库历史里
+  # （GitHub 上被扫到只是时间问题）。这条钩子用 `language: fail`：
+  # 只要暂存区里出现匹配文件，提交**必定失败**，且把 entry 的内容作为原因打印。
+  #
+  # 为什么不靠 .gitignore：.gitignore 只拦「未被跟踪」的文件，
+  # 一旦有人用 `git add -f` 或文件已在索引里，它就不再起作用。
+  # 钩子是第二道防线，两道都要有。
+  - repo: local
+    hooks:
+      - id: no-secrets-file
+        name: 禁止提交 .env 与密钥文件
+        language: fail
+        entry: >-
+          检测到凭证文件（.env / *.pem / *.key / secrets.json）被加入提交。
+          本项目严禁提交任何真实密钥：请改用 .env.example 作为模板，
+          真实值只留在本机；若已提交，必须立即更换密钥（历史里的密钥无法撤回）。
+        files: ^\.env(\.|$)|\.pem$|\.key$|secrets\.json$
+        # .env.example 必须提交（队友照着它建自己的 .env），因此排除
+        exclude: ^\.env\.example$
+
+  # --------------------------------------------------------------------------
+  # 2. 通用检查（读多写少，只改空白与行尾）
+  # --------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+        name: 检查未解决的冲突标记
+      - id: check-yaml
+        name: 校验 YAML 语法
+      - id: check-json
+        name: 校验 JSON 语法
+      - id: check-added-large-files
+        name: 拦截误提交的大文件（默认 500KB）
+      - id: detect-private-key
+        name: 检测私钥内容
+      - id: debug-statements
+        name: 检测遗留的 breakpoint / pdb
+      - id: end-of-file-fixer
+        name: 文件末尾补空行
+      - id: trailing-whitespace
+        name: 去掉行尾空白
+      - id: mixed-line-ending
+        name: 统一行尾为 LF
+        args: [--fix=lf]
+      # 直接 commit 到 main 会绕过 PR 评审（项目文档 8.2）
+      - id: no-commit-to-branch
+        name: 禁止直接提交到 main
+        args: [--branch, main]
+
+  # --------------------------------------------------------------------------
+  # 3. Python 代码检查与格式化
+  # --------------------------------------------------------------------------
+  # ruff 由本仓库的 ruff.toml 配置。rev 里的版本号必须与
+  # .github/workflows/ci.yml 中 CI 安装的 ruff 版本**保持一致**：
+  # 两边版本不同会出现「本地过、CI 挂」（或反之），且规则集可能已经变了。
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      - id: ruff-check
+        name: ruff 检查（含自动修复）
+        args: [--fix]
+      - id: ruff-format
+        name: ruff 格式化
+
+  # --------------------------------------------------------------------------
+  # 4. 前端 / 小程序：当前不在本仓库，因此**没有**对应钩子
+  # --------------------------------------------------------------------------
+  # 项目文档 8.10 还要求 eslint 检查前端代码。前端与小程序是独立的仓库/目录
+  # （见 8.5 的目录结构），本目录里没有 package.json，加了 eslint 钩子会让
+  # 每个人的提交都以「找不到 eslint」失败 —— 那不是保护，是噪音。
+  #
+  # 合入 monorepo 后如需统一，请把钩子挂在仓库根的 .pre-commit-config.yaml 里，
+  # 用 `files: ^frontend/` 限定作用范围，而不是加在 backend/ 这一层。

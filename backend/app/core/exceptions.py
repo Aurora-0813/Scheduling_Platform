@@ -1,126 +1,316 @@
 """
-统一异常处理模块
-====================================================================
-⚠️ 临时实现，待基础支撑与集成组接管
+业务异常体系
 
-    集成组交付正式的 core/exceptions.py 后，覆盖本文件即可。
-    唯一要求：保留 BusinessError 类名与 (code, message) 构造签名，
-    因为各业务模块（含模块 2）都继承它。
-
-规范依据：
-    开发流程.md §4.3：统一异常处理 —— API 调用失败、大模型返回格式错误、
-                      图片解析失败均设置友好降级提示
-    开发流程.md §7.3：统一异常处理在 core/ 目录
-
-设计要点：
-    1. BusinessError 是业务异常的基类，携带业务错误码。
-       各模块只需定义子类或直接抛 BusinessError(code=..., message=...)，
-       全局处理器会自动转成统一响应体，模块代码里不用写任何 try/except 返回。
-    2. 未捕获的异常统一兜底成 code=500，绝不把 Python 堆栈暴露给前端
-       （§9.2 数据安全：防止通过报错信息泄露内部结构）。
+设计约定
+--------
+- 业务代码只抛 `BizError` 的子类，不直接抛 `HTTPException`。
+  统一的异常处理器（app/core/response.py 注册）负责把它们转成
+  统一响应体，保证「成功与失败响应结构一致」。
+- 每个异常类携带 `code`（业务码，见 error_codes.py）与 `http_status`。
+- `message` 面向用户，可以直接展示；内部细节只写日志，不进响应体
+  （避免泄露堆栈或 SQL，项目文档 13 风险登记）。
 """
-import logging
 
-from fastapi import FastAPI, Request
-from fastapi.exceptions import RequestValidationError
-from starlette.responses import JSONResponse
+from __future__ import annotations
 
-from app.core.response import fail
+from typing import Any
 
-# 模块级 logger，异常堆栈只写进服务端日志，不进 HTTP 响应
-logger = logging.getLogger("app.exceptions")
+from app.core.error_codes import DEFAULT_MESSAGES, ErrorCode
 
 
-class BusinessError(Exception):
+class BizError(Exception):
+    """业务异常基类。"""
+
+    code: int = ErrorCode.INTERNAL_ERROR
+    http_status: int = 500
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        code: int | None = None,
+        data: Any = None,
+    ) -> None:
+        # 显式传入的 code 优先，其次取子类声明的 code
+        self.code = code if code is not None else type(self).code
+        self.message = message or DEFAULT_MESSAGES.get(self.code, "服务异常")
+        self.data = data
+        super().__init__(self.message)
+
+
+# ==================== 400xx ====================
+class BadRequestError(BizError):
+    code = ErrorCode.BAD_REQUEST
+    http_status = 400
+
+
+class ParamInvalidError(BizError):
+    code = ErrorCode.PARAM_INVALID
+    http_status = 400
+
+
+class UploadTooLargeError(BizError):
+    code = ErrorCode.UPLOAD_TOO_LARGE
+    http_status = 400
+
+
+class UploadTypeInvalidError(BizError):
+    code = ErrorCode.UPLOAD_TYPE_INVALID
+    http_status = 400
+
+
+class TimeRangeInvalidError(BizError):
+    code = ErrorCode.TIME_RANGE_INVALID
+    http_status = 400
+
+
+# ==================== 401xx ====================
+class UnauthorizedError(BizError):
+    code = ErrorCode.UNAUTHORIZED
+    http_status = 401
+
+
+class TokenMissingError(BizError):
+    code = ErrorCode.TOKEN_MISSING
+    http_status = 401
+
+
+class TokenInvalidError(BizError):
+    code = ErrorCode.TOKEN_INVALID
+    http_status = 401
+
+
+class TokenExpiredError(BizError):
+    code = ErrorCode.TOKEN_EXPIRED
+    http_status = 401
+
+
+class TokenTypeInvalidError(BizError):
+    code = ErrorCode.TOKEN_TYPE_INVALID
+    http_status = 401
+
+
+class TokenRevokedError(BizError):
+    code = ErrorCode.TOKEN_REVOKED
+    http_status = 401
+
+
+class RefreshTokenInvalidError(BizError):
+    code = ErrorCode.REFRESH_TOKEN_INVALID
+    http_status = 401
+
+
+class CredentialsInvalidError(BizError):
+    code = ErrorCode.CREDENTIALS_INVALID
+    http_status = 401
+
+
+class UserDisabledError(BizError):
+    code = ErrorCode.USER_DISABLED
+    http_status = 401
+
+
+class AccountLockedError(BizError):
+    code = ErrorCode.ACCOUNT_LOCKED
+    http_status = 401
+
+
+# ==================== 403xx ====================
+class ForbiddenError(BizError):
+    code = ErrorCode.FORBIDDEN
+    http_status = 403
+
+
+class PermissionDeniedError(BizError):
+    code = ErrorCode.PERMISSION_DENIED
+    http_status = 403
+
+
+class RoleMissingError(BizError):
+    code = ErrorCode.ROLE_MISSING
+    http_status = 403
+
+
+# ==================== 404xx ====================
+class NotFoundError(BizError):
+    code = ErrorCode.NOT_FOUND
+    http_status = 404
+
+
+class UserNotFoundError(BizError):
+    code = ErrorCode.USER_NOT_FOUND
+    http_status = 404
+
+
+class SpaceNotFoundError(BizError):
+    code = ErrorCode.SPACE_NOT_FOUND
+    http_status = 404
+
+
+class DeviceNotFoundError(BizError):
+    code = ErrorCode.DEVICE_NOT_FOUND
+    http_status = 404
+
+
+class OrderNotFoundError(BizError):
+    code = ErrorCode.ORDER_NOT_FOUND
+    http_status = 404
+
+
+class TicketNotFoundError(BizError):
+    code = ErrorCode.TICKET_NOT_FOUND
+    http_status = 404
+
+
+class InspectNotFoundError(BizError):
+    code = ErrorCode.INSPECT_NOT_FOUND
+    http_status = 404
+
+
+class MessageNotFoundError(BizError):
+    code = ErrorCode.MESSAGE_NOT_FOUND
+    http_status = 404
+
+
+# ==================== 409xx ====================
+class ConflictError(BizError):
+    code = ErrorCode.CONFLICT
+    http_status = 409
+
+
+class ResourceConflictError(BizError):
+    code = ErrorCode.RESOURCE_CONFLICT
+    http_status = 409
+
+
+class UsernameExistsError(BizError):
+    code = ErrorCode.USERNAME_EXISTS
+    http_status = 409
+
+
+class OrderStatusConflictError(BizError):
+    code = ErrorCode.ORDER_STATUS_CONFLICT
+    http_status = 409
+
+
+# ==================== 429xx ====================
+class TooManyRequestsError(BizError):
+    code = ErrorCode.TOO_MANY_REQUESTS
+    http_status = 429
+
+
+# ==================== 500xx ====================
+class InternalError(BizError):
+    code = ErrorCode.INTERNAL_ERROR
+    http_status = 500
+
+
+class AiOutputInvalidError(BizError):
     """
-    业务异常基类。
+    AI 返回内容无法解析。
+
+    对应项目文档 10.2 要求覆盖的降级用例一：
+    大模型返回非 JSON 时降级为自然语言提示。
+    """
+
+    code = ErrorCode.AI_OUTPUT_INVALID
+    http_status = 502
+
+
+# ==================== 503xx ====================
+class ServiceUnavailableError(BizError):
+    code = ErrorCode.SERVICE_UNAVAILABLE
+    http_status = 503
+
+
+class RedisUnavailableError(BizError):
+    """
+    Redis 不可用。
+
+    项目文档 13 要求外部依赖失败时友好降级。认证链路的取舍见
+    docs/开发流程说明文档.md「Redis 不可用时的降级策略」：
+    登录仍可成功（仅记 warning），但刷新与登出必须失败。
+    """
+
+    code = ErrorCode.REDIS_UNAVAILABLE
+    http_status = 503
+
+
+class DatabaseUnavailableError(BizError):
+    code = ErrorCode.DATABASE_UNAVAILABLE
+    http_status = 503
+
+
+class ExternalApiUnavailableError(BizError):
+    """
+    外部 API 调用失败。
+
+    对应项目文档 10.2 要求覆盖的降级用例二：
+    外部 API 超时或失败时降级为友好提示。
+    """
+
+    code = ErrorCode.EXTERNAL_API_UNAVAILABLE
+    http_status = 503
+
+
+# ===========================================================================
+# 模块 1 / 模块 2 兼容层：BusinessError
+# ===========================================================================
+# 背景
+# ----
+# 模块 1（语音输入）与模块 2（摄像头空间感知）在基础支撑交付前，曾各自
+# 自建过一版临时的 app/core/exceptions.py，其中定义了：
+#
+#     class BusinessError(Exception):
+#         def __init__(self, code: int, message: str): ...
+#
+# 并在交付说明中写明「唯一要求：保留 BusinessError 类名与 (code, message)
+# 构造签名」。本文件是基础支撑的正式实现，基类名为 BizError，因此这里补一个
+# 兼容类，让两个模块的既有代码**无需任何改动**即可接入统一异常体系。
+#
+# 已确认的行为差异
+# ----------------
+# 临时实现把业务异常的 HTTP 状态码固定为 200，业务码只放在 body.code。
+# 正式实现按 HTTP 语义返回真实状态码（见 error_codes.py 顶部约定）。
+# 此项由集成侧拍板采用后者，故本兼容类的 http_status 按下方映射表取值。
+# 模块代码本身不承担责任 —— 它们只负责抛异常，状态码由全局处理器决定。
+
+# 错误码 → HTTP 状态码。未登记的码一律按 400（客户端错误）处理。
+_BUSINESS_ERROR_HTTP_STATUS: dict[int, int] = {
+    ErrorCode.IMAGE_TYPE_UNSUPPORTED: 400,
+    ErrorCode.IMAGE_TOO_LARGE: 400,
+    ErrorCode.AI_MODEL_UNAVAILABLE: 503,
+    # ASR 失败是下游依赖（百度语音）不可用，不是调用方的请求有问题，
+    # 因此映射到 503 而非 400 —— 前端据此可提示「稍后重试」而不是「改参数」。
+    ErrorCode.ASR_FAILED: 503,
+}
+
+
+class BusinessError(BizError):
+    """
+    模块 1 / 模块 2 使用的业务异常基类（兼容层）。
 
     参数：
-        code    : int  业务错误码（如 41001 图片格式不支持）
-        message : str  面向用户的友好提示，会直接出现在响应体的 message 字段
+        code    : 业务错误码。位置参数与关键字参数两种写法都支持，
+                  以兼容模块既有的 `BusinessError(code=..., message=...)`
+                  与 `BusinessError(41003, "...")` 两种调用方式。
+        message : 面向用户的友好提示。省略时取码表中的默认文案。
+        data    : 失败时可选携带的数据（如候选列表）。
 
     用法：
         raise BusinessError(code=41003, message="图像识别服务暂时不可用")
 
-    设计说明：
-        继承 Exception 而不是 HTTPException，是为了让业务代码与 Web 框架解耦 ——
-        services/ 层不应该知道 HTTP 的存在。转换工作交给下面的全局处理器。
+    子类化：
+        模块内可继续派生语义化子类，无需重写 __init__：
+            class ImageValidationError(BusinessError): ...
+            raise ImageValidationError(code=41001, message="图片格式不支持")
     """
 
-    def __init__(self, code: int, message: str):
-        self.code = code
-        self.message = message
-        super().__init__(message)
-
-
-class AuthError(BusinessError):
-    """
-    认证/授权失败（对应错误码 401）。
-
-    单独成类的原因：
-        401 在语义上需要前端做「跳转登录页」的特殊处理，
-        独立类型便于将来在全局处理器里做差异化处理（如附加 WWW-Authenticate 头）。
-    """
-
-    def __init__(self, message: str = "未认证或登录已过期"):
-        super().__init__(code=401, message=message)
-
-
-def register_exception_handlers(app: FastAPI) -> None:
-    """
-    把全局异常处理器注册到 FastAPI 应用上。
-
-    参数：
-        app : FastAPI  应用实例，在 main.py 里调用一次即可
-
-    注册了三类处理器：
-        1. BusinessError        —— 业务异常 → 统一响应体，HTTP 恒 200
-        2. RequestValidationError —— 请求参数校验失败 → code=400，HTTP 恒 200
-        3. Exception            —— 兜底 → code=500，且**只回友好文案，不回堆栈**
-    """
-
-    @app.exception_handler(BusinessError)
-    async def _handle_business_error(request: Request, exc: BusinessError) -> JSONResponse:
-        """
-        业务异常处理器。
-
-        注意 HTTP 状态码恒为 200 —— 见 core/response.py 顶部的约定说明。
-        真正的错误码在 body.code 里。
-        """
-        return JSONResponse(
-            status_code=200,
-            content=fail(code=exc.code, message=exc.message),
-        )
-
-    @app.exception_handler(RequestValidationError)
-    async def _handle_validation_error(
-        request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
-        """
-        请求参数校验失败处理器（缺字段、类型不对等）。
-
-        默认 FastAPI 会返回 422 并把校验细节全吐出来，
-        这里统一收敛成 code=400 + 一句人话，避免暴露内部模型定义。
-        """
-        # 校验细节只进服务端日志，方便排查；不进响应体
-        logger.warning("请求参数校验失败 %s %s：%s", request.method, request.url.path, exc.errors())
-        return JSONResponse(
-            status_code=200,
-            content=fail(code=400, message="请求参数有误，请检查后重试"),
-        )
-
-    @app.exception_handler(Exception)
-    async def _handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
-        """
-        兜底处理器：任何没被上面捕获的异常。
-
-        关键点：
-            - 完整堆栈写进服务端日志（logger.exception 会自动带 traceback）
-            - 响应体里**只有**一句友好提示，绝不包含异常类型或堆栈
-              （§9.2：防止通过报错信息泄露数据库结构、文件路径等内部信息）
-        """
-        logger.exception("未捕获异常 %s %s", request.method, request.url.path)
-        return JSONResponse(
-            status_code=200,
-            content=fail(code=500, message="系统开小差了，请稍后重试"),
-        )
+    def __init__(
+        self,
+        code: int = ErrorCode.INTERNAL_ERROR,
+        message: str | None = None,
+        data: Any = None,
+    ) -> None:
+        super().__init__(message, code=code, data=data)
+        self.http_status = _BUSINESS_ERROR_HTTP_STATUS.get(code, 400)
