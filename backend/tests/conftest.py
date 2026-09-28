@@ -548,16 +548,10 @@ def structured_llm():
                         # 模拟 with_structured_output(include_raw=True) 的返回结构
                         raw = AIMessage(
                             content=raw_text
-                            or (
-                                ""
-                                if payload is None
-                                else json.dumps(payload, ensure_ascii=False)
-                            )
+                            or ("" if payload is None else json.dumps(payload, ensure_ascii=False))
                         )
                         try:
-                            parsed = (
-                                schema.model_validate(payload) if payload is not None else None
-                            )
+                            parsed = schema.model_validate(payload) if payload is not None else None
                         except Exception as exc:  # noqa: BLE001 - 模拟解析失败分支
                             return {"raw": raw, "parsed": None, "parsing_error": exc}
                         return {"raw": raw, "parsed": parsed, "parsing_error": None}
@@ -643,11 +637,11 @@ class StubChatModel(BaseChatModel):
     def _llm_type(self) -> str:
         return "stub-chat-model"
 
-    def bind_tools(self, tools, **kwargs):  # noqa: ANN001, ANN003 - 对齐父类签名
+    def bind_tools(self, tools, **kwargs):
         """create_agent 必需。基类默认实现直接抛 NotImplementedError。"""
         return self
 
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # noqa: ANN001
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         # 每次调用往下走一条剧本；越界后停在最后一条（便于观察是否被重复调用）
         idx = min(self._cursor, len(self.responses) - 1)
         self._cursor += 1

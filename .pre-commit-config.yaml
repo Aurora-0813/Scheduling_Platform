@@ -1,0 +1,155 @@
+# ============================================================================
+# 预提交钩子（项目文档 8.10）
+# ----------------------------------------------------------------------------
+# ⚠️ 本文件在**仓库根目录**，不是 backend/ —— 这是有意为之
+# ----------------------------------------------------------------------------
+# 此前它在 backend/.pre-commit-config.yaml，结果是谁也没真正用上：
+#   * `pre-commit install` 只在当前目录及其祖先里找配置，而 git 仓库根在上层，
+#     钩子本身要装进 <仓库根>/.git/hooks/ 才会被触发；
+#   * 更要紧的是 `files:` 匹配的是**相对仓库根的路径**，而旧规则写的是
+#     `^\.env(\.|$)` —— `backend/.env` 根本不匹配，等于这道防线从来没拦住东西。
+#     `.env` 被反复加入提交（撤出跟踪 3 次又被加回去）就是这么来的。
+# 移到根目录后两条都成立。详细复盘见 docs/开发流程说明文档.md。
+#
+# 安装（每人一次，在**仓库根目录**执行）：
+#     pip install pre-commit        # 清单外的开发工具，不进 requirements.txt
+#     pre-commit install
+# 从 backend/ 那层装过旧钩子的同学要**重新装一次**：旧钩子指向的配置路径
+# 已经不存在，不重装的话提交会直接报「找不到配置文件」。
+#
+# 首次接入时**先全量跑一遍再提交**：
+#     pre-commit run --all-files
+# （注意：全量跑会按下面的作用范围改动文件，见「作用范围」一节）
+# 钩子失败时**不要**用 `git commit --no-verify` 绕过：见下面第一条。
+#
+# 作用范围（重要）
+# ----------------------------------------------------------------------------
+# 本仓库是 monorepo（backend/ frontend/ miniprogram/ docs/），本文件里的钩子是
+# ## 后端 ## 的工具链（ruff 读的是 backend/ruff.toml，测试在 backend/ 下跑）。
+# 因此通用钩子一律用 `files: ^backend/` 限定，不去改前端与小程序的文件 ——
+# 它们的规范（eslint / prettier）由各自的负责人在本文件里另加钩子，
+# 同样用 `files: ^frontend/`、`files: ^miniprogram/` 限定范围。
+#
+# **唯一的例外是凭证文件那条**：它故意不加范围限制，全仓库生效。
+# 泄露不分目录 —— frontend/.env、miniprogram/.env 同样是密钥，都得拦。
+# ============================================================================
+repos:
+  # --------------------------------------------------------------------------
+  # 1. 凭证文件（项目文档 8.6 / 9.4）—— 全仓库生效，**不加** files 过滤
+  # --------------------------------------------------------------------------
+  # `.env` 里有云库密码与 JWT 密钥，一次 `git add .` 就会永久留在仓库历史里
+  # （GitHub 上被扫到只是时间问题）。这条钩子用 `language: fail`：
+  # 只要暂存区里出现匹配文件，提交**必定失败**，且把 entry 的内容作为原因打印。
+  #
+  # 为什么不靠 .gitignore：.gitignore 只拦「未被跟踪」的文件，
+  # 一旦有人用 `git add -f` 或文件已在索引里，它就不再起作用。
+  # 钩子是第二道防线，两道都要有。
+  - repo: local
+    hooks:
+      - id: no-secrets-file
+        name: 禁止提交 .env 与密钥文件
+        language: fail
+        entry: >-
+          检测到凭证文件（.env / *.pem / *.key / secrets.json）被加入提交。
+          本项目严禁提交任何真实密钥：请改用 .env.example 作为模板，
+          真实值只留在本机；若已提交，必须立即更换密钥（历史里的密钥无法撤回）。
+        # `(^|/)\.env(\.|$)` —— 开头的 `(^|/)` 不能省。
+        # 路径是相对**仓库根**的，`backend/.env` 前面有目录成分，
+        # 只写 `^\.env` 就只匹配得上根目录下的 .env，漏掉 backend/.env。
+        # 后三个模式本来就是「任意位置」写法的（`\.pem$` 等），无需改动。
+        files: (^|/)\.env(\.|$)|\.pem$|\.key$|secrets\.json$
+        # .env.example 必须提交（队友照着它建自己的 .env），因此排除。
+        # 同理要写成「任意位置」：真正的路径是 backend/.env.example。
+        # 只排除这一个确切名字：像 `.env.example.txt` 这类变体会被一起拦下，
+        # 这是**故意**的（宁枉勿纵）—— 模板就叫 `.env.example`，别造新名字。
+        exclude: (^|/)\.env\.example$
+
+  # --------------------------------------------------------------------------
+  # 2. 通用检查（读多写少，只改空白与行尾）—— 限定 backend/
+  # --------------------------------------------------------------------------
+  # `check-*` / `detect-*` / `debug-statements` 是纯检查，不会改文件；
+  # 后三条（end-of-file-fixer / trailing-whitespace / mixed-line-ending）会**直接
+  # 改文件**并中断本次提交 —— 正因如此才要限定 backend/，不然前端同学提交时
+  # 会被本文件顺手改掉自己的文件，而这不在他们的预期里。
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+        name: 检查未解决的冲突标记
+        files: ^backend/
+      # check-yaml 额外覆盖 .github/：一条写坏了的 workflow 不会报错，
+      # 它只是**永远不触发** —— 正是本文件迁到根目录之前踩过的坑，
+      # 让 YAML 语法在提交时就被拦住，代价最小。
+      - id: check-yaml
+        name: 校验 YAML 语法
+        files: ^backend/|^\.github/
+      - id: check-json
+        name: 校验 JSON 语法
+        files: ^backend/|^\.github/
+      - id: check-added-large-files
+        name: 拦截误提交的大文件（默认 500KB）
+        files: ^backend/
+      - id: detect-private-key
+        name: 检测私钥内容
+        files: ^backend/
+      - id: debug-statements
+        name: 检测遗留的 breakpoint / pdb
+        files: ^backend/
+      - id: end-of-file-fixer
+        name: 文件末尾补空行
+        files: ^backend/
+      - id: trailing-whitespace
+        name: 去掉行尾空白
+        files: ^backend/
+      - id: mixed-line-ending
+        name: 统一行尾为 LF
+        args: [--fix=lf]
+        files: ^backend/
+      # 直接 commit 到 main 会绕过 PR 评审（项目文档 8.2）。
+      # 这条按分支判断，没有文件参数，因此不加 `files:`（加了也不生效）。
+      # 影响范围是「所有装了本钩子的人」—— 规则本身就是全仓库的，不再限定后端。
+      - id: no-commit-to-branch
+        name: 禁止直接提交到 main
+        args: [--branch, main]
+
+  # --------------------------------------------------------------------------
+  # 3. Python 代码检查与格式化 —— 限定 backend/
+  # --------------------------------------------------------------------------
+  # ruff 由 backend/ruff.toml 配置（ruff 会从**被检查文件**所在目录向上找配置，
+  # 所以配置留在 backend/ 下是对的，不必上移）。
+  # rev 里的版本号必须与 .github/workflows/backend-ci.yml 中 CI 安装的 ruff
+  # 版本**保持一致**：两边版本不同会出现「本地过、CI 挂」（或反之），
+  # 且规则集可能已经变了。
+  #
+  # `files: ^backend/` 是必须的：前端/小程序的 .js/.vue/.ts 若是被显式传进
+  # ruff，ruff 会按 Python 去解析它们并报语法错误，钩子就变成噪音了。
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      - id: ruff-check
+        name: ruff 检查（含自动修复）
+        args: [--fix]
+        files: ^backend/
+      - id: ruff-format
+        name: ruff 格式化
+        files: ^backend/
+
+  # --------------------------------------------------------------------------
+  # 4. 前端 / 小程序：不在本文件里，留给各自的负责人
+  # --------------------------------------------------------------------------
+  # 项目文档 8.10 要求 eslint 检查前端代码。前端（frontend/）与小程序
+  # （miniprogram/）在本仓库里是独立目录，各自有自己的 package.json 与 lint
+  # 脚本，交给对应负责人按自己的节奏加：
+  #
+  #   - repo: local
+  #     hooks:
+  #       - id: eslint-frontend
+  #         name: 前端 eslint
+  #         language: system
+  #         entry: npm --prefix frontend run lint
+  #         files: ^frontend/
+  #         pass_filenames: false
+  #
+  # 现在不加的理由：这两个目录的工具链还没统一（是否用 pnpm、要不要跑 build），
+  # 由集成组代为决定会让他们的提交无谓地失败 —— 那不是保护，是噪音。
+  # ============================================================================

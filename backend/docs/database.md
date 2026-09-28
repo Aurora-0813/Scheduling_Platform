@@ -80,9 +80,18 @@ mysql+asyncmy://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=ut
 
 ## 三、索引
 
-`开发流程.md` 6.6 定义了 10 个索引，全部由 Alembic 迁移 `b7f1c4a92e35` **幂等**创建。
-另有一条 **6.6 之外的补充索引**（`idx_status_start`，见 3.4），同一条迁移创建 ——
-因此这条迁移实际建出 **11** 条。
+先说清两个容易混的数字 —— 它们都等于 11，但**不是同一批**：
+
+| 口径 | 条数 | 说明 |
+| --- | --- | --- |
+| `开发流程.md` 6.6 的表格**行数** | **11** | 含 `uk_username`（UNIQUE），它**只检查、不创建**（见 3.2） |
+| 6.6 里由本迁移**创建**的索引 | **10** | 即上表去掉 `uk_username` |
+| 本迁移**实际建出**的索引 | **11** | 上述 10 条 + 1 条 6.6 之外的 `idx_status_start`（见 3.4） |
+
+三者关系一句话：**`uk_username` 不建（模型已 `unique=True`），`idx_status_start` 多建（6.6 没写）**，
+一减一加恰好还是 11 —— 所以别用「11 条」相互印证，两批的组成不同。
+
+以下表格列出全部 **12** 行：迁移**建出**的 11 条 + 只**检查**的 `uk_username`。
 
 | 表 | 索引 | 类型 | 列 | 用途 |
 | --- | --- | --- | --- | --- |
@@ -296,7 +305,7 @@ alembic revision --autogenerate -m "描述"    # 生成迁移（必须人工审�
 No module named alembic.__main__; 'alembic' is a namespace package
 ```
 
-`scripts/dev.sh` 与 CI 里都走控制台脚本（`.github/workflows/ci.yml` 同理）。
+`scripts/dev.sh` 与 CI 里都走控制台脚本（`.github/workflows/backend-ci.yml` 同理）。
 
 #### ② 连接串只从 `.env` 来，`alembic.ini` 里保持注释
 

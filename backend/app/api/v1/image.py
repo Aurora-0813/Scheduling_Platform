@@ -20,6 +20,7 @@
     开发期可在 backend/.env 设 AUTH_BYPASS=true 跳过 Token 校验，
     便于 scripts/seed.py 与 Swagger 直接调测。**演示与部署前必须改回 false。**
 """
+
 from fastapi import APIRouter, Depends, File, UploadFile
 from langchain_core.language_models import BaseChatModel
 from sqlalchemy.ext.asyncio import AsyncSession

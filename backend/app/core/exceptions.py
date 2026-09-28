@@ -276,13 +276,29 @@ class ExternalApiUnavailableError(BizError):
 # 模块代码本身不承担责任 —— 它们只负责抛异常，状态码由全局处理器决定。
 
 # 错误码 → HTTP 状态码。未登记的码一律按 400（客户端错误）处理。
+#
+# 这张表是给**没有对应 BizError 子类**的码用的（模块 1/2 的 41xxx 段就是这样），
+# 主流写法应该是直接抛子类。两条路径给出的状态码必须一致 —— 一旦不一致，
+# 同一个错误会因为调用方写法不同而返回不同状态码，前端无法统一处理。
+# 这种不一致由 tests/api/test_response_envelope.py 的对账用例拦下。
 _BUSINESS_ERROR_HTTP_STATUS: dict[int, int] = {
+    # ---- 41xxx：模块 1/2 的临时码段 ----
+    # 这一段是 5 位码里唯一不满足「HTTP = code // 100」的：41001 // 100 = 410，
+    # 而 410 是 Gone，语义完全不对；41003 // 100 = 410 同理。所以这一段必须
+    # 显式登记，不能靠默认的除法规则。
     ErrorCode.IMAGE_TYPE_UNSUPPORTED: 400,
     ErrorCode.IMAGE_TOO_LARGE: 400,
     ErrorCode.AI_MODEL_UNAVAILABLE: 503,
     # ASR 失败是下游依赖（百度语音）不可用，不是调用方的请求有问题，
     # 因此映射到 503 而非 400 —— 前端据此可提示「稍后重试」而不是「改参数」。
     ErrorCode.ASR_FAILED: 503,
+    # ---- 40901：有子类（ResourceConflictError，HTTP 409），本无需登记 ----
+    # 登记它是因为「冲突」有两条抛法，而此前只有一条给出正确的状态码：
+    #     raise ResourceConflictError(...)            → HTTP 409（按类）
+    #     raise BusinessError(40901, ...)             → 落默认值，HTTP 400
+    # 同一个「目标时段资源已被占用」，前端拿到的状态码取决于调用方怎么写，
+    # 这属于两条路径不一致，必须对齐。40901 // 100 = 409，与子类一致。
+    ErrorCode.RESOURCE_CONFLICT: 409,
 }
 
 

@@ -18,6 +18,7 @@
     §9.3  Agent 只能通过 Tool 调用 services/ 层访问业务数据（本模块不含 Tool，直接调用）
     本项目明确不引入向量库 / RAG，模型调用为「单轮多模态推理」，无检索环节。
 """
+
 from functools import lru_cache
 
 from langchain_core.language_models import BaseChatModel
@@ -64,12 +65,12 @@ def get_vision_llm() -> BaseChatModel:
 
     try:
         return ChatOpenAI(
-            model=settings.VISION_MODEL_NAME,       # 如 qwen-vl-max，从 .env 读
-            api_key=settings.VISION_API_KEY,        # 密钥，从 .env 读，绝不硬编码（§9.2）
-            base_url=settings.VISION_API_BASE,      # OpenAI 兼容端点
-            temperature=0.1,                        # 感知任务要「确定性」，温度压到最低，减少模型发挥
-            timeout=settings.LLM_TIMEOUT,           # 单次调用超时（秒）
-            max_retries=settings.LLM_MAX_RETRIES,   # SDK 层自动重试；仍失败则抛异常，由 service 层降级
+            model=settings.VISION_MODEL_NAME,  # 如 qwen-vl-max，从 .env 读
+            api_key=settings.VISION_API_KEY,  # 密钥，从 .env 读，绝不硬编码（§9.2）
+            base_url=settings.VISION_API_BASE,  # OpenAI 兼容端点
+            temperature=0.1,  # 感知任务要「确定性」，温度压到最低，减少模型发挥
+            timeout=settings.LLM_TIMEOUT,  # 单次调用超时（秒）
+            max_retries=settings.LLM_MAX_RETRIES,  # SDK 自动重试；仍失败由 service 层降级
         )
     except ImportError as exc:
         # 依赖没装全（如缺 langchain-openai）时给一句能照做的提示

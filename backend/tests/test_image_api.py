@@ -13,6 +13,7 @@
     get_db 被替换成「返回 None 的会话」，候选场地查询被 monkeypatch 替换。
     真正的数据库联调请在独立测试库 smart_scheduler_test 上另行执行。
 """
+
 import pytest
 from fastapi.testclient import TestClient
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
@@ -78,8 +79,11 @@ def make_client(monkeypatch):
     async def _fake_candidates(db, limit=None):
         return [
             SpaceCandidate(
-                spaceId=101, spaceName="A栋3楼展厅", spaceType=2,
-                location="A栋3楼", capacity=40,
+                spaceId=101,
+                spaceName="A栋3楼展厅",
+                spaceType=2,
+                location="A栋3楼",
+                capacity=40,
             )
         ]
 
@@ -88,9 +92,7 @@ def make_client(monkeypatch):
     monkeypatch.setattr(image_service, "list_active_space_candidates", _fake_candidates)
 
     def _make(responses: list[str]) -> TestClient:
-        fake = FakeMessagesListChatModel(
-            responses=[AIMessage(content=r) for r in responses]
-        )
+        fake = FakeMessagesListChatModel(responses=[AIMessage(content=r) for r in responses])
         app.dependency_overrides[get_db] = _fake_db
         app.dependency_overrides[get_vision_llm] = lambda: fake
 
@@ -187,7 +189,7 @@ def test_sketch_mismatched_schema_degrades(make_client, fake_jpeg):
     assert data["type"] == "sketch"
     assert data["capacity"] is None
     assert data["needConfirm"] is True
-    assert data["question"]          # 必须给出引导语，而不是一个空结果
+    assert data["question"]  # 必须给出引导语，而不是一个空结果
 
 
 def test_missing_file_returns_friendly_error(make_client):
@@ -347,9 +349,7 @@ def test_valid_token_is_accepted(monkeypatch, fake_jpeg):
         yield None
 
     async def _fake_candidates(db, limit=None):
-        return [
-            SpaceCandidate(spaceId=101, spaceName="A栋3楼展厅", spaceType=2, capacity=40)
-        ]
+        return [SpaceCandidate(spaceId=101, spaceName="A栋3楼展厅", spaceType=2, capacity=40)]
 
     monkeypatch.setattr(settings, "IMAGE_ENABLE_AVAILABLE_SLOTS", False)
     monkeypatch.setattr(image_service, "list_active_space_candidates", _fake_candidates)

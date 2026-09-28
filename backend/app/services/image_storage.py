@@ -17,6 +17,7 @@
 性能考虑（§12.1：2核2G 的小机器）：
     - 读写文件用 aiofiles 异步 IO，不阻塞事件循环（§3.4 全异步要求）
 """
+
 import base64
 import logging
 import re
@@ -135,9 +136,9 @@ async def read_and_validate_image(file: UploadFile) -> tuple[bytes, str]:
     total = 0
 
     while True:
-        chunk = await file.read(_CHUNK_SIZE)   # UploadFile.read 是异步的，不会阻塞事件循环
+        chunk = await file.read(_CHUNK_SIZE)  # UploadFile.read 是异步的，不会阻塞事件循环
         if not chunk:
-            break                              # 读到文件末尾
+            break  # 读到文件末尾
         total += len(chunk)
         if total > max_bytes:
             # 关键：立刻中断，不再继续读 —— 恶意大文件打不垮内存
@@ -237,9 +238,9 @@ async def save_image(raw: bytes, mime: str) -> str | None:
         按日期分目录，避免单目录文件过多导致文件系统查找性能下降。
     """
     try:
-        ext = _MIME_TO_EXT[mime]                       # ".jpg" / ".png" / ".webp"，由服务端常量决定
-        day = datetime.now().strftime("%Y%m%d")        # 按天分目录
-        filename = f"{_safe_stem(uuid.uuid4().hex)}{ext}"   # 随机名 + 字符清洗 → 杜绝路径穿越与重名
+        ext = _MIME_TO_EXT[mime]  # ".jpg" / ".png" / ".webp"，由服务端常量决定
+        day = datetime.now().strftime("%Y%m%d")  # 按天分目录
+        filename = f"{_safe_stem(uuid.uuid4().hex)}{ext}"  # 随机名 + 字符清洗 → 杜绝路径穿越与重名
 
         # settings.image_upload_path 已经是绝对路径，且会自动创建目录。
         # 用绝对路径而非 Path("uploads")，是为了保证从任何工作目录启动

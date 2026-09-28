@@ -10,6 +10,7 @@
 
 所有用例均不访问网络、不连数据库，可直接离线运行。
 """
+
 import pytest
 
 from app.core.config import settings
@@ -149,7 +150,7 @@ async def test_save_image_writes_file(temp_upload_dir, fake_png):
     assert url.endswith(".png")
 
     # URL 去掉对外前缀后，应能在上传目录里找到对应文件
-    relative = url[len(settings.IMAGE_STORAGE_BASE_URL) + 1:]
+    relative = url[len(settings.IMAGE_STORAGE_BASE_URL) + 1 :]
     saved = temp_upload_dir / relative
     assert saved.exists()
     assert saved.read_bytes() == fake_png
@@ -178,10 +179,10 @@ async def test_save_image_prevents_path_traversal(temp_upload_dir, fake_png, mon
     assert url is not None
     assert ".." not in url
     assert "\\" not in url
-    assert url.endswith("/evil.png")          # 穿越符被剔除，只剩安全主体
+    assert url.endswith("/evil.png")  # 穿越符被剔除，只剩安全主体
 
     # 2) 文件确实落在临时上传目录内，没有跑到它的上级去
-    relative = url[len(settings.IMAGE_STORAGE_BASE_URL) + 1:]
+    relative = url[len(settings.IMAGE_STORAGE_BASE_URL) + 1 :]
     saved = (temp_upload_dir / relative).resolve()
     assert saved.is_relative_to(temp_upload_dir.resolve())
     assert saved.exists()
