@@ -258,12 +258,24 @@ A 把标准改成前提确实可达的那件事，C 用一条前提能算出来�
 
 ### 3.5 并发与事务（AGENT-C）
 
-| 编号 | 用例 | 预期 | 状态 |
-| --- | --- | --- | --- |
-| AGENT-C-01 | 两个协程同时锁定同一场地同一时段 | 恰好一个成功，另一个收到冲突提示（**409 + `code=40901`**，正式版已有该码与映射） | ⛔ **xfail(strict)**，未通过——等蔡玉礼改 `_device_conflicts` |
-| AGENT-C-02 | 设备数量扣减 | ~~锁定后 `available_count` 正确递减，回滚时不减~~ → **判据作废**：按 2026-09-28 定下的口径，`available_count` 是**静态上限**、剩余量用时推导、**不扣减不回补**，该字段本就不该变。新判据照蔡玉礼的 7 条断言改，**替换后再摘 `xfail`** | ⛔ **xfail(strict)**，未通过——等蔡玉礼改 `_device_conflicts` |
+**判据已于 2026-09-28 按蔡玉礼的「7 条断言」整条替换**，落在
+`backend/tests/test_agent_concurrency.py`（10 例：8 例 `xfail(strict)` + 2 例**能过**）。
+设 `available_count = 2`（取开发库实测容量为 2 的**设备 id=8「音响04」**）：
 
-**AGENT-C-01 是本模块唯一无法靠"看代码正确"来保证的用例。** 5.5 的顺序写对了才过，写错了在低并发下测不出来，演示当天并发上来就翻车。
+| 编号 | 用例（测试函数） | 预期 | 状态 |
+| --- | --- | --- | --- |
+| AGENT-C-01 · 断言1 | `test_assert_1_first_order_on_free_slot_succeeds_and_is_persisted` | 无重叠订单，建第 1 单占用该设备 → 成功，`order_status=1` | ⛔ **xfail(strict)** |
+| AGENT-C-01 · 断言2 | `test_assert_2_second_order_same_device_same_slot_succeeds_at_capacity` | 已有 1 单占用 T，建第 2 单**同设备**同 T → 成功（`2 ≤ cap`） | ⛔ **xfail(strict)** |
+| AGENT-C-01 · 断言3 | `test_assert_3_third_order_same_device_same_slot_is_rejected` | 已有 2 单占用 T，建第 3 单同设备同 T → **拒绝，409 + `code=40901`** | ⛔ **xfail(strict)** |
+| AGENT-C-01 · 断言3b | `test_assert_3b_three_concurrent_orders_on_a_cap_two_device_exactly_two_win` | **并发版**（保留原 C-01 的行锁语义）：并发 3 单 → 恰好 2 单成功、1 单被拒 | ⛔ **xfail(strict)** |
+| AGENT-C-02 · 断言4 | `test_assert_4_cancel_one_of_two_frees_the_device_slot` | 已有 2 单占用 T，把其中一单 cancel（→3）→ 成功 | ⛔ **xfail(strict)** |
+| AGENT-C-02 · 断言5 | `test_assert_5_after_cancel_third_order_succeeds_capacity_is_derived` | 承上，再建第 3 单同设备同 T → 成功（回落到 `1 < 2`） | ⛔ **xfail(strict)** |
+| AGENT-C-01 · 断言6 | `test_assert_6_adjacent_non_overlapping_slot_succeeds_half_open` | 已有 2 单占用 T，与 T **相邻但不重叠**的 T' → 成功（**半开区间**） | ⛔ **xfail(strict)** |
+| AGENT-C-01 · 断言7 | `test_assert_7_other_device_same_slot_succeeds_capacity_is_per_device` | 已有 2 单占用 T，第 3 单用**不同设备**同一 T → 成功（容量按设备各算） | ⛔ **xfail(strict)** |
+| AGENT-C-01 · 契约 | `test_resource_conflict_maps_to_40901_with_http_409` | `ResourceConflictError.code == 40901` 且 `http_status == 409` | ✅ **通过**（契约事实，非待实现项） |
+| 桩期实录 | `test_stub_state_is_recorded_not_glossed_over` | 桩不落库（`stub=True`、`orderId is None`），且 `available_count` 前后不变 | ✅ **通过**（桩期临时，见下） |
+
+**「并发」这条是本模块唯一无法靠"看代码正确"来保证的用例。** 5.5 的顺序写对了才过，写错了在低并发下测不出来，演示当天并发上来就翻车。容量改为 2 之后，它的不变量从「恰好 1 单成功」升级为「**恰好 2 单成功**」（断言 3b）。
 
 > 📌 **2026-09-28：`available_count` 口径已定「用时推导，不扣减」。**
 > ① `available_count` 是**静态上限**，不是实时剩余；② 剩余量 = `available_count` −
@@ -271,31 +283,39 @@ A 把标准改成前提确实可达的那件事，C 用一条前提能算出来�
 > ④ 取消后名额**自动回来**，无需回补代码。
 > 理由：占用已能从 `reserve_order` 按「状态 + 时间窗口」派生，再维护计数器就是同一件事
 > 存两遍，一旦不一致无法判断谁对。
-> **因此 C-02 的原判据（断言 `available_count` 递减）是错的**，已在上表标作废——
-> 按新口径该字段本就不该变。C-01/02 的新判据照蔡玉礼的 **7 条断言**改
-> （其中第 3 条要用 **409 + `code=40901`**，已核实正式版 `core/error_codes.py:72` 与
-> `core/exceptions.py:181-183` 都有，无需新造）。
-> **判据明确了，真实现还没到**：`order_service._device_conflicts` 要按「时段重叠」推导剩余量
-> （蔡玉礼），外加测试库权限（申云飞）——两条都到位才能摘 `xfail`。
+> **因此 C-02 的原判据（断言 `available_count` 递减）是错的**，已整条作废——
+> 按新口径该字段本就不该变。C-01/02 的现行判据 = 蔡玉礼的 **7 条断言**，已于当日晚些时候
+> 逐条落地（见上表；其中第 3 条要用 **409 + `code=40901`**，已核实正式版
+> `core/error_codes.py:72` 与 `core/exceptions.py:181-183` 都有，无需新造，
+> 且该映射另有一例**不挂 xfail 的契约用例**单独把关）。
+> **判据写完了，真实现还没到**——四条卡点见下，全部到位才能摘 `xfail`。
 > 完整口径见 `docs/spec/done/README.md` 的**附录：`available_count` 口径**。
 
-两条用例的**断言是真的、被测实现还不存在**：模块 3（蔡玉礼）的 `create_order` 目前是
-**只读桩**（不 `FOR UPDATE`、不 INSERT、不扣减，`orderId` 恒为 `None`），桩自己的 docstring
+这 8 条断言的**断言是真的、被测实现还不存在**：模块 3（蔡玉礼）的 `create_order` 目前是
+**只读桩**（不 `FOR UPDATE`、不 INSERT、不计数，`orderId` 恒为 `None`），桩自己的 docstring
 写着「`AGENT-C-01` 的并发语义无法在桩上验，**假装能验就是假绿**」。所以标记为
 `xfail(strict=True)` 而不是删掉或改成能过的形状——`strict` 保证真实现落地后会**变红
 （XPASS）**，强制摘掉标记。
 
-**还有第二道锁挡在前面**，三件事缺一不可，否则摘了标记也过不了：
+已用 `--runxfail` 复核过：8 条**都因桩不落库而失败**（`ok=True` 但 `orderId=None`），
+不是用例自身写错；其中断言 3b 的输出正好显示桩让 3 单**全成**——这正是这段代码要抓的假绿。
 
-1. 蔡玉礼替换 `create_order` / `update_agent_trace` 的真实实现
+**四道锁挡在前面**，缺一条都过不了：
+
+1. 蔡玉礼按「时段重叠」改 `order_service._device_conflicts`（计数比较），
+   并替换 `create_order` / `update_agent_trace` 的只读桩
 2. **测试库权限**（集成组）——并发用例必须能真写、真回滚
 3. `_db_readonly_guard` 对这两个文件**放开**（否则第 1、2 步到位也会被拦成
    `WriteForbiddenError`）
+4. **仅断言 4/5**：模块 3 的取消入口 `PUT /api/v1/orders/{orderId}/cancel` 未交付
+   （`docs/开发流程.md:381` 的冻结路径）。**不得为让它通过而改成直接 `UPDATE reserve_order`**
+   ——测试禁写正式表（主文档 6.8），改成改库验的就不是实现了
 
-另有两例 `*_stub_state_is_recorded_not_glossed_over` **刻意断言桩的当前行为**
-（`orderId` 为 `None`、`stub=True`、库存不变）。它们是**桩期临时用例**，
-真实现落地后会失败——那时应当**删除**，而不是放宽断言。存在意义是让「C 未通过」
-这件事在测试输出里看得见。
+另有 1 例 `test_stub_state_is_recorded_not_glossed_over` **刻意断言桩的当前行为**
+（`orderId` 为 `None`、`stub=True`。库里 `available_count` 不变这句**不是桩期特征**，
+按新口径它是**长期期望**，真实现落地后要保留）。前两句随 `stub` 键一起删——
+它是**桩期临时用例**，真实现落地后会失败，那时应当**删除**，而不是放宽断言。
+存在意义是让「C 未通过」这件事在测试输出里看得见。
 
 ---
 
@@ -385,6 +405,12 @@ list 形态 content 等），已在阶段 7 完成文档里列为后续补测项
 >    该 json 是唯一真源（前端屏 3 渲染、40 秒回放、13.1 应急预案三处共用）。新增
 >    `tests/api/test_agent_schedule_mock.py`（7 例）守着它。
 >
+> 📌 **2026-09-28 晚些更新（`available_count` 判据落地后）：`526 tests · 518 passed ·
+> 8 xfailed(strict) · 4 deselected · 0 failed · 0 errors`**，覆盖率仍为 **92.37%**。
+> 变化只有一处：`tests/test_agent_concurrency.py` 由 4 例改为 10 例（C-01/C-02 的判据
+> 按蔡玉礼的 7 条断言重写，见 §3.5），**通过数 518 不变、`xfail` 由 2 变 8**
+> （多出的 6 条正是新增待实现断言）。**这 8 条不是通过**——摘 `xfail` 的四个前提见 §3.5。
+
 > 另：本机 conda 环境 `smart_dev` 原先缺 `requirements.txt` 已声明的 `aiosqlite==0.22.1`
 > 与 `alembic==1.20.0`，缺失时整个套件在**收集阶段**就 ERROR（此前误记为「image/voice
 > 用例继承红」的根因即此）。已在本机补装，未改动其他依赖。

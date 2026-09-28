@@ -235,6 +235,36 @@ Required test coverage of 80% reached. Total coverage: 92.29%
 `CONFLICT = 40900` / `USERNAME_EXISTS = 40902` / `ORDER_STATUS_CONFLICT = 40903`，
 同样各映射 409——判据里出现 409 时要核对是不是撞了另外三个。
 
+### 5.2 补记（同日更晚）：7 条断言已逐条落地到用例
+
+§5.1 记的是「判据有了，实现没到」。**现在判据也写进文件了**：
+`backend/tests/test_agent_concurrency.py` 由 4 例改为 **10 例**——
+**8 例 `xfail(strict)`**（7 条断言 + 1 条并发版）+ **2 例通过**
+（1 条 40901 契约 + 1 条桩期实录）。逐条与用例名的对照表见 `docs/test.md` §3.5，
+口径全文见 `docs/spec/done/README.md` 的附录。
+
+三处**属于落地判断、不属于判据改动**的决定，记此备查：
+
+1. **同一设备的多单必须落在不同场地。** `create_order` 的 §5.5 第 2 步先查**场地**时段重叠，
+   同场地同 T 的第二单会先撞 `CONFLICT_TIME`——那样测的是场地冲突，不是设备容量。
+   故前置单用 space 6 / space 7，第 3 单用 space 8（实测该时段全库只有 `reserve_order`
+   id=5 占着 space 2，这三个场地都空）。
+2. **断言 3 的 409 / `code=40901` 不在 `create_order` 这一层**——它是 service，没有状态行，
+   状态码由模块 3 的订单 API 映射。故另立一条**能过、不挂 xfail** 的契约用例
+   `test_resource_conflict_maps_to_40901_with_http_409` 单独把关（`code == 40901`、
+   `http_status == 409`），服务层用例只断言「拒绝」这件事本身。
+   **不能拿「反正 40901 存在」当作断言 3 通过。**
+3. **断言 4/5 多一道卡**：取消要调模块 3 的 `PUT /api/v1/orders/{orderId}/cancel`
+   （`docs/开发流程.md:381` 的冻结路径，本仓库无此真实路由）。**不改成直接
+   `UPDATE reserve_order`**——测试禁写正式表（主文档 6.8），改成改库验的就不是实现了。
+
+**对本阶段结论的影响：无。** §5 的三条前提一条没少，另加第 4 条（取消入口），
+偏差 5 照旧；§5 末尾「两条 `*_stub_state_...` 用例」现为 1 条（两条合并），
+其中「`available_count` 不变」一句**从桩期现象升格为长期期望**，真实现落地后要保留，
+另两句随 `stub` 键删除。
+已用 `--runxfail` 复核：8 条**都因桩不落库**（`ok=True` 但 `orderId=None`）而失败，
+不是用例自身写错；断言 3b 的输出正好显示桩让 3 单**全成**——正是这段代码要抓的假绿。
+
 ## 6. 偏差与如实登记
 
 | # | 阶段文档要求 | 实际做法 | 原因 | 影响 |
@@ -277,6 +307,12 @@ Required test coverage of 80% reached. Total coverage: 92.29%
 6. **本机 conda 环境原先缺 `aiosqlite==0.22.1` / `alembic==1.20.0`**（`requirements.txt`
    已声明），缺失时套件在收集阶段就 ERROR。已在本机补装，未动其他依赖。
 
+> ⚠️ **本节基线已被两次前移，引用请以 `docs/test.md` 的最新基线为准**：
+> `9f30d3a` 为 503 / 4 deselected / 2 xfailed → `25b3ee3` 为 **520 / 518 passed / 2 xfailed**
+> → 判据落地（§5.2）后为 **526 / 518 passed / 8 xfailed**。上面第 5 条提到的
+> `backend/alembic/` 遮蔽已**证伪**（是命名空间包，不遮蔽；真实原因是 `alembic` 没装），
+> 该项已闭环，`tests/integration/test_migrations.py`（8 例）**现在跑得动、无需 `--ignore`**。
+
 ## 7. 本阶段修掉的两个真实缺陷（不在计划内）
 
 写用例的过程中撞出两处**生产代码**的问题，都已修：
@@ -297,7 +333,7 @@ Required test coverage of 80% reached. Total coverage: 92.29%
 
 | # | 事项 | 归属 | 卡住什么 |
 | --- | --- | --- | --- |
-| 1 | `create_order` / `update_agent_trace` 真实实现 | 蔡玉礼（模块 3） | `AGENT-C-01/02` 无法通过；`agent_trace` 补写恒失败。**（2026-09-28 拆分**：`available_count` 口径已定「用时推导、不扣减」（见 §5.1），判据随之明确；**剩下的是 `order_service._device_conflicts` 要按「时段重叠」推导剩余量**——这一条单独归蔡玉礼。在该函数改完前，C-01/02 继续 `xfail(strict)`） |
+| 1 | `create_order` / `update_agent_trace` 真实实现 | 蔡玉礼（模块 3） | `AGENT-C-01/02` 无法通过；`agent_trace` 补写恒失败。**（2026-09-28 拆分**：`available_count` 口径已定「用时推导、不扣减」（见 §5.1），判据随之明确；**剩下的是 `order_service._device_conflicts` 要按「时段重叠」推导剩余量**——这一条单独归蔡玉礼。在该函数改完前，C-01/02 继续 `xfail(strict)`。**另（§5.2）**：断言 4/5 还要模块 3 的取消入口 `PUT /api/v1/orders/{orderId}/cancel`——本仓库没有这条真实路由，调用即 404） |
 | 2 | `smart_scheduler_test` 访问权限 | 集成组 | 阶段 7 §3.2 合规性；并发用例的写入前提 |
 | 3 | `.env` 的 LLM 三项 | 徐川（本地填即可） | 五场景的**决策质量**回归 |
 | 4 | DDL 版本与 6.7 的逐条比对 | 集成组 | 种子数据基线（`docs/test.md` 第一节） |
