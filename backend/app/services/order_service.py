@@ -93,7 +93,15 @@ from ..models import (
 )
 from ..state_machine import OrderStatus
 
-__all__ = ["create_order", "update_agent_trace"]
+__all__ = [
+    "create_order",
+    "update_agent_trace",
+    "CONFLICT_TIME",
+    "CONFLICT_DEVICE_MISSING",
+    "CONFLICT_DEVICE_UNAVAILABLE",
+    "CONFLICT_DEVICE_SHORTAGE",
+    "CONFLICT_INVALID_TIME",
+]
 
 #: `§6.3` 表 6：agent_request VARCHAR(1024)。超长截断而不是报错——需求文本是模型
 #: 生成的，因长度丢一次预约比截断更糟。
@@ -102,6 +110,24 @@ _AGENT_REQUEST_MAX = 1024
 #: 创建时允许的订单状态：只有状态机的两个入口态（`§6.3` 表 6）。
 #: 3/4 是流转出来的结果态，创建即完成/取消都是错误输入。
 _ALLOWED_CREATE_STATUS = (OrderStatus.PENDING.value, OrderStatus.CONFIRMED.value)
+
+# ==========================================================================
+# 返回体 `conflictType` 的取值（模块 4 的 Tool 层与用例直接依赖，**不得删除**）
+# ==========================================================================
+# 2026-09-27 与模块 4 对齐（依据 docs/spec/contract-alignment.md 第 3 条，出自 docs/api.md §7.2）：
+#   1. 命名是 **snake_case**，不是 SCREAMING_SNAKE；
+#   2. 设备类的两种情形**不再拆成两个取值**，统一为 `device_conflict`，
+#      靠 `conflictDetail.conflicts[].reason` 区分「设备停用」(`status`) 与
+#      「数量不足」(`exhausted`)。
+#
+# 名字保留在 service 层是为了让「取值只有一处定义」这条约定成立：
+# `app/agent/tools/lock_resources.py` 的可重试集合与 `tests/test_agent_tools.py`、
+# `tests/test_agent_concurrency.py` 都从这里取，不要在实现里另写字面量。
+CONFLICT_TIME = "time_conflict"                  # 场地时段冲突
+CONFLICT_DEVICE_MISSING = "not_found"            # 设备 ID 不存在（→ HTTP 404）
+CONFLICT_DEVICE_UNAVAILABLE = "device_conflict"  # 设备非完好状态（reason=status）
+CONFLICT_DEVICE_SHORTAGE = "device_conflict"     # 设备库存不足（reason=exhausted）
+CONFLICT_INVALID_TIME = "invalid_param"          # 起止时间本身非法
 
 
 def _as_int(value) -> int | None:
@@ -289,19 +315,19 @@ async def _check_devices(db, device_ids: list[int], start, end) -> None:
             # 不是「资源被占用」。HTTP 契约（§5.3 模块3）里设备不存在是 404，
             # 归错类会把这个 404 变成 409。
             raise _Reject(
-                "not_found",
+                CONFLICT_DEVICE_MISSING,
                 f"设备 {did} 不存在",
                 {"target": "device", "deviceIds": [did]},
             )
         if device.device_status != 1:  # 1完好 2损坏 3缺失配件（§6.3 表5）
             raise _Reject(
-                "device_conflict",
+                CONFLICT_DEVICE_UNAVAILABLE,
                 f"设备 {device.device_name} 状态异常，暂不可用",
                 {"conflicts": [{"deviceId": did, "reason": "status"}]},
             )
         if (device.available_count or 0) <= 0:
             raise _Reject(
-                "device_conflict",
+                CONFLICT_DEVICE_SHORTAGE,
                 f"设备 {device.device_name} 已无可用库存",
                 {"conflicts": [{"deviceId": did, "reason": "exhausted"}]},
             )
@@ -311,7 +337,7 @@ async def _check_devices(db, device_ids: list[int], start, end) -> None:
     if busy:
         # 「已约满」而不是「已被占用」：容量 > 1 时，重叠单数没到上限本来就不算冲突，
         # 走到这里的都是**这台设备的名额用光了**，沿用旧文案会让人以为「只要没人用就行」。
-        raise _Reject("device_conflict", "该时段设备已约满", {"conflicts": busy})
+        raise _Reject(CONFLICT_DEVICE_SHORTAGE, "该时段设备已约满", {"conflicts": busy})
 
 
 async def create_order(
@@ -408,7 +434,7 @@ async def create_order(
                 conflicts = await _time_conflicts(db, space_id, start, end)   # 3.
                 if conflicts:
                     raise _Reject(
-                        "time_conflict", "该时段已被占用", {"conflicts": conflicts}
+                        CONFLICT_TIME, "该时段已被占用", {"conflicts": conflicts}
                     )
 
                 await _check_devices(db, device_ids, start, end)              # 4.

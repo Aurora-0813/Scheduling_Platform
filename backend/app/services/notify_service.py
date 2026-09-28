@@ -37,6 +37,7 @@ from app.agent.prompts.notify_templates import (
 )
 from app.core.config import settings
 from app.core.database import session_scope
+from app.core.response import ApiError
 from app.models.notification import NotifyMessage
 from app.models.reservation import ReserveOrder
 from app.models.resource import SpaceResource
@@ -565,3 +566,89 @@ async def dispatch_order_notification(
         result.failed,
     )
     return result
+
+
+# ==========================================================================
+# 模块 4 Tool 的冻结入口：只生成文案，不落库、不推送
+# ==========================================================================
+async def generate_notification(order_info: Mapping[str, Any] | None = None) -> dict:
+    """生成一条通知文案，**只产出 title / content**。
+
+    这是模块 4 的 `generate_notification` Tool 在 service 层的落点
+    （主文档 5.3 冻结签名：`async def generate_notification(order_info: dict) -> dict`）。
+
+    与 `dispatch_order_notification` 的分工必须分清 —— 两者**不是**同一个东西：
+
+    | | 本函数 | `dispatch_order_notification` |
+    | --- | --- | --- |
+    | 生成文案 | 是 | 是 |
+    | 落 `notify_message` | **否** | 是 |
+    | 占去重名额 | **否** | 是 |
+    | WebSocket 推送 | **否** | 是 |
+
+    边界依据：主文档 9.3「消息推送只负责生成文案，业务状态变更由后端控制」——
+    Agent 可以要一段文案放进给用户的答复里，但不能凭一次工具调用就向全组管理员发通知。
+
+    参数：
+        order_info: 订单事实（camelCase 或 snake_case 均可），常见键 `notifyType` /
+                    `orderId` / `spaceName` / `startTime` / `endTime`。
+                    身份类键（`userId` / `receiverId` …）一律忽略，见 PAYLOAD_IGNORED_KEYS。
+
+    返回（字段集与模块 4 Tool 的既有取值逻辑一致）：
+        `{"ok": bool, "notifyType": int | None, "title": str, "content": str, "reason": str | None}`
+    """
+    raw = dict(order_info or {})
+
+    # 1) 语气：默认「预约提醒」（模块 4 Tool 的默认值）；非法取值按业务失败返回，不抛
+    raw_type = raw.get("notifyType", raw.get("notify_type", raw.get("type", "预约提醒")))
+    try:
+        tone: ToneSpec = resolve_tone(raw_type)
+    except ApiError as exc:
+        return {"ok": False, "notifyType": None, "title": "", "content": "", "reason": str(exc)}
+    except Exception as exc:  # noqa: BLE001 - Tool 不抛异常（主文档 9.4 降级）
+        logger.warning("通知类型解析异常：%s: %s", type(exc).__name__, exc)
+        return {
+            "ok": False,
+            "notifyType": None,
+            "title": "",
+            "content": "",
+            "reason": f"通知类型解析失败：{exc}",
+        }
+
+    # 2) 事实：键名归一化成 snake_case（模板按 snake_case 取用），身份类键丢掉
+    facts: dict[str, Any] = {}
+    for raw_key, value in raw.items():
+        if value is None:
+            continue
+        key = to_snake_key(str(raw_key))
+        if key in PAYLOAD_IGNORED_KEYS:
+            continue
+        facts[key] = value
+    if facts.get("order_id") is not None:
+        facts.setdefault("order_ids_text", str(facts["order_id"]))
+
+    # 3) 生成：走模块 7 同一套链（AI → 模板兜底），只是不落库
+    try:
+        draft = await generate_notify_content(
+            notify_type=tone.notify_type,
+            facts=facts,
+            recipient_role=ROLE_OWNER,
+        )
+    except Exception as exc:  # noqa: BLE001 - 生成失败退模板，绝不向上抛
+        logger.warning("通知文案生成失败，退回模板：%s: %s", type(exc).__name__, exc)
+        title, content = render_fallback(tone, ROLE_OWNER, facts)
+        return {
+            "ok": True,
+            "notifyType": tone.notify_type,
+            "title": title,
+            "content": content,
+            "reason": None,
+        }
+
+    return {
+        "ok": True,
+        "notifyType": tone.notify_type,
+        "title": draft.title,
+        "content": draft.content,
+        "reason": None,
+    }
