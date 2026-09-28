@@ -25,6 +25,9 @@
 | DDL 版本 | 未与 6.7 逐条对比 | ⛔ 未闭环：需集成组确认 |
 | 种子数据条数 | 场地 8 / 设备 15 / 预约 10 | ✅ 已核对（开发库实测） |
 | 测试库 | `smart_scheduler_test` | ⛔ 无权访问（错误码 1044） |
+| 离线回归（模块 7，合并后） | `447 passed, 3 skipped`（共 450 条，3 条为 live 默认跳过） | ✅ 已执行（2026-09-27） |
+| 离线回归 **补记 2026-09-28** | 上行为 2026-09-27 记录，原文保留。当日随 `agent/tools/notify_tools.py` 一并删除 `tests/unit/test_notify_tools.py`（15 条）→ **重跑口径应为 435 条**（432 passed + 3 skipped） | 🔁 待重跑 |
+| 覆盖率（合并后） | 全量 `app/` 1784 语句 / 94%；剔除模块 4 尚未实现的 `app/schemas/agent.py` 后为 96% | ✅ 已执行 |
 
 **仍未闭环的两项**：DDL 版本需集成组确认；测试库权限缺失（见第五节）。
 
@@ -212,7 +215,6 @@ python -m pytest tests -m live -v
 | `tests/unit/test_notify_service.py` | 36 | 角色语气映射、事实优先级、收件人解析、派发幂等 |
 | `tests/unit/test_conflict_service.py` | 26 | 扫描编排：四段切分、不在持有连接时调 AI、汇总计数 |
 | `tests/unit/test_notify_events.py` | 23 | 事件载荷解析、受众判定、订阅接线 |
-| `tests/unit/test_notify_tools.py` | 15 | Agent 工具契约与失败处理 |
 | `tests/unit/test_config.py` | 19 | 环境模板、端口口径、驱动规范、同步引擎惰性化 |
 | `tests/api/test_conflicts_api.py` | 12 | `GET /conflicts/scan` 契约与鉴权 |
 | `tests/api/test_notify_api.py` | 19 | `POST /notify/generate` 契约、身份安全、幂等 |
@@ -278,8 +280,6 @@ python -m pytest tests -m live -v
 | `test_conflict_service.py::test_scan_job_does_not_hold_a_session_while_calling_ai` | 调 AI 时打开的会话数为 0 —— 一次调用 3~20 秒，占死连接池对 2 核 2G 是致命的 |
 | `test_conflict_service.py::test_scan_job_opens_only_the_read_transaction_when_nothing_hits` | 无命中时不进入写库段 |
 | `test_conflict_service.py::test_scan_job_works_with_ai_fully_disabled` | `AI_ENABLED=False` 时扫描链路完整可用（4.2「移除 AI 后降级为硬冲突检测」） |
-| `test_notify_tools.py::test_tool_signature_has_no_database_session` | Tool 签名里没有任何会话对象（9.3「Tool 内禁止直接使用 AsyncSession」） |
-| `test_notify_tools.py::test_tool_is_not_registered_as_a_public_endpoint` | 内部 Tool 没有出现在任何 HTTP 路由里 |
 | `test_notify_service.py::test_dispatch_survives_ai_outage` | AI 全挂时通知仍以模板文案落库 |
 
 ### 6.4 成本护栏与幂等

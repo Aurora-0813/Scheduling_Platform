@@ -568,81 +568,73 @@ async def dispatch_order_notification(
     return result
 
 
-# ==========================================================================
-# 模块 4 Tool 的冻结入口：只生成文案，不落库、不推送
-# ==========================================================================
-async def generate_notification(order_info: Mapping[str, Any] | None = None) -> dict:
-    """生成一条通知文案，**只产出 title / content**。
+# ---------- 模块 4 Tool 的 service 入口 ----------
 
-    这是模块 4 的 `generate_notification` Tool 在 service 层的落点
-    （主文档 5.3 冻结签名：`async def generate_notification(order_info: dict) -> dict`）。
 
-    与 `dispatch_order_notification` 的分工必须分清 —— 两者**不是**同一个东西：
-
-    | | 本函数 | `dispatch_order_notification` |
-    | --- | --- | --- |
-    | 生成文案 | 是 | 是 |
-    | 落 `notify_message` | **否** | 是 |
-    | 占去重名额 | **否** | 是 |
-    | WebSocket 推送 | **否** | 是 |
-
-    边界依据：主文档 9.3「消息推送只负责生成文案，业务状态变更由后端控制」——
-    Agent 可以要一段文案放进给用户的答复里，但不能凭一次工具调用就向全组管理员发通知。
-
-    参数：
-        order_info: 订单事实（camelCase 或 snake_case 均可），常见键 `notifyType` /
-                    `orderId` / `spaceName` / `startTime` / `endTime`。
-                    身份类键（`userId` / `receiverId` …）一律忽略，见 PAYLOAD_IGNORED_KEYS。
-
-    返回（字段集与模块 4 Tool 的既有取值逻辑一致）：
-        `{"ok": bool, "notifyType": int | None, "title": str, "content": str, "reason": str | None}`
+async def generate_notification(order_info: dict) -> dict:
     """
-    raw = dict(order_info or {})
+    模块 4 的 Tool `generate_notification` 调用的 service 入口。
 
-    # 1) 语气：默认「预约提醒」（模块 4 Tool 的默认值）；非法取值按业务失败返回，不抛
-    raw_type = raw.get("notifyType", raw.get("notify_type", raw.get("type", "预约提醒")))
+    入参 `order_info` 是主文档 5.3「模块 7 `POST /api/v1/notify/generate`」载荷里的
+    `orderInfo` 对象（驼峰键，只带非 None 字段）：`notifyType` / `orderId` /
+    `receiverId` / `spaceName` / `startTime` / `endTime`。
+
+    返回形状由模块 4 冻结的 Tool 契约决定（见 `app/agent/tools/generate_notification.py`）：
+    成功 `{"ok": True, "notifyType": <int>, "title": ..., "content": ...}`；
+    失败 `{"ok": False, "reason": ...}`。**不返回 `stub` 键**，表示这是真实实现。
+
+    ⚠️ 与 `services/` 层「失败一律抛 `BizError` 子类」的约定不同，本函数不抛异常：
+    它服务的边界是 Agent Tool，抛栈会打断对话（主文档 9.3）。异常一律转成
+    `ok=False` + `reason` 返回。
+
+    已知限制：`receiverId` 当前不被采纳。收件人由 `resolve_recipients` 按订单预约人与
+    管理员**角色**解析（`dispatch_order_notification` 的 `audience` 收角色集合，不收单个
+    用户 ID）。要按人指定收件人需另立接口。
+    """
+    data = {to_snake_key(str(key)): value for key, value in (order_info or {}).items()}
+    raw_type = data.get("notify_type") or "提醒"
+    order_id = data.get("order_id")
+    reason = data.get("reason")
+
+    if order_id is not None and (
+        not isinstance(order_id, int) or isinstance(order_id, bool)
+    ):
+        return {"ok": False, "reason": f"orderId 必须是整数，收到 {order_id!r}"}
+
+    # 先解析语气：字典外的取值在这里就拦下，不落库、不猜数字
     try:
-        tone: ToneSpec = resolve_tone(raw_type)
-    except ApiError as exc:
-        return {"ok": False, "notifyType": None, "title": "", "content": "", "reason": str(exc)}
-    except Exception as exc:  # noqa: BLE001 - Tool 不抛异常（主文档 9.4 降级）
-        logger.warning("通知类型解析异常：%s: %s", type(exc).__name__, exc)
+        tone = resolve_tone(raw_type)
+    except Exception as exc:  # noqa: BLE001 —— 见 docstring：本入口不抛异常
+        return {"ok": False, "reason": str(exc)}
+
+    extra_facts = {
+        key: data[key]
+        for key in ("space_name", "start_time", "end_time")
+        if data.get(key) is not None
+    }
+
+    try:
+        result = await dispatch_order_notification(
+            order_id=order_id,
+            notify_type=raw_type,
+            rule_code="agent_manual",
+            rule_label=str(raw_type),
+            reason=reason,
+            extra_facts=extra_facts or None,
+            source="agent",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Agent 通知入口失败：order_id=%s", order_id)
+        return {"ok": False, "reason": f"通知生成失败：{exc}"}
+
+    draft = pick_draft(result)
+    if draft is None:
         return {
             "ok": False,
-            "notifyType": None,
-            "title": "",
-            "content": "",
-            "reason": f"通知类型解析失败：{exc}",
-        }
-
-    # 2) 事实：键名归一化成 snake_case（模板按 snake_case 取用），身份类键丢掉
-    facts: dict[str, Any] = {}
-    for raw_key, value in raw.items():
-        if value is None:
-            continue
-        key = to_snake_key(str(raw_key))
-        if key in PAYLOAD_IGNORED_KEYS:
-            continue
-        facts[key] = value
-    if facts.get("order_id") is not None:
-        facts.setdefault("order_ids_text", str(facts["order_id"]))
-
-    # 3) 生成：走模块 7 同一套链（AI → 模板兜底），只是不落库
-    try:
-        draft = await generate_notify_content(
-            notify_type=tone.notify_type,
-            facts=facts,
-            recipient_role=ROLE_OWNER,
-        )
-    except Exception as exc:  # noqa: BLE001 - 生成失败退模板，绝不向上抛
-        logger.warning("通知文案生成失败，退回模板：%s: %s", type(exc).__name__, exc)
-        title, content = render_fallback(tone, ROLE_OWNER, facts)
-        return {
-            "ok": True,
-            "notifyType": tone.notify_type,
-            "title": title,
-            "content": content,
-            "reason": None,
+            "reason": (
+                f"未生成文案：订单 {order_id} 不存在、没有可通知的收件人，"
+                "或该通知已被去重跳过"
+            ),
         }
 
     return {
@@ -650,5 +642,4 @@ async def generate_notification(order_info: Mapping[str, Any] | None = None) -> 
         "notifyType": tone.notify_type,
         "title": draft.title,
         "content": draft.content,
-        "reason": None,
     }
