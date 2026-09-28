@@ -1,4 +1,4 @@
-"""预约创建 / 校验 / 状态机（docs/test.md TC-01 ~ TC-12）。"""
+"""预约创建 / 校验 / 状态机（docs/模块3-test.md TC-01 ~ TC-12）。"""
 from datetime import time
 
 import pytest

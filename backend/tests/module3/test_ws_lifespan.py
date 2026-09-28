@@ -1,4 +1,4 @@
-"""真实 ASGI 栈：lifespan 建表 + `/ws/notify` 端点（docs/test.md TC-20）。
+"""真实 ASGI 栈：lifespan 建表 + `/ws/notify` 端点（docs/模块3-test.md TC-20）。
 
 `test_websocket.py` 覆盖的是 `ConnectionManager` 本身；这里用 `TestClient` 走完整
 ASGI 栈，覆盖 `main.py` 的 lifespan 与 WebSocket 端点函数体。

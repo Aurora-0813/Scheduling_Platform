@@ -89,7 +89,7 @@ for row in rows:
 full = {did for did in wanted if used[did] >= caps.get(did, 0)}
 ```
 
-返回**形状不变** —— 仍是 `docs/api.md` 里 `create_order` 冻结的
+返回**形状不变** —— 仍是 `docs/模块3-api.md` 里 `create_order` 冻结的
 `{"conflicts": [{"orderId", "deviceIds", "startTime", "endTime"}, ...]}`（一单一条）。
 改形状要走 `§5.3`，本次只是把**列出来的单**限制为「碰到已约满设备」的那些，
 否则「A 满了」会把只用到空闲 B 的单也一并报出来。
@@ -125,9 +125,14 @@ full = {did for did in wanted if used[did] >= caps.get(did, 0)}
   `test_capacity_is_counted_per_device`、`test_successful_order_never_writes_available_count`
 - `backend/tests/module3/test_orders.py` —— `test_agent_c01_02_capacity_and_cancel_roundtrip`
 
-**注意 HTTP 层拿不到 `conflictDetail`**：`docs/api.md` 规定错误响应 `data=null`，
-路由层 `_error_for` 只透传 `reason` 作为 `message`。要读结构化冲突详情得直调
-`create_order`（Agent 的 `lock_resources` Tool 就是这么调的）。
+**注意 HTTP 层拿不到 `conflictDetail`**：本模块的错误响应按 `docs/模块3-api.md` 的约定
+把 `data` 置 `null`，路由层 `_error_for` 只透传 `reason` 作为 `message`。要读结构化冲突
+详情得直调 `create_order`（Agent 的 `lock_resources` Tool 就是这么调的）。
+
+> **顺带一条可用的余地**：团队 `docs/api.md` §统一响应体写的是「失败时 `data` 为 `null`
+> **或补充信息**」—— 也就是说把 `conflictDetail` 放进失败响应的 `data` 并**不违反**
+> 团队约定，只是会改本模块的对外契约（§5.3），本轮不做。前端若需要结构化冲突详情，
+> 这是成本最低的一条路，比新增一个查询接口小。
 
 ---
 
@@ -168,8 +173,10 @@ Python 里数，**尽力而为的正确性，不做性能承诺**。真正的解
 原 TC-11「取消已确认预约触发释放占用」改为断言**可观测结果**：取消后同一时段、
 同一设备能再下一单（比断言内部调用更结实，不依赖任何内部实现）。
 
-> `docs/test.md` 的 TC-11 描述仍写着「执行 `release_occupancy` hook」——
-> 那是团队权威文档，模块 3 未改动，请集成组同步。
+> **更正（2026-09-28）**：这里原写「`docs/test.md` 的 TC-11 仍写着旧 hook，请集成组同步」，
+> **不成立**：`origin/main:docs/test.md` 的 `release_occupancy` 命中数为 0。写着旧 hook
+> 的是本模块自己的文档（现 `docs/模块3-test.md`），已改成上面的可观测断言。
+> 团队文档无需改动。
 
 ---
 

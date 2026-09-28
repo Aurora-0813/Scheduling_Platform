@@ -309,7 +309,7 @@ async def test_capacity_allows_up_to_available_count():
     assert third["ok"] is False
     assert third["conflictType"] == "device_conflict"
 
-    # 形状按 `docs/api.md` 里 `create_order` 的冻结契约：一单一条，列出占着这台
+    # 形状按 `docs/模块3-api.md` 里 `create_order` 的冻结契约：一单一条，列出占着这台
     # 设备的那些单（不是「一台一条」的计数条目 —— 改形状要走 §5.3）
     conflicts = third["conflictDetail"]["conflicts"]
     assert sorted(c["orderId"] for c in conflicts) == sorted(

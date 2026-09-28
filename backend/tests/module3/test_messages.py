@@ -1,4 +1,4 @@
-"""消息通知 / 扫描（docs/test.md TC-13 ~ TC-19）。"""
+"""消息通知 / 扫描（docs/模块3-test.md TC-13 ~ TC-19）。"""
 from datetime import datetime, timedelta
 
 from sqlalchemy import select

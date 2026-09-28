@@ -1,6 +1,6 @@
-"""WebSocket 推送（docs/test.md TC-20 ~ TC-22）。
+"""WebSocket 推送（docs/模块3-test.md TC-20 ~ TC-22）。
 
-说明：`ws.js` ↔ `/ws/notify` 的真实长连接验证按 docs/test.md §7.2 用脚本手工执行；
+说明：`ws.js` ↔ `/ws/notify` 的真实长连接验证按 docs/模块3-test.md §7.2 用脚本手工执行；
 此处对 `ConnectionManager` 做单元级覆盖，并顺带验证「业务动作 → 推送」链路。
 """
 import pytest

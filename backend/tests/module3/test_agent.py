@@ -1,4 +1,4 @@
-"""Agent 联动与语音/图像占位入口（docs/test.md TC-23 ~ TC-28）。"""
+"""Agent 联动与语音/图像占位入口（docs/模块3-test.md TC-23 ~ TC-28）。"""
 from app.core.error_codes import ErrorCode
 
 from .helpers import MOCK_USER_ID, time_str
