@@ -102,8 +102,9 @@ os.environ["SQL_ECHO"] = "false"
 # 而上面那条 `DATABASE_URL` 的值是 f-string，豁免条件不成立，于是从这一行起全部报
 # E402。既不能靠重排消掉（重排就会破坏「环境变量先于 import app」这条功能约束），
 # 也不能只给第一行加（E402 逐行报），所以整段显式标注。
+
 from collections.abc import AsyncGenerator, Callable, Iterator  # noqa: E402
-from datetime import datetime  # noqa: E402
+from datetime import datetime, timedelta  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
 
@@ -139,8 +140,7 @@ from app.services.rules.base import (  # noqa: E402
 # 上面那段的顺序是**功能性**的，不是排版问题，所以在这里把它变成会失败的自检 ——
 # 只用注释约束的话，下一个人把 import 挪到 os.environ 之前（IDE 的「优化导入」
 # 就会这么干）不会有任何提示，只会得到「测试莫名变慢、偶发连不上 Redis」。
-# lint 帮不了这一条：E402 只**记录**了顺序不对，它不知道哪一边才是对的 ——
-# 那串 noqa: E402 的作用是让「顺序刻意如此」一眼可见，不是消音。
+# lint 帮不了这一条：ruff 的 E402 对 sys.path / os.environ 之后的导入不报错。
 assert settings.REDIS_ENABLED is False, (
     "REDIS_ENABLED 不是 false：app.core.config 在本文件的 os.environ 赋值之前就被导入了，"
     "环境变量没生效。请把 import app.* 放回 os.environ[...] 之后（见模块 docstring）。"
@@ -750,18 +750,18 @@ from sqlalchemy import event  # noqa: E402
 #   reserve_order  10 行
 SEED = {
     # 场地
-    "space_hall_40": 4,        # A栋3楼展厅，type=2，cap=50，¥800
-    "space_hall_35": 5,        # C栋1楼展厅，type=2，cap=35，¥600
-    "space_small_hall": 7,     # 综合楼小多功能厅，type=3，cap=25
-    "space_big_hall": 6,       # 综合楼大礼堂，type=3，cap=80
+    "space_hall_40": 4,  # A栋3楼展厅，type=2，cap=50，¥800
+    "space_hall_35": 5,  # C栋1楼展厅，type=2，cap=35，¥600
+    "space_small_hall": 7,  # 综合楼小多功能厅，type=3，cap=25
+    "space_big_hall": 6,  # 综合楼大礼堂，type=3，cap=80
     # 设备
     "projectors": [1, 2, 3, 4],
     "speakers": [5, 6, 7, 8],
     "screens": [9, 10, 11],
-    "drone_ok": 12,            # 无人机01，status=1，available=2
-    "drone_broken": 13,        # 无人机02，status=2（损坏）→ 必须被 Tool 滤掉
-    "live_ok": 14,             # 直播设备01，status=1，available=1
-    "live_exhausted": 15,      # 直播设备02，status=1，available=0 → 必须被 Tool 滤掉
+    "drone_ok": 12,  # 无人机01，status=1，available=2
+    "drone_broken": 13,  # 无人机02，status=2（损坏）→ 必须被 Tool 滤掉
+    "live_ok": 14,  # 直播设备01，status=1，available=1
+    "live_exhausted": 15,  # 直播设备02，status=1，available=0 → 必须被 Tool 滤掉
 }
 
 #: 一个**已被占用**的时段：`reserve_order` id=9（space=4，order_status=1）。
@@ -815,11 +815,22 @@ def _offline_guard() -> Any:
 # --------------------------------------------------------------------------
 #: 会被拦下的语句首关键字。故意**不含** `select` / `show` / `set` / `begin` 等
 #: ——`SELECT ... FOR UPDATE` 是读，必须放行（真实 `create_order` 靠它）。
-_FORBIDDEN_HEADS = frozenset({
-    "insert", "update", "delete", "replace",
-    "create", "drop", "alter", "truncate", "rename",
-    "grant", "revoke", "call",
-})
+_FORBIDDEN_HEADS = frozenset(
+    {
+        "insert",
+        "update",
+        "delete",
+        "replace",
+        "create",
+        "drop",
+        "alter",
+        "truncate",
+        "rename",
+        "grant",
+        "revoke",
+        "call",
+    }
+)
 
 
 class WriteForbiddenError(AssertionError):
@@ -846,7 +857,7 @@ def _db_readonly_guard() -> Any:
 
     written: list[str] = []
 
-    def _guard(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+    def _guard(conn, cursor, statement, parameters, context, executemany):
         head = statement.lstrip().split(None, 1)[0].lower() if statement.strip() else ""
         if head in _FORBIDDEN_HEADS:
             written.append(statement)
@@ -908,7 +919,7 @@ class ScriptedChatModel(BaseChatModel):
     def _llm_type(self) -> str:
         return "scripted-chat-model"
 
-    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:  # noqa: ANN401 - 对齐父类签名
+    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
         return self
 
     def _next(self) -> ChatResult:
@@ -916,10 +927,14 @@ class ScriptedChatModel(BaseChatModel):
         self._cursor += 1
         return ChatResult(generations=[ChatGeneration(message=self.responses[idx])])
 
-    def _generate(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any) -> ChatResult:  # noqa: ANN401
+    def _generate(
+        self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any
+    ) -> ChatResult:
         return self._next()
 
-    async def _agenerate(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any) -> ChatResult:  # noqa: ANN401
+    async def _agenerate(
+        self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any
+    ) -> ChatResult:
         if self.delay:
             await asyncio.sleep(self.delay)
         return self._next()
@@ -932,6 +947,7 @@ def scripted() -> Any:
     写成工厂而不是直接给实例：用例需要按场景现编响应序列，
     一个固定内容的夹具会让所有用例被同一串 tool_call 绑死。
     """
+
     def _make(responses: list[AIMessage], delay: float = 0.0) -> ScriptedChatModel:
         return ScriptedChatModel(responses=responses, delay=delay)
 
@@ -1020,10 +1036,15 @@ def slots() -> dict[str, tuple[str, str]]:
     return {"occupied": OCCUPIED_SLOT, "free": FREE_SLOT}
 
 
-
 # ===========================================================================
 # 模块 7 冲突预警与通知（feat 侧夹具，原样保留）
 # ===========================================================================
+
+# 固定时间基准，让所有规则测试可复现。
+# ⚠️ 本行与上面的 `timedelta` 在把模块 7 并进 main 时被搬丢了（夹具体 `return NOW`
+#    和 `now + timedelta(...)` 都还在，常量与 import 却没了），于是本段用例全部
+#    NameError。据此从模块 7 原分支 `feat/module7-conflict-notify` 原样补回。
+NOW = datetime(2026, 9, 25, 10, 0)
 
 
 @pytest.fixture
