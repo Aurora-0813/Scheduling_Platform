@@ -181,6 +181,8 @@ async def test_mock_response_keys_are_camel_case(
 
     手写 dict 不经过 Pydantic，`alias_generator` 对它们无效（见模块 docstring），
     因此这是唯一能拦住 `space_id` / `start_time` 这类漏网的检查。
+
+    豁免 `actionInput` 与 `observation` 两棵子树，理由见 `_OPAQUE_SUBTREES`。
     """
     response = await client.request(method, _concrete(path), **kwargs)
 
@@ -188,17 +190,38 @@ async def test_mock_response_keys_are_camel_case(
     assert not offenders, f"{method} {path} 返回了 snake_case 字段: {offenders}"
 
 
-def _underscore_keys(value: object, prefix: str = "data") -> list[str]:
-    """递归找出所有含下划线的键，返回可读路径便于定位。"""
+# 这两棵子树里的键名**不归后端定**，因此不参与 camelCase 检查：
+#
+#   actionInput —— 模型的 Tool 调用入参，键名就是 `app/agent/tools/*.py` 里
+#                  LangChain 工具的形参名（`space_type`、`device_ids`、
+#                  `start_time`… 见 query_spaces / lock_resources 的签名）；
+#   observation —— 被调工具的**原样**返回。
+#
+# 把 Mock 里的它们改成驼峰，看起来是「更规范」，实际是让 Mock 与模块 4 的真实
+# 返回长得不一样 —— 恰好踩中本文件 docstring 第 1 条要防的事（拿 Mock 调通的
+# 前端，切真实接口时崩）。真正该是驼峰的是工具**内部**再返回给前端的部分
+# （`spaceName`、`orderId`、`deviceName`），那些在子树里仍然是驼峰。
+_OPAQUE_SUBTREES = frozenset({"actionInput", "observation"})
+
+
+def _underscore_keys(
+    value: object, prefix: str = "data", opaque: frozenset[str] = _OPAQUE_SUBTREES
+) -> list[str]:
+    """递归找出所有含下划线的键，返回可读路径便于定位。
+
+    `opaque` 里的键：**记它自己**（键名本身仍是驼峰，仍要检查），但不往下走。
+    """
     found: list[str] = []
     if isinstance(value, dict):
         for key, item in value.items():
             if "_" in str(key):
                 found.append(f"{prefix}.{key}")
-            found.extend(_underscore_keys(item, f"{prefix}.{key}"))
+            if key in opaque:
+                continue
+            found.extend(_underscore_keys(item, f"{prefix}.{key}", opaque))
     elif isinstance(value, list):
         for index, item in enumerate(value):
-            found.extend(_underscore_keys(item, f"{prefix}[{index}]"))
+            found.extend(_underscore_keys(item, f"{prefix}[{index}]", opaque))
     return found
 
 

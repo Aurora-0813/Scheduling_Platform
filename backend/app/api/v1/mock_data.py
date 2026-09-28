@@ -19,9 +19,22 @@ Mock 示例数据
 
 命名规范：模块名 + 用途，例如 `SPACE_ANALYZE`。改数据时请在
 `docs/api.md` 的 Mock 一节同步更新说明。
+
+**唯一的例外**：`AGENT_SCHEDULE`（模块 4 的思考链）不写在本文件里，而是读
+仓库根的 `docs/mock/agent_schedule.json` —— 那份数据要与前端、演示回放、
+应急预案共用，两个副本一旦漂移不会报错，只会到演示现场才发现。详见该常量
+上方的说明。
 """
 
 from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from app.core.config import settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 __all__ = [
     "VOICE_ASR",
@@ -119,32 +132,63 @@ MESSAGES_UNREAD: dict = {
 # ==========================================================================
 # 模块 4：核心调度 Agent
 # ==========================================================================
-AGENT_SCHEDULE: dict = {
-    "plan": {
-        "spaceId": 101,
-        "spaceName": "三号会议室",
-        "deviceIds": [1, 2],
-        "startTime": "2026-09-28 14:00:00",
-        "endTime": "2026-09-28 16:00:00",
-        "reason": "容量 30 人满足 20 人需求，投影仪与白板可用且无时间冲突",
-    },
-    "backupPlan": {
-        "spaceId": 102,
-        "spaceName": "四号会议室",
-        "deviceIds": [3],
-        "startTime": "2026-09-28 15:00:00",
-        "endTime": "2026-09-28 17:00:00",
-        "reason": "主方案被占用时的次优选择，容量 20 人，需自带投影仪",
-    },
-    "trace": [
-        {"step": 1, "result": "识别意图：预约会议室", "timestamp": "2026-09-27 15:04:05"},
-        {"step": 2, "result": "查询可用场地：命中 2 个候选", "timestamp": "2026-09-27 15:04:06"},
-        {"step": 3, "result": "查询可用设备：投影仪 A、白板 B", "timestamp": "2026-09-27 15:04:06"},
-        {"step": 4, "result": "生成主方案与备选方案", "timestamp": "2026-09-27 15:04:07"},
-    ],
-    # 走的是「需要人工确认」的分支，前端据此弹确认框
-    "needConfirm": True,
-}
+# 本块**不写死数据**，改为读仓库根的 `docs/mock/agent_schedule.json`。
+#
+# 为什么改成读文件
+# ----------------
+# 这份思考链是**一处数据三处用**：
+#     ① 前端屏 3 的思考链渲染
+#     ② 演示的 40 秒回放（7 步，时间戳跨 39 秒、间隔不均）
+#     ③ 主文档 13.1 应急预案的预置 trace
+# 原先代码里另写了一份 4 步 / 间隔 1 秒的常量，与 json 的 7 步 / 39 秒各说各话。
+# 这类不一致**不会报错**：两条路都能正常返回、前端也能渲染，只有到演示现场
+# 才发现回放节奏和预置 trace 对不上，而那时已经没有排查时间。
+# 现在 json 是唯一真源 —— 改数据只改 json，代码这边不用动，也就不会再漂移。
+#
+# 路径
+# ----
+# json 要和前端共用，因此放在**仓库根** `docs/mock/` 下（不是 `backend/docs/`）——
+# 与模块 4 原实现 `mock.py` 里的 `parents[4] / "docs" / "mock"` 是同一处。
+# 允许两种检出布局，取先命中的：
+#     仓库布局（常态）  <repo>/docs/mock/agent_schedule.json    ← backend_dir.parent
+#     后端独立布局      <backend>/docs/mock/agent_schedule.json ← backend_dir
+_AGENT_SCHEDULE_RELATIVE = ("docs", "mock", "agent_schedule.json")
+
+_AGENT_SCHEDULE_CANDIDATES = tuple(
+    base.joinpath(*_AGENT_SCHEDULE_RELATIVE)
+    for base in (settings.backend_dir.parent, settings.backend_dir)
+)
+
+
+def _resolve_agent_schedule_path() -> Path | None:
+    """返回第一个存在的候选路径；都没有则 None。"""
+    return next((path for path in _AGENT_SCHEDULE_CANDIDATES if path.is_file()), None)
+
+
+#: 实际读到的 json 路径；None 表示候选路径都不存在（此时下方会打 ERROR 日志）。
+#: 测试用它与同一个来源判断「数据到底读没读到」，避免两边各写一份路径解析。
+AGENT_SCHEDULE_JSON_PATH: Path | None = _resolve_agent_schedule_path()
+
+
+def _load_agent_schedule() -> dict:
+    """读 mock 思考链 JSON 的 `data` 段（外层 code/message 由 ok() 统一包）。
+
+    读不到时返回 `{}` 并打 ERROR 日志，而**不是**抛异常：本文件只服务 Mock
+    接口，不该让一个演示数据文件缺失把整个应用的启动带崩。缺文件时
+    `tests/api/test_agent_schedule_mock.py` 会明确失败，问题在测试阶段暴露。
+    """
+    if AGENT_SCHEDULE_JSON_PATH is None:
+        logger.error(
+            "Mock 思考链数据缺失，/mock/agent/schedule 将返回空 data；期望路径：%s",
+            " 或 ".join(str(path) for path in _AGENT_SCHEDULE_CANDIDATES),
+        )
+        return {}
+
+    with AGENT_SCHEDULE_JSON_PATH.open(encoding="utf-8") as fp:
+        return json.load(fp)["data"]
+
+
+AGENT_SCHEDULE: dict = _load_agent_schedule()
 
 # ==========================================================================
 # 模块 5：资源与设备管理

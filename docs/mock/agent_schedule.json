@@ -1,0 +1,195 @@
+{
+  "_comment": [
+    "模块 4 的 mock 响应样例（阶段 8 任务 8-2，主文档 8.8）。",
+    "一份数据三处用：① 前端屏 3 思考链渲染 ② 40 秒回放方案 ③ 13.1 应急预案的预置 trace。",
+    "字段与阶段 2 冻结的 TraceStep / Plan / ScheduleData 逐一对应，改这里必须同步改 app/schemas/agent.py。",
+    "timestamp 跨 39 秒、间隔不均（0/4/8/7/8/6/6），模拟「解析 → 查询 → 查询 → 查询 → 锁定 → 通知 → 交方案」的真实节奏；",
+    "各步时间戳互不相同且严格递增，可直接按时间轴回放。",
+    "场景取自主文档第 94 行的演示输入：40 人展厅 + 双投影 + 音响，预算 1000 元，本周五下午。"
+  ],
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "plan": {
+      "spaceId": 4,
+      "spaceName": "A栋3楼展厅",
+      "deviceIds": [1, 2, 5],
+      "startTime": "2026-09-25 14:00:00",
+      "endTime": "2026-09-25 18:00:00",
+      "reason": "A栋3楼展厅可容纳 50 人（需求 40 人）、租金 800 元，营业时段 09:00-21:00 覆盖 14:00-18:00，场地费 800 元后余 200 元；配投影仪 2 台（id 1、2）与音响 1 套（id 5），合计未超 1000 元预算。"
+    },
+    "backupPlan": {
+      "spaceId": 2,
+      "spaceName": "A栋305会议室",
+      "deviceIds": [1, 2],
+      "startTime": "2026-09-25 14:00:00",
+      "endTime": "2026-09-25 18:00:00",
+      "reason": "备选：若 A栋3楼展厅该时段被占用，按用户授权拆分为两场——A栋305会议室（20 人，300 元）连续两个时段共 40 人，场地费 600 元，两场各配 1 台投影仪。"
+    },
+    "trace": [
+      {
+        "step": 1,
+        "result": "模型推理",
+        "timestamp": "2026-09-25 14:00:00",
+        "thought": "需求拆解：人数 40、场地类型「展厅」（字典值 2）、时间「本周五下午」→ 2026-09-25 14:00-18:00、需要的设备是双投影 + 音响、预算上限 1000 元。先按容量与类型查场地，再按类型逐类查设备，最后核算预算。",
+        "action": null,
+        "actionInput": null,
+        "observation": null
+      },
+      {
+        "step": 2,
+        "result": "查询场地：命中 2 个候选场地",
+        "timestamp": "2026-09-25 14:00:04",
+        "thought": "先查展厅：容量下限 40 人，时段 2026-09-25 14:00:00 至 18:00:00。",
+        "action": "query_spaces",
+        "actionInput": {
+          "capacity": 40,
+          "space_type": 2,
+          "start_time": "2026-09-25 14:00:00",
+          "end_time": "2026-09-25 18:00:00"
+        },
+        "observation": {
+          "ok": true,
+          "count": 2,
+          "spaceTypeLabel": "展厅",
+          "spaces": [
+            {
+              "id": 5,
+              "spaceName": "C栋1楼展厅",
+              "spaceType": 2,
+              "capacity": 35,
+              "location": "C栋1楼",
+              "budget": 600.0,
+              "openStartTime": "09:00:00",
+              "openEndTime": "21:00:00",
+              "status": 1
+            },
+            {
+              "id": 4,
+              "spaceName": "A栋3楼展厅",
+              "spaceType": 2,
+              "capacity": 50,
+              "location": "A栋3楼",
+              "budget": 800.0,
+              "openStartTime": "09:00:00",
+              "openEndTime": "21:00:00",
+              "status": 1
+            }
+          ]
+        }
+      },
+      {
+        "step": 3,
+        "result": "查询设备：命中 4 台可借设备",
+        "timestamp": "2026-09-25 14:00:12",
+        "thought": "候选场地有两个：C栋1楼展厅只能坐 35 人，不满足 40 人；A栋3楼展厅 50 人、800 元，可用。接着查设备。先查投影仪——需求要双投影，剩 200 元预算，要留意单价。",
+        "action": "query_devices",
+        "actionInput": {
+          "device_type": "投影仪"
+        },
+        "observation": {
+          "ok": true,
+          "count": 4,
+          "devices": [
+            { "id": 1, "deviceName": "投影仪01", "deviceType": "投影仪", "deviceStatus": 1, "totalCount": 1, "availableCount": 1 },
+            { "id": 2, "deviceName": "投影仪02", "deviceType": "投影仪", "deviceStatus": 1, "totalCount": 1, "availableCount": 1 },
+            { "id": 3, "deviceName": "投影仪03", "deviceType": "投影仪", "deviceStatus": 1, "totalCount": 1, "availableCount": 1 },
+            { "id": 4, "deviceName": "投影仪04", "deviceType": "投影仪", "deviceStatus": 1, "totalCount": 1, "availableCount": 1 }
+          ]
+        }
+      },
+      {
+        "step": 4,
+        "result": "查询设备：命中 4 台可借设备",
+        "timestamp": "2026-09-25 14:00:19",
+        "thought": "投影仪 4 台全部可用，取 id 1、2 满足双投影。再查音响。",
+        "action": "query_devices",
+        "actionInput": {
+          "device_type": "音响"
+        },
+        "observation": {
+          "ok": true,
+          "count": 4,
+          "devices": [
+            { "id": 5, "deviceName": "音响01", "deviceType": "音响", "deviceStatus": 1, "totalCount": 1, "availableCount": 1 },
+            { "id": 6, "deviceName": "音响02", "deviceType": "音响", "deviceStatus": 1, "totalCount": 1, "availableCount": 1 },
+            { "id": 7, "deviceName": "音响03", "deviceType": "音响", "deviceStatus": 1, "totalCount": 1, "availableCount": 1 },
+            { "id": 8, "deviceName": "音响04", "deviceType": "音响", "deviceStatus": 1, "totalCount": 2, "availableCount": 2 }
+          ]
+        }
+      },
+      {
+        "step": 5,
+        "result": "锁定资源：成功（订单 101）",
+        "timestamp": "2026-09-25 14:00:27",
+        "thought": "方案定了：A栋3楼展厅（id 4）+ 投影仪 id 1、2 + 音响 id 5。核对时段不与场地营业时间冲突，预算 800 + 设备费仍在 1000 元内。锁定资源。",
+        "action": "lock_resources",
+        "actionInput": {
+          "space_id": 4,
+          "device_ids": [1, 2, 5],
+          "start_time": "2026-09-25 14:00:00",
+          "end_time": "2026-09-25 18:00:00"
+        },
+        "observation": {
+          "ok": true,
+          "orderId": 101,
+          "reason": null
+        }
+      },
+      {
+        "step": 6,
+        "result": "生成通知文案：预约成功提醒",
+        "timestamp": "2026-09-25 14:00:33",
+        "thought": "资源已锁定，接着生成参会通知文案。通知类型取字典内的「预约提醒」。",
+        "action": "generate_notification",
+        "actionInput": {
+          "order_info": {
+            "notifyType": "预约提醒",
+            "orderId": 101,
+            "spaceName": "A栋3楼展厅",
+            "startTime": "2026-09-25 14:00:00",
+            "endTime": "2026-09-25 18:00:00"
+          }
+        },
+        "observation": {
+          "ok": true,
+          "notifyType": 1,
+          "title": "预约成功提醒",
+          "content": "您预约的「A栋3楼展厅」已提交，时间 2026-09-25 14:00:00 ~ 2026-09-25 18:00:00。"
+        }
+      },
+      {
+        "step": 7,
+        "result": "提交方案：已提交",
+        "timestamp": "2026-09-25 14:00:39",
+        "thought": "方案与备选方案都已确定，通过 submit_plan 交出。",
+        "action": "submit_plan",
+        "actionInput": {
+          "plan": {
+            "spaceId": 4,
+            "spaceName": "A栋3楼展厅",
+            "deviceIds": [1, 2, 5],
+            "startTime": "2026-09-25 14:00:00",
+            "endTime": "2026-09-25 18:00:00",
+            "reason": "A栋3楼展厅可容纳 50 人、租金 800 元，配投影仪 2 台与音响 1 套，合计未超 1000 元预算。"
+          },
+          "backup_plan": {
+            "spaceId": 2,
+            "spaceName": "A栋305会议室",
+            "deviceIds": [1, 2],
+            "startTime": "2026-09-25 14:00:00",
+            "endTime": "2026-09-25 18:00:00",
+            "reason": "备选：拆分为两场 20 人会议室。"
+          },
+          "reason": "主方案满足 40 人 + 双投影 + 音响且不超预算；备选为拆分会场方案。"
+        },
+        "observation": {
+          "ok": true,
+          "accepted": true,
+          "message": "方案已提交，无需再次调用本工具。"
+        }
+      }
+    ],
+    "needConfirm": true
+  }
+}
