@@ -296,4 +296,8 @@ B 方案那份签名 `(order_id, notify_type, reason) -> str` 在主文档里**�
 而在 service 层被替换之前，「改成映射 2」等于**跟一个尚未落地的实现对齐**。
 等模块 7 落 `main`、service 层映射生效后，本项**自然消解**；
 届时模块 4 侧要把 `backend/tests/test_agent_tools.py` 的
-`test_generate_notification_unmapped_type_fails_closed` 改成断言 `notify_type == 2`（用例名与 docstring 一并改）。
+`test_generate_notification_unmapped_type_fails_closed` 改成断言 **Tool 返回值**的 `result["notifyType"] == 2`（用例名与 docstring 一并改）。
+**键名要留意**：那是**驼峰** `notifyType`（Tool 的返回键），不是 DB 列名 `notify_type`；
+本模块 Tool 用 `result.get("notifyType")` 从 service 返回值里取（`generate_notification.py:71`），
+若模块 7 的实现返回 `notify_type`，这里会**静默拿到 `None`**（`ok=True` 但 `title`/`content` 为空）
+—— 不报错、接口 200，只有模型看到空文案。故落 `main` 时要连键名一起核。

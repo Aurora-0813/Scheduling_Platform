@@ -264,7 +264,7 @@ app/agent/tools/generate_notification.py:49
 | 1 | `lock_resources` 的 `user_id` 传递方式 | **是**（2026-09-27 与蔡玉礼对齐） | 冻结签名不加 `user_id`；身份由 API 层从 JWT 解出后经 `app/agent/context.py` 的调用上下文注入 Tool。见 `docs/spec/contract-alignment.md` 第 1 条 |
 | 2 | `TraceStep` 字段冻结待前端回执 | 否 | 字段已冻结并实现，**仍缺前端书面回执**（阶段 2 遗留） |
 | 4 | `query_spaces`/`query_devices` 真实 service 签名 | 否 | 阶段 3 桩已可用；替换后需核对签名 |
-| 6 | `notify_type` 映射 | **裁定已出（2026-09-28），本分支未闭环** | 见第 6 节 #2：**不扩字典，`延期致歉` → 2（变更致歉）**。本分支 service 仍是桩，故 `AGENT-U-*` 里那条 `ok=false` 的期望值**暂时保留**（并加注释写明改法），等模块 7 落 `main`、service 层映射生效后再改为断言 `notify_type == 2` |
+| 6 | `notify_type` 映射 | **裁定已出（2026-09-28），本分支未闭环** | 见第 6 节 #2：**不扩字典，`延期致歉` → 2（变更致歉）**。本分支 service 仍是桩，故 `AGENT-U-*` 里那条 `ok=false` 的期望值**暂时保留**（并加注释写明改法），等模块 7 落 `main`、service 层映射生效后再改为断言 **Tool 返回值**的 `notifyType == 2`（驼峰键，不是 DB 列名 `notify_type`）；并核对模块 7 的 service 返回键名是否同为 `notifyType` —— 本模块 Tool 走 `result.get("notifyType")`（`generate_notification.py:71`），键名不一致会**静默返回 None** |
 | —— | `generate_notification` Tool 层归属（阶段 3 的 E2 分叉） | **是**（2026-09-28 裁定选 A） | 见第 5.1 节：Tool 层归模块 4、service 层归模块 7、黄嵩的 `notify_tools.py` 不入 `AGENT_TOOLS`。本模块零代码变更 |
 
 ## 8. 下一阶段入口条件确认
