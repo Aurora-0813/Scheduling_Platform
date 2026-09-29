@@ -85,22 +85,45 @@ miniprogram/
 
 `config/index.js`：
 
+## 三、数据通道（两条开关）
+
+`config/index.js`：
+
 ```js
-export const API_MODE = 'mock'          // 'mock' → /api/v1/mock/*   |   'real' → /api/v1/*
-export const FALLBACK_TO_LOCAL = true   // 连不上后端时回落到本地内置数据
+export const API_MODE = 'real'            // 'mock' → /api/v1/mock/*   |   'real' → /api/v1/*
+export const FALLBACK_TO_LOCAL = false    // 连不上后端时是否回落到本地内置假数据
 ```
 
-三档行为：
+| 开关 | 现状 | 说明 |
+|---|---|---|
+| `API_MODE` | `'real'` | 业务路径**一律走真实接口**。后端所有模块都已落地，不再有「只有 mock 占位」的模块。`/api/v1/mock/*` 仍存在（需后端 `DEBUG=true`），但那是给后端自测用的。 |
+| `FALLBACK_TO_LOCAL` | `false` | **2026-09-30 由 true 改为 false**，理由见下。 |
 
-| 场景 | 行为 |
-|---|---|
-| `API_MODE='mock'`（默认） | 命中**团队后端自己的** `/api/v1/mock/*`（需后端 `DEBUG=true`）。出参与真实接口同构，模块落地后把开关改成 `'real'` 即可，`api/` 与页面一行都不用改 |
-| `API_MODE='real'` | 命中 `/api/v1/*`。但 `orders / resources / agent / inspect / tickets / messages` 等模块**后端尚未实现**，此时会走 `FALLBACK_TO_LOCAL` |
-| 后端没启动 / 断网 / 5xx | 回落到 `api/mock/local.js`，页面照常渲染完整业务链路（对应 §13.1 演示应急预案） |
+### 为什么把本地兜底关掉（原先开着）
 
-**`auth` 是唯一的例外**：后端没有 `/mock/auth/*`，登录/刷新恒定走真实
-`/api/v1/auth/*`。后端完全连不上时 `api/auth.js` 会返回一个内置的演示 token 并提示
-「后端未启动，已进入本地演示模式」——**密码错误是业务错误，不会被兜底掩盖**，会如实报错。
+它原本是「答辩现场防翻车」（开发流程.md §13.1）：后端挂了也让你能演示完整链路。
+但实测下来**代价大于收益**：
+
+1. **它把故障藏起来。** 后端挂了 / 隧道断了 / 大模型 503 —— 页面不但不报错，
+   反而显示一份**编造的数据**，而且没有任何标记。演示时看到的是「一切都好」。
+2. **它会让假方案变成真订单。** `/agent/schedule` 的兜底数据**没有 orderId**（真实响应有），
+   于是 `pages/agent/plan.vue` 判定「后端没建单」→ 转而调 `POST /orders/create`，
+   把**编造出来的场地/时段**真的写进了库。
+3. **它掩盖了真实契约错误。** 例如场地列表的主键真实字段是 `spaceId`，而兜底数据给的是 `id`
+   —— 页面写 `.id` 在兜底态下能跑通、在真实态下**必失败**，
+   于是这类错误被一路掩盖到联调最后一天（`pages/inspect/capture.vue` 就是这么坏的）。
+
+需要临时回退（比如演示前想先录一遍界面）时，把 `FALLBACK_TO_LOCAL` 改回 `true` 即可，
+`api/mock/local.js` 仍然保留着。
+
+### `auth` 是唯一的例外
+
+后端没有 `/mock/auth/*`，登录与刷新**恒定**走真实 `/api/v1/auth/*`。
+
+⚠️ 2026-09-30 删除了原先的「本地演示身份」：它在后端完全连不上时写入一个假 token
+（`'local-demo-token'`）当成登录成功，但那个串不是 JWT，后端下一次请求就判 40102，
+用户马上被弹回登录页 —— **连兜底都做不到，只是制造了一次假成功**。
+现在登录只有一个结果：拿到真实 JWT，或者如实报错。
 
 ---
 
@@ -162,7 +185,10 @@ export const FALLBACK_TO_LOCAL = true   // 连不上后端时回落到本地内�
 
 ## 六、已知契约缺口（**未自行发明接口**）
 
-以下 4 处前后端不一致，代码里都留了注释与 TODO，**没有自行编造接口或数据**：
+⚠️ **2026-09-30 重核：下面第 2/3/4 条经查证都是错的**（那些接口后端一直都有），
+已用删除线标出并给出更正。第 1 条仍然成立。
+
+以下 4 处曾被认为「前后端不一致」，代码里都留了注释与 TODO，**没有自行编造接口或数据**：
 
 1. **Plan 没有价格字段。**
    `app/schemas/agent.py` 的 `Plan` 只有
@@ -170,16 +196,24 @@ export const FALLBACK_TO_LOCAL = true   // 连不上后端时回落到本地内�
    散文里。原型 M4 有个大号 `¥ 860`，这里做成**条件渲染**：后端给了价格字段才显示，
    否则不编数字。→ `pages/agent/plan.vue` 的 `priceText`
 
-2. **没有「标记已读」接口。**
-   M6 的「全部已读」只改前端状态，不落库，刷新后复原。页面上有一行说明避免被当成 bug。
-   → `store/notify.js` 的 `markAllReadLocal`、`api/messages.js`
+2. ~~**没有「标记已读」接口。**~~ **（2026-09-30 更正：这句是错的）**
+   `PUT /messages/{messageId}/read` 与 `PUT /messages/read-all` **后端一直都有**
+   （`backend/app/api/messages.py`）。原实现照着一句错话，把「全部已读」做成了
+   「只改前端状态、刷新后复原」，还把那段假说明渲染给用户看。
+   现已改为调真实接口落库。→ `api/messages.js` 的 `read()` / `readAll()`、
+   `pages/message/list.vue`
 
-3. **没有 `GET /messages/list`。**
-   消息页只能展示未读消息（`GET /messages/unread`）。
+3. ~~**没有 `GET /messages/list`。**~~ **（2026-09-30 更正：这句也是错的）**
+   `GET /messages` 存在（**裸数组**，支持 `skip/limit`，上限 100），
+   消息页原先只调 `GET /messages/unread` —— 而那个接口**只返回计数** `{count}`，
+   经 `listOf()` 解出来恒为空数组，于是真实后端下这一页**永远显示「没有未读消息」**，
+   首页角标却有数字。
+   另外列表项主键是 **`messageId`** 不是 `id`。
 
-4. **没有 `GET /orders/{orderId}`。**
-   详情页用 `GET /orders/my` 拉列表后按 id 匹配。后端补上后把 `load()` 换成单条查询即可，
-   模板不用动。→ `pages/order/detail.vue`
+4. ~~**没有 `GET /orders/{orderId}`。**~~ **（2026-09-30 更正：这句也是错的）**
+   该路由从合并起就在（`backend/app/api/orders.py` 的 `router.get("/{orderId}")`）。
+   详情页原先绕道 `GET /orders/my` 拉全量再按 id 过滤，而后端**不支持分页**、
+   `pageSize` 是被静默忽略的。现已改为直接调详情接口。
 
 ### 另外两处字段漂移，已在 `utils/` 里吸收
 
@@ -278,7 +312,8 @@ node tools/compile.js
 | --- | --- |
 | `utils/request.js` | 与 `api/request.js` 是两套网络层；本套页面一律用后者 |
 | `utils/ws.js` | `App.vue` 不调用它；且它 import 的是 Pinia 版 `useNotifyStore` |
-| `api/notify.js`、`api/reserve.js`、`api/agent.js` | import 的是 `@/utils/request`；本套同名文件用 `@/api/request` |
+| `api/notify.js`、`api/reserve.js` | import 的是 `@/utils/request`；本套同名文件用 `@/api/request` |
+| `api/agent.js` | **已改**用 `@/api/request.js`（2026-09-28 复核），但仍被未注册的 `pages/agent/schedule.vue` 引用，故留在本表 |
 | `pages/reserve/*`、`pages/notify/*`、`pages/agent/schedule.vue` | 6 个页面未注册；功能已由本套 `pages/order/*`、`pages/message/*`、`pages/agent/*` 覆盖 |
 | `components/StatusTag.vue`、`uni.scss` | 模块 3 版样式与组件；本套用 `styles/theme.css` |
 

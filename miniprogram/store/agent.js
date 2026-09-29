@@ -20,6 +20,14 @@ export const agentStore = reactive({
   payload: null,
   loading: false,
   error: '',
+  /**
+   * 方案生成失败时 Agent 对用户说的那句话（"请您补充使用时间…"）。
+   *
+   * 后端返回体里没有独立的消息字段，这句话只躺在 `trace` 最后一步的 `result` 里。
+   * 存在这里是为了把它带到语音页当提示 —— 否则用户只看到「还没有生成方案」，
+   * 不知道自己该补什么。
+   */
+  lastQuestion: '',
 })
 
 /**
@@ -33,9 +41,19 @@ export async function runSchedule(text, imageContext, force) {
   if (!force && sameRequest && agentStore.payload) return agentStore.payload
 
   agentStore.request = text
-  agentStore.imageContext = imageContext || null
+  // ⚠️ 2026-09-30 修：只有**显式传了**才覆盖 imageContext。
+  // 原写法是 `imageContext = imageContext || null`，而 thinking.vue 调的是
+  // runSchedule(agentStore.request) —— **根本不传第二个参数**，
+  // 于是 recognize.vue 刚放进去的识别结果被当场抹成 null。
+  // 结果就是「拍照识场 → 核心调度 Agent」这条通道三处全断，
+  // 后端拿到的 imageContext 永远是 {}，只能从一句话里重新猜场地。
+  if (imageContext !== undefined && imageContext !== null) {
+    agentStore.imageContext = imageContext
+  }
   agentStore.payload = null
   agentStore.error = ''
+  // 新一轮调度开始，上一次的追问作废
+  agentStore.lastQuestion = ''
   agentStore.loading = true
 
   try {
@@ -56,6 +74,7 @@ export function resetAgent() {
   agentStore.imageContext = null
   agentStore.payload = null
   agentStore.error = ''
+  agentStore.lastQuestion = ''
   agentStore.loading = false
 }
 

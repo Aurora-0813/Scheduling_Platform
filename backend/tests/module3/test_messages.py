@@ -150,67 +150,121 @@ async def test_tc18b_reminder_scan_skips_far_orders(client):
     assert r.json()["data"]["reminders"] == 0
 
 
-async def test_tc19_conflict_scan(client, db_session):
-    """TC-19 冲突扫描：同场地时段重叠的未完成单被识别。
+async def test_tc19_conflict_scan_reports_soft_conflicts_only(client, db_session):
+    """TC-19 **改写**：`/conflicts/scan` 报的是**软冲突**；时段重叠**不归它管**。
 
-    创建接口已硬编码拦截冲突，这里直连库构造重叠数据，验证扫描兜底能力。
+    ⚠️ **2026-09-28 改写 —— 原断言的三个前提现在全都不成立。**
+
+    原文断言：
+        assert len(conflicts) == 1
+        assert conflicts[0]["conflictType"] == "时段重叠"
+        assert len(conflicts[0]["orderIds"]) == 2
+
+    ① **接口换了实现**。`/conflicts/scan` 现在由**模块 7 的正式实现**提供
+       （`app/api/v1/conflict.py`）：跑 5 条**软冲突规则**，`conflictType` 固定为
+       「软冲突」、每条另带 `ruleCode`。模块 3 自己那份（`app/api/conflicts.py`，
+       返回「时段重叠」）**未注册** —— `app/api/v1/__init__.py:86-87` 明确「不注册」。
+       （本轮已按同一判断处理了 `docs/api.md:405` 的旧示例。）
+
+    ② **口径本来就是分开的**。`docs/开发流程.md` §4.4 的表写得很明确：
+           硬冲突 = 事务校验（后端算法），例：同一场地同时段重复预约
+           软冲突 = AI 扫描，例：同团队连续活动无休息、容量远超需求
+       **「AI 只负责软冲突，硬冲突由事务兜底」**。所以时段重叠**本就不该**出现在
+       这个接口里 —— 它由 `create_order` 的 §5.5 第 3 步拦下，已由 TC-06 覆盖。
+
+    ③ **`len(...) == 1` 是巧合**。实测那条命中的是 `space_idle`（长期闲置）：
+       本文件的迷你种子只建了 space 1/2，而 space 2 从未被预约过，
+       于是稳定产出一条 `{"ruleCode": "space_idle", "orderIds": []}`。
+       它与「时段重叠」毫无关系，却让旧断言的前半条"碰巧"通过了。
+
+    本用例改为验**当前实现真实承担的职责**：契约形状 + 只报软冲突 +
+    不把时段重叠混进软冲突结果。
     """
     start = time_dt(1, 9)
-    db_session.add_all(
-        [
-            ReserveOrder(
-                user_id=MOCK_USER_ID,
-                space_id=1,
-                device_ids=[],
-                start_time=start,
-                end_time=start + timedelta(hours=2),
-                order_status=1,
-                agent_request="",
-                agent_trace=[],
-            ),
-            ReserveOrder(
-                user_id=MOCK_USER_ID,
-                space_id=1,
-                device_ids=[],
-                start_time=start + timedelta(hours=1),
-                end_time=start + timedelta(hours=3),
-                order_status=2,
-                agent_request="",
-                agent_trace=[],
-            ),
-        ]
-    )
+    overlapping = [
+        ReserveOrder(
+            user_id=MOCK_USER_ID,
+            space_id=1,
+            device_ids=[],
+            start_time=start,
+            end_time=start + timedelta(hours=2),
+            order_status=1,
+            agent_request="",
+            agent_trace=[],
+        ),
+        ReserveOrder(
+            user_id=MOCK_USER_ID,
+            space_id=1,
+            device_ids=[],
+            start_time=start + timedelta(hours=1),
+            end_time=start + timedelta(hours=3),
+            order_status=2,
+            agent_request="",
+            agent_trace=[],
+        ),
+    ]
+    db_session.add_all(overlapping)
     await db_session.commit()
 
     r = await client.get("/api/v1/conflicts/scan")
     assert r.status_code == 200
     conflicts = r.json()["data"]
-    assert len(conflicts) == 1
-    assert conflicts[0]["conflictType"] == "时段重叠"
-    assert len(conflicts[0]["orderIds"]) == 2
-    assert conflicts[0]["suggestion"]
+
+    # `docs/api.md` §5.2 的字段表：四个字段一个不少（`ruleCode` 是追加字段）
+    for item in conflicts:
+        assert set(item) >= {"conflictType", "orderIds", "suggestion", "ruleCode"}
+        assert item["conflictType"] == "软冲突"
+        assert item["suggestion"]
+
+    # 时段重叠 = 硬冲突：应由事务兜底，不该由软冲突扫描报出来
+    flagged = {oid for item in conflicts for oid in item["orderIds"]}
+    overlapped_ids = {o.id for o in overlapping}
+    assert not (flagged & overlapped_ids), (
+        "时段重叠是硬冲突，应由 create_order 的事务兜底（§4.4 / §5.5），"
+        f"不该由本接口报出。冲突报了 {sorted(flagged)}，重叠单是 {sorted(overlapped_ids)}"
+    )
 
 
 async def test_tc19b_conflict_scan_ignores_finished_orders(client, db_session):
-    """已取消/已完成的单不参与冲突扫描。"""
+    """已取消/已完成的单不参与冲突扫描。
+
+    ⚠️ **2026-09-28 改写：把断言从「整体为空」收敛到「终态单没被算进去」。**
+
+    原文是 `assert conflicts == []` —— 这条**过强**了。它顺带把另一条完全正常的
+    规则也算成了失败：本文件的迷你种子只建了 space 1/2，而 **space 2 从未被预约过**，
+    于是 `space_idle`（长期闲置，§4.4 第 5 条规则）稳定产出一条
+    `{"ruleCode": "space_idle", "orderIds": []}`。那条**是对的**，
+    与「终态单是否参与」毫无关系，却让本用例一直红着。
+
+    改为**直接断言本用例真正关心的事**：终态订单不得出现在任何冲突的 `orderIds` 里。
+    这比 `== []` 更精确 —— 不会因别的规则正常触发而误报，
+    但依然能抓住「终态单被算进冲突」这个真问题（那才是本用例存在的理由）。
+    """
     start = time_dt(1, 9)
+    finished: list[ReserveOrder] = []
     for status in (3, 4):
-        db_session.add(
-            ReserveOrder(
-                user_id=MOCK_USER_ID,
-                space_id=1,
-                device_ids=[],
-                start_time=start,
-                end_time=start + timedelta(hours=2),
-                order_status=status,
-                agent_request="",
-                agent_trace=[],
-            )
+        order = ReserveOrder(
+            user_id=MOCK_USER_ID,
+            space_id=1,
+            device_ids=[],
+            start_time=start,
+            end_time=start + timedelta(hours=2),
+            order_status=status,
+            agent_request="",
+            agent_trace=[],
         )
+        finished.append(order)
+        db_session.add(order)
     await db_session.commit()
 
     conflicts = (await client.get("/api/v1/conflicts/scan")).json()["data"]
-    assert conflicts == []
+
+    flagged = {oid for item in conflicts for oid in item["orderIds"]}
+    finished_ids = {o.id for o in finished}
+    assert not (flagged & finished_ids), (
+        "已取消(3)/已完成(4)的单不在 ACTIVE_ORDER_STATUSES 里，不该被算进冲突。"
+        f"冲突报了 {sorted(flagged)}，终态单是 {sorted(finished_ids)}"
+    )
 
 
 async def test_confirm_generates_unread_badge(client, db_session):

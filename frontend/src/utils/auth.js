@@ -3,7 +3,6 @@
 
 const ACCESS_TOKEN_KEY = 'sp_access_token'
 const REFRESH_TOKEN_KEY = 'sp_refresh_token'
-const IS_DEMO_KEY = 'sp_is_demo'
 
 export const tokenStorage = {
   getAccessToken() {
@@ -16,19 +15,11 @@ export const tokenStorage = {
     localStorage.setItem(ACCESS_TOKEN_KEY, accessToken)
     localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken)
   },
-  isDemo() {
-    return localStorage.getItem(IS_DEMO_KEY) === '1'
-  },
-  setDemo(flag) {
-    if (flag) {
-      localStorage.setItem(IS_DEMO_KEY, '1')
-    } else {
-      localStorage.removeItem(IS_DEMO_KEY)
-    }
-  },
   clear() {
     localStorage.removeItem(ACCESS_TOKEN_KEY)
     localStorage.removeItem(REFRESH_TOKEN_KEY)
-    localStorage.removeItem(IS_DEMO_KEY)
+    // 顺带清掉历史遗留的演示标记：老用户浏览器里可能还留着 sp_is_demo，
+    // 虽然现在已经没人读它了，但留着会让「本地存储里为什么有这个键」变成谜。
+    localStorage.removeItem('sp_is_demo')
   },
 }

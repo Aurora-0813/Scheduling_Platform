@@ -1,10 +1,60 @@
-"""Agent 联动与语音/图像占位入口（docs/模块3-test.md TC-23 ~ TC-28）。"""
+"""Agent 联动与语音/图像占位入口（docs/模块3-test.md TC-23 ~ TC-28）。
 
+⚠️ **2026-09-28 两处改写**（原因见各用例 docstring）：
+  1. TC-27 / TC-28 由「断言占位端点能用」改为「断言它们**不存在**（404）」——
+     该模块从未注册，原断言在验一个不可达的端点；
+  2. 四条需要**真实大模型**才能产出 plan 的用例加 `_NEEDS_LLM` 跳过标记
+     —— 没有 key 时 `/agent/schedule` 返回 503 是**设计如此**，不是缺陷。
+"""
+
+import pytest
+
+from app.core.config import settings
 from app.core.error_codes import ErrorCode
 
 from .helpers import MOCK_USER_ID, time_str
 
+#: 需要真实大模型才能出方案的用例标记。
+#:
+#: 这些用例断言的是 **Agent 产出的 plan 内容**（`spaceName` / `startTime` / `deviceIds`…）。
+#: 没有可用 LLM 时 `POST /api/v1/agent/schedule` 会返回 **503 + code 41003**
+#: （`AgentUnavailableError` —— 服务端配置缺失，属**设计如此**的显式暴露，
+#: 见 `app/api/v1/agent.py` 的说明），拿不到 plan，后续断言必然崩。
+#:
+#: **为什么不塞假模型**：那样证明的是「假模型能跑通」，不是「Agent 能出方案」。
+#: `docs/spec/done/README.md` 里 `AGENT-S-01~06` 已经吃过这个亏
+#: （当初「只验了透传与形状，决策质量需真实 LLM」）。
+#: `docs/test.md` §10.2 也要求「真实 API 只做一次冒烟验证」——
+#: 这类断言天然属于冒烟范畴。模式与 `tests/test_live_smoke.py` / `test_image_smoke.py` 一致。
+#:
+#: ⚠️ **2026-09-29 补 `pytest.mark.smoke`（原来漏了）**
+#:
+#: 上面写着「与 test_live_smoke.py 一致」，但**只抄了 skipif、没抄 smoke 标记** ——
+#: 而 `pytest.ini` 的 addopts 里是 `-m "not smoke and not live"`，
+#: 真正让那两个文件默认不跑的是 **smoke 标记**，不是 skipif。
+#:
+#: 后果：`backend/.env` 一配好 LLM key，`llm_configured` 变 True，
+#: 这 4 条立刻从 skip 变成**真跑并真调 DashScope**，然后全红（实测 2026-09-29）。
+#: 它们跑不通的原因是**环境错配**，不是被测实现有问题：
+#:   · 本文件用 `client` 夹具 → 临时 SQLite + 模块 3 的迷你种子（2 场地 / 2 设备）；
+#:   · 而真实模型是照着**完整 §6.9 种子**（8 场地 / 15 设备）来规划的。
+#: 喂给模型一张 2 行的小表，它给不出合格方案（`data` 为 null），
+#: 勉强给出的时段又会与种子里既有的单冲突（`/orders/create` 409）。
+#: 这类断言**只能在云库上跑**（且 tc25 还要真写入，离线守卫会拦）。
+#:
+#: 因此：默认跳过（smoke），需要时显式 `pytest -m smoke -v` 跑，
+#: 并清楚它会真消耗 API 额度、且大概率仍不通过 —— 那条属于云库联调范畴。
+_NEEDS_LLM = pytest.mark.skipif(
+    not settings.llm_configured,
+    reason=(
+        "未配置 LLM（backend/.env 缺 LLM_MODEL_NAME / LLM_API_KEY / LLM_BASE_URL）；"
+        "/agent/schedule 会按设计返回 503 降级，拿不到 plan。配置后本用例自动参与。"
+    ),
+)
 
+
+@pytest.mark.smoke
+@_NEEDS_LLM
 async def test_tc23_schedule_returns_structured_plan(client):
     """TC-23 文本调度返回 plan / backupPlan / trace / needConfirm。
 
@@ -63,6 +113,8 @@ async def test_tc24_empty_requirement_rejected(client):
     assert r.json()["code"] == ErrorCode.PARAM_INVALID
 
 
+@pytest.mark.smoke
+@_NEEDS_LLM
 async def test_mock_schedule_avoids_occupied_slots(client):
     """mock 调度器应避让已占用时段（Agent 只调 Tool 查真实数据，§9.3）。"""
     occupied_start = time_str(1, 9)
@@ -79,6 +131,8 @@ async def test_mock_schedule_avoids_occupied_slots(client):
     assert not (plan["startTime"] < occupied_end and plan["endTime"] > occupied_start)
 
 
+@pytest.mark.smoke
+@_NEEDS_LLM
 async def test_tc25_confirm_plan_persists_order(client):
     """TC-25 方案确认落库：前端取 plan 调 orders/create。"""
     plan = (
@@ -172,26 +226,49 @@ async def test_tc26_agent_request_and_trace_persisted(client):
     assert d["agentTrace"][1]["action"] == "query_spaces"
 
 
-async def test_tc27_transcribe_placeholder(client):
-    """TC-27 语音转写占位：返回占位文本（真实 ASR 由队友模块接入）。"""
+async def test_tc27_transcribe_placeholder_is_not_registered(client):
+    """TC-27 **改写**：占位端点必须**不存在**（HTTP 404），而不是「返回占位文本」。
+
+    ⚠️ **2026-09-28 改写。** 原文断言 `status_code == 200` 且 `data["text"]` 非空，
+    但这两个端点所在的模块 `app/api/agent.py` **从未注册进应用**
+    —— `backend/app/api/v1/__init__.py` 的注册区注释写得明确：
+
+        模块 3 的 `app/api/agent.py` **不注册**：其 `/agent/schedule` 与模块 4 的
+        `app/api/v1/agent.py` 路径重复（后者是走 LangChain 的真实调度实现），
+        其 `/agent/transcribe`、`/agent/recognize` 是文件内自述的占位实现，
+        已由 `/api/v1/voice/asr` 与 `/api/v1/image/analyze` 取代。
+
+    所以「返回占位文本」在线上**根本不可达**，原断言等于在验一个不存在的端点。
+
+    改成**反向护栏**：一旦有人把该模块加进注册区，两个同路径的 `/agent/schedule`
+    会打架，本用例立刻报警。真能力由 `/api/v1/voice/asr`（模块 1）提供。
+    """
     r = await client.post(
         "/api/v1/agent/transcribe",
         files={"file": ("voice.mp3", b"fake-audio-bytes", "audio/mpeg")},
     )
-    assert r.status_code == 200
-    assert r.json()["data"]["text"]
+
+    assert r.status_code == 404, "模块 3 的 /agent/transcribe 不应被注册（已被 /voice/asr 取代）"
+    assert r.json()["code"] == ErrorCode.NOT_FOUND
 
 
-async def test_tc28_recognize_placeholder(client):
-    """TC-28 图像识别占位：返回占位文本（真实识别由队友模块接入）。"""
+async def test_tc28_recognize_placeholder_is_not_registered(client):
+    """TC-28 **改写**：占位端点必须**不存在**（HTTP 404）。
+
+    理由与 TC-27 完全对称，见上一个用例的 docstring。
+    真能力由 `/api/v1/image/analyze`（模块 2）提供。
+    """
     r = await client.post(
         "/api/v1/agent/recognize",
         files={"file": ("room.jpg", b"fake-image-bytes", "image/jpeg")},
     )
-    assert r.status_code == 200
-    assert r.json()["data"]["text"]
+
+    assert r.status_code == 404, "模块 3 的 /agent/recognize 不应被注册（已被 /image/analyze 取代）"
+    assert r.json()["code"] == ErrorCode.NOT_FOUND
 
 
+@pytest.mark.smoke
+@_NEEDS_LLM
 async def test_agent_flow_end_to_end(client):
     """Agent 闭环：提交需求 → 取方案 → 落库 → 列表可见 → 溯源完整。"""
     r = await client.post("/api/v1/agent/schedule", json={"text": "周五下午要个40人展厅"})

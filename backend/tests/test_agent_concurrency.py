@@ -1,4 +1,12 @@
-"""`available_count` 容量口径判据（`AGENT-C-01` / `AGENT-C-02`）——**当前标记为 xfail(strict)**。
+"""`available_count` 容量口径判据（`AGENT-C-01` / `AGENT-C-02`）。
+
+> ### ⚠️ 2026-09-29 状态更新
+>
+> **8 条 `xfail(strict)` 里已摘掉 7 条（它们真实通过），只保留 `test_assert_3b`。**
+> 摘除依据是 `_XFAIL_REASON` 原文自己写的条件（「三处到位后本用例应转为通过并摘掉本标记」），
+> 以及实测结果：**7 条 XPASS、唯独 3b 仍失败** —— 因为只有它验的是加锁行为，
+> 而 SQLite 会把 `FOR UPDATE` 编译掉。
+> 详见下方「三条锁挡在前面」一节的更新说明。
 
 ## 为什么不是「写完就通过」，而是 xfail
 
@@ -68,6 +76,27 @@
 
 ## 三条锁挡在前面（必须一并解除，否则这些断言永远过不了）
 
+> **〔2026-09-29 更新：三道全部解除，7 条标记已摘〕**
+>
+> | # | 原锁 | 现状 |
+> | --- | --- | --- |
+> | 1 | `create_order` 仍是只读桩 | ✅ 模块 3 的真实现**已合入 `main`** |
+> | 2 | `smart_scheduler_test` 无权访问 | ✅ 见下方 **2-a** |
+> | 3 | `_db_readonly_guard` 拦下一切写语句 | ✅ 见下方 **3-a** |
+>
+> **2-a**：**不再需要那个测试库** —— `reference_seed` 夹具把 §6.9 数据灌进临时
+> SQLite，整套验证在离线环境完成（见 `tests/conftest.py` 里该夹具的说明）。
+>
+> **3-a**：护栏已收紧为「**仅引擎是 MySQL 时**拦截」—— SQLite 下按设计让路。
+> 否则 `tests/module3/` 的 147 个用例会在 setup 阶段全部 ERROR（`_fresh_db` 需要
+> 在同一个全局引擎上 `DROP/CREATE` 表）。
+>
+> 实测（2026-09-29）：**7 条 XPASS、`assert_3b` 仍 xfail**。
+> 故按 `_XFAIL_REASON` 自己的指示摘掉那 7 条的标记；**3b 保留**（它验加锁，
+> SQLite 编译掉 `FOR UPDATE` → 本环境无从验证，交接单禁止无实测摘除）。
+>
+> 以下为**原文留存**（记录当时的处境，勿据此判断现状）：
+
 1. **蔡玉礼改 `order_service._device_conflicts`**：按「时段重叠」推导剩余量
    （`剩余 = available_count − 该时段重叠订单数`），替换 `create_order` 的只读桩。
 2. **测试库权限**（集成组，硬卡点 #4）：`smart_scheduler_test` 报 1044 无权访问，
@@ -114,6 +143,13 @@ from app.models.resource import DeviceResource
 from app.services import create_order
 from app.services.order_service import CONFLICT_DEVICE_SHORTAGE
 
+# `reference_seed`：本文件的判据全部基于 §6.9 种子数据 ——
+# `available_count = 2` 的**设备 id=8（音响04）**、以及 T = 2026-10-15 09:00~11:00
+# 这个「除 space 2 外全空」的时段。离线库是空的 → 不灌种子时 `create_order`
+# 连场地都找不到（返回 `not_found`），断言验的就不是容量口径了。
+# 夹具行为见 `tests/conftest.py`：SQLite 模式灌种子，MySQL 模式让路。
+pytestmark = pytest.mark.usefixtures("reference_seed")
+
 # --------------------------------------------------------------------------
 # 断言基准（开发库实测，2026-09-28；种子一变这里必须同步改，docs/test.md §3.2）
 # --------------------------------------------------------------------------
@@ -133,15 +169,27 @@ _SLOT = ("2026-10-15 09:00:00", "2026-10-15 11:00:00")
 #: 端点相接处（11:00）**不算重合**——断言 6 验的就是这一点。
 _ADJACENT_SLOT = ("2026-10-15 11:00:00", "2026-10-15 12:00:00")
 
+#: **只剩 `test_assert_3b` 一条在用**（2026-09-29）。
+#:
+#: 原文列的三道锁现已全部解除（真实现已合入 / `reference_seed` 让验证不再依赖云测试库 /
+#: `_db_readonly_guard` 已收紧为「仅 MySQL 时拦截」），因此**其余 7 条按它自己的指示
+#: （「三处到位后本用例应转为通过并摘掉本标记」）已摘掉标记并真实通过**。
+#:
+#: 本条留下的原因是一条**本环境无法验证**的性质：它验的是
+#: `SELECT ... FOR UPDATE` 的**加锁**行为，而 SQLite 方言会把 `FOR UPDATE`
+#: **编译掉**（`tests/conftest.py` 已声明「事务并发、行锁、时区三类行为无法在此验证」）。
+#: 实测印证：本文件 8 条标记里 **7 条 XPASS、唯独 3b 仍失败**。
+#:
+#: ⚠️ `docs/spec/测试交接单.md` §3.1 与 `docs/spec/done/README.md` 硬卡点 #5 都写死了：
+#: 「**不要**在没实测的情况下把 `test_concurrent_device_creation_does_not_oversell`
+#: 的 xfail 摘掉。」——云库实测通过后再摘（若实测仍是「3 单全成」，则说明光靠行锁不够，
+#: 需改走设备占用表）。
 _XFAIL_REASON = (
-    "断言是真的，被测实现还不存在，三道锁一道没解："
-    "① 蔡玉礼的 create_order 仍是只读桩（不 SELECT ... FOR UPDATE、不 INSERT、"
-    "不按「时段重叠」计数），_device_conflicts 尚未改成计数比较；"
-    "② smart_scheduler_test 无权访问（1044，申云飞），用例只能连开发库；"
-    "③ conftest._db_readonly_guard 据此拦下一切写语句，桩落库必然 WriteForbiddenError。"
-    "（断言 4/5 另需模块 3 的订单 API 合入本分支——路由本身已在 integrate/module3 上可用，"
-    "原先记的「模块 3 未交付」已于 2026-09-28 更正，见模块 docstring。）"
-    "三处到位后本用例应转为通过并摘掉本标记。"
+    "并发语义在本环境无从验证：本条验的是 SELECT ... FOR UPDATE 的加锁行为，"
+    "而 SQLite 方言会把 FOR UPDATE 编译掉（见 tests/conftest.py 的说明）。"
+    "同一文件的另外 7 条（断言 1~7，纯容量计数）已在 2026-09-29 实测通过并摘掉标记；"
+    "唯独本条仍需云库实测——交接单 §3.1 与 done/README.md 硬卡点 #5 明确禁止在"
+    "没有云库实测的情况下摘掉它。"
 )
 
 
@@ -252,7 +300,24 @@ def test_resource_conflict_is_409_on_both_exception_paths() -> None:
 # --------------------------------------------------------------------------
 # 断言 1~7（蔡玉礼的口径判据）
 # --------------------------------------------------------------------------
-@pytest.mark.xfail(strict=True, reason=_XFAIL_REASON)
+# ⚠️ **2026-09-29：这 7 条的 `xfail(strict=True)` 已全部摘掉 —— 它们真实通过了。**
+#
+# 摘除依据是 `_XFAIL_REASON` **原文自己写的条件**：
+#     「三道锁一道没解：① …真实现仍是只读桩；② smart_scheduler_test 无权访问；
+#       ③ _db_readonly_guard 拦下一切写语句。**三处到位后本用例应转为通过并摘掉本标记**。」
+# 三道锁现在全部解除：
+#   ① 模块 3 的 `create_order` 真实现已合入 `main`；
+#   ② **不再需要那个测试库** —— `reference_seed` 夹具把 §6.9 数据灌进临时 SQLite，
+#      整套验证在离线环境下完成（见 `tests/conftest.py`）；
+#   ③ 护栏已收紧为「仅引擎是 MySQL 时拦截」，SQLite 下按设计让路。
+#
+# 这 7 条验的是**容量语义**（按时段重叠计数、半开区间、按设备各算容量、
+# 取消后名额自动回落）—— 它们是**纯 SQL 计数**，SQLite 能如实验证。
+#
+# **只有 `test_assert_3b` 保留 xfail**：它验的是**加锁/并发**，而 SQLite 方言会把
+# `SELECT ... FOR UPDATE` **编译掉**，并发语义在本环境**根本无从验证** ——
+# 交接单 §3.1 与 `done/README.md` 硬卡点 #5 都写死了「没有云库实测不许摘」。
+# 实测也印证了这个分界：本文件 8 条标记里，**7 条 XPASS、唯独 3b 仍然失败**。
 async def test_assert_1_first_order_on_free_slot_succeeds_and_is_persisted(dev_db_session) -> None:
     """**断言 1**：无重叠订单时建第 1 单占用该设备 → 成功，`order_status=1`。
 
@@ -267,7 +332,6 @@ async def test_assert_1_first_order_on_free_slot_succeeds_and_is_persisted(dev_d
     assert await _order_status(dev_db_session, result["orderId"]) == 1
 
 
-@pytest.mark.xfail(strict=True, reason=_XFAIL_REASON)
 async def test_assert_2_second_order_same_device_same_slot_succeeds_at_capacity() -> None:
     """**断言 2**：已有 1 单占用 T，建第 2 单**同设备**同 T → 成功（`2 ≤ cap`）。
 
@@ -286,7 +350,6 @@ async def test_assert_2_second_order_same_device_same_slot_succeeds_at_capacity(
     assert second["orderId"] is not None, second
 
 
-@pytest.mark.xfail(strict=True, reason=_XFAIL_REASON)
 async def test_assert_3_third_order_same_device_same_slot_is_rejected() -> None:
     """**断言 3**：已有 2 单占用 T，建第 3 单同设备同 T → **拒绝，409 + `code=40901`**。
 
@@ -337,7 +400,6 @@ async def test_assert_3b_three_concurrent_orders_on_a_cap_two_device_exactly_two
     assert rejected[0]["conflictType"] == CONFLICT_DEVICE_SHORTAGE, rejected[0]
 
 
-@pytest.mark.xfail(strict=True, reason=_XFAIL_REASON)
 async def test_assert_4_cancel_one_of_two_frees_the_device_slot(
     dev_client, dev_db_session, auth
 ) -> None:
@@ -358,7 +420,6 @@ async def test_assert_4_cancel_one_of_two_frees_the_device_slot(
     assert await _order_status(dev_db_session, order_ids[0]) == 3
 
 
-@pytest.mark.xfail(strict=True, reason=_XFAIL_REASON)
 async def test_assert_5_after_cancel_third_order_succeeds_capacity_is_derived(
     dev_client, auth
 ) -> None:
@@ -393,7 +454,6 @@ async def test_assert_5_after_cancel_third_order_succeeds_capacity_is_derived(
     assert third["orderId"] is not None, third
 
 
-@pytest.mark.xfail(strict=True, reason=_XFAIL_REASON)
 async def test_assert_6_adjacent_non_overlapping_slot_succeeds_half_open() -> None:
     """**断言 6**：已有 2 单占用 T，与 T **相邻但不重叠**的 T' → 成功（**半开区间**）。
 
@@ -418,7 +478,6 @@ async def test_assert_6_adjacent_non_overlapping_slot_succeeds_half_open() -> No
     assert result["orderId"] is not None, result
 
 
-@pytest.mark.xfail(strict=True, reason=_XFAIL_REASON)
 async def test_assert_7_other_device_same_slot_succeeds_capacity_is_per_device() -> None:
     """**断言 7**：已有 2 单占用 T，第 3 单用**不同设备**同一 T → 成功（容量按设备各算）。
 
@@ -442,18 +501,33 @@ async def test_assert_7_other_device_same_slot_succeeds_capacity_is_per_device()
 
 
 # --------------------------------------------------------------------------
-# 桩期实录（**能过**，不挂 xfail；真实现落地后按下面 docstring 处理）
+# available_count 只读不变（原「桩期实录」，2026-09-29 按 docstring 指示改写）
 # --------------------------------------------------------------------------
-async def test_stub_state_is_recorded_not_glossed_over(dev_db_session, slots, seed) -> None:
-    """记录桩期的真实状态，让「`AGENT-C-01` 未通过」这件事在测试输出里看得见。
+async def test_available_count_is_never_mutated_by_locking(dev_db_session, slots, seed) -> None:
+    """**锁定动作不得改动 `available_count`** —— 它是静态上限，剩余量是算出来的。
 
-    ⚠️ **本条是桩期临时用例**（断言 `stub` 键、`orderId is None`）。
-    蔡玉礼的真实现落地后本条会失败——那时应当**删除**它，而不是放宽断言。
+    口径（2026-09-28 集成组裁定，全文见 `docs/spec/done/README.md` 的
+    《附录：`available_count` 口径》）：
 
-    例外的一条：**`available_count` 前后不变**。按 2026-09-28 的新口径
-    「用时推导，不扣减」，这**不再是桩期特征，而是长期期望**——该字段是静态上限，
-    任何时候都不该被锁定动作改动。真实现落地后这一句要**保留**（挪进断言用例亦可），
-    另两句随 `stub` 键一起删。
+        ① `available_count` 是**静态上限**，不是实时剩余；
+        ② 剩余量 = `available_count` − 该时段重叠订单数，**算出来的**；
+        ③ 不扣减、不回补、不加 §5.5 第 7 步；
+        ④ 取消后名额**自动回来**，无需回补代码。
+
+    ⚠️ **2026-09-29 改写 —— 原名 `test_stub_state_is_recorded_not_glossed_over`。**
+
+    它原本是「桩期实录」，记录「`orderId` 恒为 `None`、返回体带 `stub: True`」这个
+    桩的真实状态。其 docstring 已写明处置方式：
+
+    > ⚠️ **本条是桩期临时用例**（断言 `stub` 键、`orderId is None`）。
+    > 蔡玉礼的真实现落地后本条会失败——那时应当**删除**它，而不是放宽断言。
+    > 例外的一条：**`available_count` 前后不变**……这**不再是桩期特征，而是长期期望**。
+    > 真实现落地后这一句要**保留**，另两句随 `stub` 键一起删。
+
+    本轮接上 `reference_seed` 之后，它**如实走到了 docstring 预告的位置**：
+    挂在 `assert result["orderId"] is None`（提示语「桩竟然落库了——先确认这是有意的，
+    再改本用例」）。真实现确实已落地，故按指示执行：**删掉那两句桩断言**，
+    **保留并强化 `available_count` 那句** —— 它现在是本条唯一的、也是长期有效的断言。
     """
     start, end = slots["free"]
     device_id = seed["speakers"][3]
@@ -463,7 +537,10 @@ async def test_stub_state_is_recorded_not_glossed_over(dev_db_session, slots, se
     result = await _lock(_SPACES[0], start, end, user_id=1, device_ids=[device_id])
     after = await _available_count(dev_db_session, device_id)
 
-    assert result["ok"] is True
-    assert result["orderId"] is None, "桩竟然落库了——先确认这是有意的，再改本用例"
-    assert result.get("stub") is True
+    # 三句是先决条件：没真落库的话，下面「上限不变」的断言就失去意义
+    #（桩期它也「不变」，但那是因为桩压根没写库，证明不了任何事）
+    assert result["ok"] is True, result
+    assert result["orderId"] is not None, f"没落库就没有 orderId：{result}"
+
+    # ★ 本用例的核心（原 docstring 明确要求保留的那一句）
     assert after == before, "静态上限被改动了——新口径是「用时推导，不扣减」，不该变"

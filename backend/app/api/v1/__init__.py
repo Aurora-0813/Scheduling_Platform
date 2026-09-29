@@ -55,8 +55,18 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api import messages, orders, resources
-from app.api.v1 import agent, auth, conflict, dashboard, health, image, monitor, notify, voice
+from app.api import inspection, messages, orders, resources
+from app.api.v1 import (
+    agent,
+    auth,
+    conflict,
+    dashboard,
+    health,
+    image,
+    monitor,
+    notify,
+    voice,
+)
 
 __all__ = ["api_router", "API_V1_PREFIX"]
 
@@ -69,6 +79,11 @@ api_router.include_router(auth.router)
 api_router.include_router(monitor.router)
 api_router.include_router(voice.router)  # 模块 1 语音输入
 api_router.include_router(image.router)  # 模块 2 摄像头空间感知
+# 模块 6 AI 智能巡检与维修工单。
+# ⚠️ 文件放在 app/api/ 而不是 app/api/v1/ —— 与模块 3 的 orders/resources 同一处理。
+#    另：**不要**把文件命名为 inspect.py —— 那会遮蔽 Python 标准库的 inspect，
+#    也让 `from app.api import inspect` 这种写法读起来有歧义。
+api_router.include_router(inspection.router)
 
 # 模块 3 移动端预约与通知（路由文件在 app/api/，前缀写在各自 router 上）
 # ⚠️ 模块 3 的 app/api/agent.py **不注册**：其 /agent/schedule 与模块 4 的

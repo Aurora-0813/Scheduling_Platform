@@ -91,14 +91,22 @@ def patch_notify(monkeypatch, session, patch_scope):
 
 
 @pytest.fixture
-def counting_client(client):
-    """注入可计数的假模型，用来验证一个角色只调一次模型"""
+def counting_client(sync_client):
+    """注入可计数的假模型，用来验证一个角色只调一次模型。
+
+    ⚠️ **2026-09-28：形参由 `client` 改为 `sync_client`。**
+    本文件是**同步族**（`def` + 同步调用），而 `tests/api/conftest.py` 里那个
+    同步夹具已改名为 `sync_client`，`client` 现在解析到的是全局
+    `tests/conftest.py` 的**异步** `httpx.AsyncClient` ——
+    同步夹具依赖异步夹具拿不到可用对象，请求根本没发出去
+    （症状：`session.added == []`）。见 conftest 里 `sync_client` 的说明。
+    """
     from app.api.deps import get_llm
     from app.main import app
 
     model = CountingLLM(responses=[AIMessage(content=AI_RESPONSE)] * 6)
     app.dependency_overrides[get_llm] = lambda: model
-    yield client, model
+    yield sync_client, model
     app.dependency_overrides.clear()
 
 
@@ -197,8 +205,13 @@ def test_missing_type_returns_business_code_400(client_with_llm, patch_notify):
         headers=auth_header(make_token()),
     ).json()
 
-    assert body["code"] == 400
-    assert "请求参数有误" in body["message"]
+    # ⚠️ 2026-09-28 修正：缺 `type` 是 **Pydantic 请求校验失败**，
+    # 走团队统一的 RequestValidationError 处理器 → **HTTP 400 + code 40001**，
+    # 文案是「参数校验未通过」而不是「请求参数有误」（后者是 40000 的文案）。
+    # 注意与下面那条区分：`type` 值非法是 `resolve_tone` 抛的 **裸 400**，
+    # 那条断言 `code == 400` 是**对的**，不要一起改。
+    assert body["code"] == 40001
+    assert "参数校验未通过" in body["message"]
 
 
 def test_unknown_type_returns_business_code_400(client_with_llm, patch_notify):
@@ -232,7 +245,9 @@ def test_generate_requires_a_token(client_with_llm, patch_notify):
         END_POINT, json={"type": "提醒", "orderInfo": {}}
     ).json()
 
-    assert body["code"] == 401
+    # ⚠️ 2026-09-28 修正：团队规范里「缺少认证令牌」是 **40101**（`TOKEN_MISSING`），
+    # 不是 HTTP 数字 401 —— `code` 是 5 位业务码，与 HTTP 状态码解耦（《规范》5.2）。
+    assert body["code"] == 40101
     assert body["data"] is None
 
 

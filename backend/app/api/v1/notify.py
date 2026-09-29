@@ -111,11 +111,21 @@ async def generate_notification(
         return ok(NotifyContent(title=draft.title, content=draft.content))
 
     # 调用者本人也应是收件人，否则他看不到自己刚生成的通知
-    if all(recipient.user_id != user.user_id for recipient in recipients):
+    #
+    # ⚠️ **2026-09-28 修正 `user.user_id` → `user.id`（本文件 3 处）。**
+    # 正式版的 `CurrentUser`（`app/api/deps.py`）字段名是 **`id`**
+    # （`id/username/role/avatar/permissions/token`），**没有 `user_id`** ——
+    # 那是模块 7 合并前自建的那份 `CurrentUser` 的字段名。
+    # 后果是**只要订单存在**（即走到此行），`POST /api/v1/notify/generate`
+    # 必定抛 `AttributeError` → 被兜底处理器收成 **HTTP 500**；
+    # 只有「订单不存在」的早退分支（:109-111）能正常返回，
+    # 所以此前很难发现。实测 14 例红。
+    # 归属函数仍是 `CurrentUser.username`（该字段存在），无需改动。
+    if all(recipient.user_id != user.id for recipient in recipients):
         recipients.append(
             Recipient(
-                user_id=user.user_id,
-                username=user.username or f"用户#{user.user_id}",
+                user_id=user.id,
+                username=user.username or f"用户#{user.id}",
                 role_name=user.role,
                 role_key=requester_role,
             )

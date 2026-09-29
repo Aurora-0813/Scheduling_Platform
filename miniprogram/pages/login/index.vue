@@ -69,8 +69,13 @@
  * 身份由后端从 JWT 解析，前端不解析也不传 userId。
  */
 import { ref, computed } from 'vue'
+import { onUnload } from '@dcloudio/uni-app'
 import { doLogin } from '@/store/user.js'
-import { toast, toastOk, showLoading, hideLoading } from '@/utils/toast.js'
+import { toast, toastOk, showLoading, hideLoading, resetLoading } from '@/utils/toast.js'
+
+// 页面销毁时把 loading 计数归零：万一有哪条路径没配平，残留的计数会让之后
+// 每一次 show/hide 都错位 —— 微信侧会一直报「showLoading 与 hideLoading 必须配对使用」
+onUnload(() => resetLoading())
 
 const username = ref('')
 const password = ref('')

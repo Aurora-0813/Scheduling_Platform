@@ -131,7 +131,9 @@ async def get_space_usage_rate(db: AsyncSession, days: int = DEFAULT_DAYS) -> fl
     since = datetime.now() - timedelta(days=days)
 
     # ---------- 分母：各可用场地每天开放小时数之和 ----------
-    # status = 1 只算可用场地；停用场地既不进分母，其订单也不进分子（见 U4）
+    # status = 1：停用场地不进分母。**分子必须取同一个场地集合**（下方 :149 的 JOIN），
+    # 否则就是在「一个不存在的容量」上算占用 —— 使用率虚高且不报错。
+    # 锁由 test_space_usage_rate.py 的 U4 守着。
     space_rows = (await db.execute(
         select(SpaceResource.open_start_time, SpaceResource.open_end_time)
         .where(SpaceResource.status == 1)
@@ -145,12 +147,21 @@ async def get_space_usage_rate(db: AsyncSession, days: int = DEFAULT_DAYS) -> fl
     total_capacity_hours = hours_per_day * days
 
     # ---------- 分子：窗口内被占用的总时长 ----------
-    # 用 Python 层累加，避免 timestampdiff 的兼容问题
+    # 用 Python 层累加，避免 timestampdiff 的兼容问题。
+    #
+    # ⚠️ **JOIN space_resource + status == 1 不是可选项（2026-09-28 修）**：
+    # 分母只累加 status=1 的场地，分子若不过滤就会把挂在**停用场地**上的订单也算进来，
+    # 等于「在一个不存在的容量上算占用」。实测：分母 273h、分子多算停用场地的 2h
+    # → 20.7% 而不是 20.0%，**不报错、只是数字静静地虚高**。
+    # 真库当前 8 个场地全是 status=1，所以这个缺口在演示数据上看不出来；
+    # 一旦有场地停用（维修 / 闭馆）就会显现。锁：tests/test_space_usage_rate.py::U4。
     rows = (await db.execute(
         select(ReserveOrder.start_time, ReserveOrder.end_time)
+        .join(SpaceResource, SpaceResource.id == ReserveOrder.space_id)
         .where(
             ReserveOrder.order_status.in_(SPACE_OCCUPIED_STATUS),
             ReserveOrder.start_time >= since,
+            SpaceResource.status == 1,
         )
     )).all()
 
@@ -228,6 +239,18 @@ async def get_device_idle_rate(db: AsyncSession, days: int = DEFAULT_DAYS) -> fl
     total_devices = (await db.execute(
         select(func.coalesce(func.sum(DeviceResource.total_count), 0))
     )).scalar() or 0
+    # ⚠️ **必须转 float（2026-09-29 修）**：MySQL 的 `SUM()` 返回 **DECIMAL**，
+    # 而 SQLite 的 `SUM()` 返回整数 —— 同一段代码在离线用例里算出 float、
+    # 在真库上算出 Decimal，**离线测不出来**。后果两条，都不是小事：
+    #
+    #   1. `tests/test_all_stats_aggregate.py` 明确断言 `isinstance(..., float)`，
+    #      在真库上会红；
+    #   2. Decimal 会顺着 stats 一路传到 `dashboard_ai_service` 的 `json.dumps`，
+    #      直接抛「Object of type Decimal is not JSON serializable」，被外层 except
+    #      收成「走纯统计降级」—— **AI 报告整条链路静默失效**，
+    #      页面上只剩规则模板拼的建议，而 `degraded=true` 又极易被误读成
+    #      「模型不稳定」，定位成本极高（实测踩过）。
+    total_devices = float(total_devices)
     if total_devices == 0:
         return 0.0
 
@@ -239,7 +262,7 @@ async def get_device_idle_rate(db: AsyncSession, days: int = DEFAULT_DAYS) -> fl
 
     # min 兜底：占用数不可能超过登记总数，防止脏数据算出负闲置率。
     # 正常数据不会触发；保留是为了让异常数据表现为「0% 闲置」而不是负值。
-    used_count = min(int(used_count), total_devices)
+    used_count = min(int(used_count), int(total_devices))
 
     return round((1 - used_count / total_devices) * 100, 1)
 

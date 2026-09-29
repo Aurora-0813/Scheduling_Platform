@@ -50,16 +50,32 @@ def test_env_example_exists():
     assert ENV_EXAMPLE.is_file()
 
 
+#: 代码里的 DB_PORT 默认值 —— 取自 `Settings` 的**字段默认**。
+#:
+#: 为什么不能直接用 `settings.DB_PORT`（2026-09-28 修正）：
+#: `settings` 会被**开发机自己的 `backend/.env`** 覆盖，而 `.env` 是
+#: gitignore 的、每台机器把 SSH 隧道开在本机哪个端口完全自由
+#: （本机就开在 3307，见 `backend/.env` 文件头的说明）。
+#: 原先下面两条用例直接断言 `settings.DB_PORT`，于是任何隧道端口不是 3308
+#: 的机器都会红 —— 可它们真正要守的是
+#: 「**模板与代码默认值**必须一致、且默认值是 3308」，
+#: 这件事与开发机实际开了哪个端口无关。
+_DB_PORT_CODE_DEFAULT = Settings.model_fields["DB_PORT"].default
+
+
 def test_env_example_port_matches_the_code_default():
     """
     ★ 模板与代码默认值必须一致。
 
     不一致时，没在 .env 里改 DB_PORT 的人会连到错误的隧道端口，
     报错只有一句「连接被拒绝」，极难定位。
+
+    比的是「`.env.example` 的取值」与「`Settings` 的字段默认」，
+    **不读开发机的 `.env`**（理由见上方常量注释）。
     """
     declared = _env_example_values()
 
-    assert int(declared["DB_PORT"]) == settings.DB_PORT
+    assert int(declared["DB_PORT"]) == _DB_PORT_CODE_DEFAULT
 
 
 def test_db_port_is_the_local_tunnel_entry_port():
@@ -75,8 +91,10 @@ def test_db_port_is_the_local_tunnel_entry_port():
     代码连的是本机入口，所以默认值必须是 3308。若钉成 3307，
     忘配 .env 的人会连到本机一个没人监听的端口，报错只有一句
     「连接被拒绝」，极难定位 —— 这正是本用例要防的。
+
+    同样只断言**字段默认值**，不看开发机的 `.env`（2026-09-28 修正）。
     """
-    assert settings.DB_PORT == 3308, (
+    assert _DB_PORT_CODE_DEFAULT == 3308, (
         "DB_PORT 必须是本机隧道入口端口。"
         "云服务器侧 MySQL 监听 3307，本机隧道入口是 3308，别把两者搞混。"
     )
@@ -105,6 +123,22 @@ def test_env_example_lists_every_required_setting():
         "JWT_EXPIRE_MINUTES",
         "CORS_ORIGINS",
         "CONFLICT_DEDUP_TTL_SECONDS",
+        # ---- 2026-09-30：ASR 从百度换成 Qwen3-ASR-Flash 后**已废弃**的配置项 ----
+        #
+        # 它们仍留在 Settings 里、但**不再被任何代码读取**，也**刻意不写进
+        # .env.example** —— 模板不该让新成员去配一个已经不用的服务。
+        #
+        # 为什么不是直接删字段：Settings 是 extra="forbid"，字段一旦消失，
+        # **队友本地 .env 里残留的 BAIDU_API_KEY=... 会让服务起不来**，
+        # 而报错只是 pydantic 的 extra_forbidden —— 排查成本高于收益。
+        # 因此走「保留字段 + 模板不列」的过渡期，确认无人再持有旧 .env 后再删。
+        "BAIDU_APP_ID",
+        "BAIDU_API_KEY",
+        "BAIDU_SECRET_KEY",
+        "ASR_MODEL_PID",
+        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_BASE_URL",
+        "DEEPSEEK_MODEL",
     }
     missing = sorted(set(Settings.model_fields) - declared - optional)
 
@@ -126,8 +160,30 @@ def test_env_example_contains_no_real_secrets():
 
 
 def test_database_url_uses_the_async_driver():
-    """3.4：连接串固定 mysql+asyncmy://"""
-    url = settings.database_url
+    """3.4：连接串固定 mysql+asyncmy://
+
+    ⚠️ **2026-09-28 修正：不能再直接断言全局 `settings.database_url`。**
+
+    测试进程里 `tests/conftest.py` 会在 import 任何 `app.*` **之前**
+    把 `DATABASE_URL` 环境变量指向临时 SQLite（见该文件顶部那段「必须最先执行」），
+    好让整套用例不碰云库。于是全局 `settings.database_url` 在测试期
+    **本来就不是 MySQL** —— 原写法断言它 `startswith("mysql+asyncmy://")`
+    必然失败，而失败原因跟「驱动规范」毫无关系。
+
+    本用例要守的是**生产规则**（§3.4），所以显式构造一份 `DATABASE_URL=""`
+    的配置来验 §3.4 的拼接结果：既不依赖环境变量，也照样把驱动前缀与 charset 钉死。
+    `DATABASE_URL` 非空时原样返回（§13.1 的 SQLite 应急口）由
+    `tests/unit/test_config.py` 之外的用例与 `config.py` 的启动校验负责。
+    """
+    fresh = Settings(
+        DATABASE_URL="",
+        DB_USER="u",
+        DB_PASSWORD="p",
+        DB_HOST="h",
+        DB_PORT=3308,
+        DB_NAME="d",
+    )
+    url = fresh.database_url
 
     assert url.startswith("mysql+asyncmy://")
     assert "pymysql" not in url
@@ -240,12 +296,21 @@ def test_importing_database_module_leaves_the_sync_engine_unbuilt():
     )
 
 
-def test_alembic_env_still_consumes_the_sync_url():
+def test_alembic_env_is_async_and_has_no_sync_url():
     """
-    反向护栏：sync_database_url 一旦被删，Alembic 会在导入环境时直接 AttributeError。
+    ⚠️ **2026-09-28 由 `test_alembic_env_still_consumes_the_sync_url` 反向改写。**
 
-    这条是补上一个真实教训 —— 曾经为了「零 DDL 变更」把它删掉，
-    而团队的 alembic/env.py 第 23 行正在用它，迁移当场失效。
+    原护栏的前提是「Alembic 的迁移环境是同步的，必须有一条 mysql+pymysql 连接串」，
+    因此断言 `alembic/env.py` 引用了 `settings.sync_database_url`。
+    **合并之后这个前提已经不成立**：团队把 Alembic 改成了**全异步迁移**
+    （`async_engine_from_config` + `connection.run_sync`），同步引擎连同
+    `Settings.sync_database_url` 一并删除 —— 理由见 `app/core/config.py`
+    的「模块 3 引入的配置」段：「本仓库已把 Alembic 改为全异步迁移、
+    requirements 也不再包含 PyMySQL，同步引擎已无任何消费者，留着只是死代码。」
+
+    原断言因此在当下必红；而它要防的事（删掉 sync url 导致迁移 AttributeError）
+    已经不可能发生 —— 现在要防的是**反向**的那个：
+    有人让 env.py 又回去依赖一个 Settings 上并不存在的同步配置。
     """
     env_py = BACKEND_DIR / "alembic" / "env.py"
     if not env_py.is_file():
@@ -253,12 +318,18 @@ def test_alembic_env_still_consumes_the_sync_url():
 
     content = env_py.read_text(encoding="utf-8")
 
-    assert re.search(r"settings\.sync_database_url", content), (
-        "alembic/env.py 没有引用 settings.sync_database_url；"
-        "若它改用别的配置项，请同步更新本用例，否则这条护栏会失效"
+    assert "async_engine_from_config" in content, (
+        "alembic/env.py 不再走异步迁移引擎。§3.4 要求全链路异步；"
+        "若这是有意改回同步，必须同步改本用例并说明理由"
     )
-    assert hasattr(settings, "sync_database_url"), (
-        "Settings 必须提供 sync_database_url，否则 alembic/env.py 会 AttributeError"
+    assert not re.search(r"settings\.sync_database_url", content), (
+        "alembic/env.py 又引用了 settings.sync_database_url，"
+        "但 Settings 上已无此属性（同步引擎已随全异步迁移一并移除）——"
+        "这会在导入迁移环境时直接 AttributeError"
+    )
+    assert not hasattr(settings, "sync_database_url"), (
+        "Settings 不应再暴露 sync_database_url：同步引擎没有任何消费者"
+        "（见 app/core/config.py 的说明），留着只会诱导别人去用"
     )
 
 

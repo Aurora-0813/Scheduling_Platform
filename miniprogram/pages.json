@@ -41,6 +41,10 @@
       "style": { "navigationBarTitleText": "拍照识场" }
     },
     {
+      "path": "pages/space/list",
+      "style": { "navigationBarTitleText": "场地一览" }
+    },
+    {
       "path": "pages/inspect/capture",
       "style": { "navigationBarTitleText": "拍照巡检" }
     },

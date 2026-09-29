@@ -3,6 +3,16 @@
     <mp-nav-bar title="语音预约" back :right="timerText" />
 
     <view class="app-body has-cta">
+      <!--
+        AI 上次的追问（例如「请您补充使用时间」）。
+        方案页在没有方案时会把它带过来 —— 否则用户回到这页只看到一段预填文本，
+        不知道该补什么，来回打转。
+      -->
+      <view v-if="agentStore.lastQuestion" class="askcard">
+        <text class="askt">🤖 AI 还需要你补充</text>
+        <text class="askc">{{ agentStore.lastQuestion }}</text>
+      </view>
+
       <!-- 麦克风按钮：按住说话 -->
       <view
         class="rec"
@@ -14,16 +24,40 @@
         <text>🎙</text>
       </view>
 
-      <view class="wave" :class="{ off: !recording }">
+      <!-- 识别中让波形继续律动：这是取消 loading 转圈后的进度反馈 -->
+      <view class="wave" :class="{ off: !recording && !recognizing }">
         <view v-for="n in 12" :key="n" class="bar"></view>
       </view>
 
       <text class="hint">{{ hintText }}</text>
 
-      <!-- 识别文本 + 语义高亮 -->
+      <!-- 识别文本 + 语义高亮；ASR 难免听错，所以必须能改 -->
       <view v-if="segments.length" class="asr">
-        <text v-for="(s, i) in segments" :key="i" :class="s.cls">{{ s.text }}</text>
-        <text v-if="recognizing" class="caret"></text>
+        <template v-if="!editing">
+          <text v-for="(s, i) in segments" :key="i" :class="s.cls">{{ s.text }}</text>
+          <text v-if="recognizing || typing || formatting" class="caret"></text>
+        </template>
+        <textarea
+          v-else
+          v-model="draft"
+          class="earea"
+          :maxlength="200"
+          auto-height
+          :focus="autoFocus"
+          :cursor="cursorPos"
+          :cursor-spacing="24"
+          @blur="onDraftBlur"
+        />
+      </view>
+
+      <view v-if="segments.length" class="asrbar">
+        <template v-if="!editing">
+          <text class="alink" @tap="startEdit">✏️ 继续修改</text>
+        </template>
+        <template v-else>
+          <text class="alink gray" @tap="cancelEdit">取消</text>
+          <text class="alink" @tap="applyEdit">保存并重新规整</text>
+        </template>
       </view>
 
       <!-- 规整后的结构化约束 -->
@@ -59,7 +93,7 @@
         hover-class="btn-on"
         :hover-stay-time="60"
         @tap="goAgent"
-      >交给 AI 生成方案 →</view>
+      >{{ formatting ? 'AI 规整中… 可直接提交' : '交给 AI 生成方案 →' }}</view>
     </view>
   </view>
 </template>
@@ -73,8 +107,9 @@
  * 接口契约沿用郑宇豪已对齐的后端实现，**未做任何改动**：
  *   POST /voice/asr     FormData 字段名 file  → { text }
  *   POST /voice/format  { rawText }           → { formattedText, keywords[] }
- * 录音参数取自 config/index.js 的 RECORD_OPTIONS（wav / 16k / 单声道 / 60s），
- * 与百度 ASR 要求一致，勿改。
+ * 录音参数取自 config/index.js 的 RECORD_OPTIONS（wav / 16k / 单声道 / 60s）。
+ * 注：ASR 已于 2026-09-30 从百度换成阿里云 Qwen3-ASR-Flash（见 docs/spec/后端改动1.md §5.27），
+ * 但 wav / 16k / 单声道这一组参数对两家都成立，故保持不变。
  *
  * 与原 record.vue 的差异：页面按原型重做（波形 + 语义高亮 + 约束 chip），
  * 脚本风格改为 <script setup>，接口收敛到 api/voice.js 统一管理。
@@ -84,7 +119,7 @@ import { onLoad } from '@dcloudio/uni-app'
 import { asr, format } from '@/api/voice.js'
 import { agentStore } from '@/store/agent.js'
 import { RECORD_OPTIONS } from '@/config/index.js'
-import { toast, showLoading, hideLoading } from '@/utils/toast.js'
+import { toast } from '@/utils/toast.js'
 
 const recording = ref(false)
 const recognizing = ref(false)
@@ -94,6 +129,21 @@ const formattedText = ref('')
 const keywords = ref([])
 const showInput = ref(false)
 const manualText = ref('')
+/** 识别结果编辑态：true 时 .asr 显示 textarea（草稿在 draft 里） */
+const editing = ref(false)
+const draft = ref('')
+/** 规整态：与 recognizing 分开——/voice/format 实测要 20~25 秒，不能和识别共用一个标签 */
+const formatting = ref(false)
+/** 规整请求序号：并发时只认最后一次的结果，防止旧响应盖掉新文本 */
+let fmtSeq = 0
+/** 打字机：识别结果一个字一个字吐出来（typing 为 true 时展示 typed，而不是整段 rawText） */
+const typing = ref(false)
+const typed = ref('')
+/** 一次性聚焦：识别完自动进编辑态并弹出键盘，blur 后置回 false，避免反复抢焦点 */
+const autoFocus = ref(false)
+/** focus 时的光标位置；只在程序化进编辑态时改，用户自己点选时不动它 */
+const cursorPos = ref(0)
+let typeTimer = null
 
 let recorder = null
 let timer = null
@@ -106,8 +156,11 @@ const timerText = computed(() => {
 })
 
 const hintText = computed(() => {
+  if (editing.value) return '改完点「保存并重新规整」'
   if (recording.value) return '正在聆听… 松开结束'
-  if (recognizing.value) return 'AI 正在识别…'
+  if (recognizing.value) return 'AI 正在识别语音…'
+  if (typing.value) return '识别完成，稍后可直接修改'
+  if (formatting.value) return 'AI 正在规整为结构化约束…（文字已可用，可直接提交）'
   if (rawText.value) return '长按可以重新说一次'
   return '按住下方按钮，说出你的场地需求'
 })
@@ -181,7 +234,9 @@ function buildSegments(text, kws) {
   return segs
 }
 
-const segments = computed(() => buildSegments(rawText.value, keywords.value))
+const segments = computed(() =>
+  buildSegments(typing.value ? typed.value : rawText.value, keywords.value)
+)
 
 // ------------------------------------------------------------------
 // 录音
@@ -191,9 +246,15 @@ onLoad(() => {
   // 这里接着它，用户不用重新说一遍；直接提交也能走通（agentText 兜底用 rawText）
   const pre = agentStore.request
   if (pre) {
-    manualText.value = pre
+    // 从拍照识场带过来的需求（"我要预约A栋201会议室，12人，…"）：
+    // 直接进编辑态，用户接着补时间/设备就行，不用先点一下「修改」
     rawText.value = pre
-    showInput.value = true
+    manualText.value = pre
+    enterEdit()
+  } else {
+    // 全新的语音需求：清掉上一次拍照识场留下的场地上下文，
+    // 否则 Agent 会把上一张照片里的场地当成这次的需求
+    agentStore.imageContext = null
   }
 
   // 录音器要在页面内取，不能在模块顶层（小程序启动时可能还没准备好）
@@ -222,6 +283,7 @@ onLoad(() => {
 
 onUnmounted(() => {
   stopTimer()
+  stopTypewriter()
 })
 
 function startTimer() {
@@ -266,6 +328,10 @@ function ensureAuth() {
 
 async function onPressStart() {
   if (recording.value || recognizing.value) return
+  if (editing.value) {
+    toast('先保存或取消正在修改的文字')
+    return
+  }
 
   const ok = await ensureAuth()
   if (!ok) return
@@ -301,26 +367,88 @@ function onPressEnd() {
   stopRecord()
 }
 
-/** 上传录音做 ASR，再调 /voice/format 拿结构化约束 */
+/**
+ * 上传录音做 ASR → 打字机吐出结果 → 自动进入可编辑态 → 后台规整。
+ *
+ * 有意**不用 showLoading 转圈**：ASR 只有 1~2 秒，弹遮罩会把整页锁住，
+ * 还会和后面的规整阶段抢同一个提示。进度感改由「律动的波形 + 打字机光标」承担。
+ */
 async function recognize(filePath) {
+  stopTypewriter()
+  editing.value = false
+  draft.value = ''
+  // 上一轮可能还在规整：作废它的结果，免得盖掉这一轮的新文本
+  fmtSeq += 1
+  formatting.value = false
   recognizing.value = true
-  showLoading('AI 识别中…')
   try {
     const asrRes = await asr(filePath)
     rawText.value = asrRes.text || ''
-    if (!rawText.value) {
-      toast('没听清，再说一次试试')
-      return
-    }
-    const fmtRes = await format(rawText.value)
-    formattedText.value = fmtRes.formattedText || ''
-    keywords.value = fmtRes.keywords || []
   } catch (e) {
     toast(e.message || '语音识别失败')
+    return
   } finally {
     recognizing.value = false
-    hideLoading()
   }
+
+  if (!rawText.value) {
+    toast('没听清，再说一次试试')
+    return
+  }
+
+  await typeOut(rawText.value)
+  // 识别完直接就是可编辑的，光标落在末尾——不再需要先点一下「修改」
+  enterEdit()
+  reformat(rawText.value)
+}
+
+/** 进入可编辑态：光标默认落在末尾，并自动聚焦 */
+function enterEdit() {
+  draft.value = rawText.value
+  cursorPos.value = rawText.value.length
+  editing.value = true
+  autoFocus.value = true
+}
+
+/** 键盘收起后解除自动聚焦，否则页面上任何一次重渲染都会把键盘再弹回来 */
+function onDraftBlur() {
+  autoFocus.value = false
+}
+
+/**
+ * 打字机：把 src 逐段写进 typed（展示层看的是 segments → typed）。
+ * 总时长压到 1.2 秒左右（30ms 一跳），长句自动加大每跳字数，
+ * 不会出现「说得越长等得越久」。
+ */
+function typeOut(src) {
+  return new Promise((resolve) => {
+    const text = String(src || '')
+    typed.value = ''
+    if (!text) {
+      typing.value = false
+      resolve()
+      return
+    }
+    typing.value = true
+    const perTick = Math.max(1, Math.ceil(text.length / 40))
+    // 先吐第一段：否则 segments 会短暂为空，识别框闪一下才出现
+    typed.value = text.slice(0, perTick)
+    typeTimer = setInterval(() => {
+      typed.value = text.slice(0, typed.value.length + perTick)
+      if (typed.value.length >= text.length) {
+        stopTypewriter()
+        resolve()
+      }
+    }, 30)
+  })
+}
+
+function stopTypewriter() {
+  if (typeTimer) {
+    clearInterval(typeTimer)
+    typeTimer = null
+  }
+  typing.value = false
 }
 
 /** 手动输入直接走 /voice/format，与语音路径汇聚到同一处 */
@@ -330,21 +458,70 @@ async function useManual() {
     toast('请先输入需求')
     return
   }
+  cancelEdit()
+  await reformat(text)
+}
+
+// ------------------------------------------------------------------
+// 识别结果编辑（ASR 难免听错「二十人」→「二是人」这类词）
+// ------------------------------------------------------------------
+/**
+ * 把原文交给 /voice/format 重新规整。手输、改识别结果、语音识别后都走这一条路。
+ *
+ * 有意**不加遮罩**：/voice/format 实测要 20~25 秒（模型走思考模式），
+ * 而原文在这之前就已经写在屏幕上了。再盖一层「正在转换」只会让人以为卡住了，
+ * 所以改成一句行内提示，期间文字照样可读、可改、可直接提交（agentText 会退回 rawText）。
+ */
+async function reformat(text) {
+  // 每次规整领一个序号，回调时对不上就说明已经有更新的请求，直接丢弃
+  const seq = ++fmtSeq
+  stopTypewriter()
+  // 注意：这里**不**动 editing —— 语音识别后要一直留在可编辑态，
+  // 收起编辑框由 applyEdit / useManual 自己决定
   rawText.value = text
+  manualText.value = text
   formattedText.value = ''
   keywords.value = []
-  recognizing.value = true
-  showLoading('AI 规整中…')
+  formatting.value = true
   try {
     const fmtRes = await format(text)
+    if (seq !== fmtSeq) return
     formattedText.value = fmtRes.formattedText || ''
     keywords.value = fmtRes.keywords || []
   } catch (e) {
+    if (seq !== fmtSeq) return
+    // 规整失败不丢原文：agentText 会退回 rawText，照样能提交
     toast(e.message || '规整失败，将直接用原文提交')
   } finally {
-    recognizing.value = false
-    hideLoading()
+    if (seq === fmtSeq) formatting.value = false
   }
+}
+
+function startEdit() {
+  // 识别 / 打字中文本还会被整段覆盖，先不让改；
+  // 规整中允许改——保存时会作废在飞的那次规整结果
+  if (recognizing.value || typing.value) return
+  enterEdit()
+}
+
+function cancelEdit() {
+  stopTypewriter()
+  editing.value = false
+  draft.value = ''
+}
+
+function applyEdit() {
+  const text = draft.value.trim()
+  if (!text) {
+    toast('内容不能为空')
+    return
+  }
+  if (text === rawText.value) {
+    cancelEdit()
+    return
+  }
+  cancelEdit()
+  reformat(text)
 }
 
 function goAgent() {
@@ -353,8 +530,10 @@ function goAgent() {
     toast('请先说出或输入你的需求')
     return
   }
-  // 交给 thinking 页发起 /agent/schedule，避免两个页面重复请求
+  // 把这段需求连同可能的场地上下文一起交给 thinking 页发起 /agent/schedule
   agentStore.request = text
+  // 追问已经用过了，清掉，免得下一轮还挂着上一轮的话
+  agentStore.lastQuestion = ''
   uni.navigateTo({ url: '/pages/agent/thinking' })
 }
 </script>
@@ -400,5 +579,56 @@ function goAgent() {
 .manual .btn {
   margin-top: 18rpx;
   display: block;
+}
+
+/* ---- 识别结果编辑 ---- */
+.earea {
+  width: 100%;
+  padding: 0;
+  min-height: 96rpx;
+  font-size: 27rpx;
+  line-height: 2;
+  color: var(--t1);
+  background: transparent;
+}
+
+.asrbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 36rpx;
+  margin-top: 16rpx;
+}
+
+.alink {
+  font-size: 24rpx;
+  color: var(--primary);
+}
+
+.alink.gray {
+  color: var(--t3);
+}
+
+/* ---- AI 上次的追问（从方案页带过来） ---- */
+.askcard {
+  background: #f3f8ff;
+  border: 1px solid var(--ai-line);
+  border-radius: 22rpx;
+  padding: 22rpx 24rpx;
+  margin-bottom: 26rpx;
+}
+
+.askt {
+  display: block;
+  font-size: 24rpx;
+  font-weight: 600;
+  color: var(--primary);
+  margin-bottom: 10rpx;
+}
+
+.askc {
+  display: block;
+  font-size: 23rpx;
+  color: var(--t2);
+  line-height: 1.7;
 }
 </style>

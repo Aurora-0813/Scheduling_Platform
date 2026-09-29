@@ -45,10 +45,33 @@
 
 ## Mock 开关说明
 
-- `.env.development` 里 `VITE_USE_MOCK=true`：业务接口走后端 `/api/v1/mock/*` 示例数据。
-- `.env.production` 里 `VITE_USE_MOCK=false`：走真实接口 `/api/v1/*`。
+开关是 `VITE_USE_MOCK`，由 `frontend/.env.development`（开发）与
+`frontend/.env.production`（构建）提供。
+
+> ⚠️ **这两个文件仓库里没有。** 根 `.gitignore:8` 的 `.env.*` 把它们排除了，
+> 需要**各自在本地建**。建之前 `VITE_USE_MOCK` 是 `undefined`。
+
+| `VITE_USE_MOCK` | 业务接口实际走的 baseURL | 什么时候用 |
+| --- | --- | --- |
+| `true` | `/api/v1/mock/*`（写死的示例数据） | 后端某模块还没做完时先开工 |
+| `false` | `/api/v1/*`（真实接口） | 联调、验收、演示 |
+| **未设置** | `/api/v1/*`（真实接口）—— 与 `false` 完全相同 | ⚠️ **这是默认值，最容易误判** |
+
+**未设置时走的是真实接口，不是 mock。** 开发模式下 `src/utils/request.js` 会在
+控制台打一条告警说明当前模式，不会静默。
+
+要切 mock：
+
+```bash
+echo "VITE_USE_MOCK=true" > frontend/.env.development   # Windows: 用编辑器新建同名文件
+# 改完需重启 npm run dev 才生效
+```
+
 - 切换只改这一个常量，业务代码不用动。
-- mock 数据是写死的常量，不能增删改，不能用于验收。
+- mock 数据是写死的常量，不能增删改，**不能用于验收**。
+- `/monitor` 页的「查看智能调度思考链」**永远走 mock**（`/mock/agent/schedule`），
+  与这个开关无关 —— 因为真实接口有副作用（会在后端锁资源、落一条待确认订单），
+  监控页不该调它。见 `src/api/monitor.js` 的 `agentScheduleMock`。
 
 ## 目录结构
 

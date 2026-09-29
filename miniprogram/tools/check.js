@@ -9,6 +9,12 @@
  *   2. pages[] 里每个 path 都有对应的 .vue 文件
  *   3. 代码里所有 uni.navigateTo/reLaunch/redirectTo 的目标页都已声明
  *   4. utils/tabs.js 的 5 个 tab 路径都在 pages.json 里
+ *
+ * ⚠️ 只校验**已注册**（在 pages.json 里声明过）的页面。
+ *    pages/ 下可能残留别的模块合并进来但未注册的页面（见 README §11），
+ *    它们**不参与编译、运行时不存在**，「跳转到未声明页面」「用了 ??」这类
+ *    针对包体的规则对它们没有意义；报出来只会淹没真正的回归。
+ *    这些文件会**单独列出**（见输出末尾），不是被隐藏。
  *   5. 所有 @/ 导入都能解析到真实文件
  *   6. 模板里用到的 mp-* 组件符合 easycom 目录约定
  *   7. 禁用语法：?? / ?. / toISOString() / inset 简写 / * 通配选择器 / :root
@@ -52,6 +58,17 @@ if (pagesJson) {
   if (pagesJson.tabBar) fail('pages.json 出现了 tabBar：本项目用 mp-tab-bar 自定义组件')
 }
 
+// ---------- 2.5 区分「已注册页面」与「未注册页面」 ----------
+//
+// uni-app 只把 pages.json 里声明的页面编译进小程序包体。pages/ 下未被声明的
+// .vue 一律不参与编译 —— 对它们做「包体规则」校验是错的靶子。
+// 这里把它们挑出来，后面所有逐文件检查只跑 checkedFiles，最后单独列一份名单。
+function isUnregisteredPage(f) {
+  const rel = path.relative(ROOT, f).replace(/\\/g, '/')
+  if (!rel.startsWith('pages/') || !rel.endsWith('.vue')) return false
+  return declared.indexOf(rel.slice(0, -'.vue'.length)) < 0
+}
+
 // ---------- 3. 收集所有 .vue / .js ----------
 // tools/ 是校验脚本自身，不属于小程序包体，跳过
 // （否则脚本里的正则字面量会被自己的规则误判）
@@ -71,9 +88,13 @@ function walk(dir, out = []) {
 }
 const files = walk(ROOT)
 
+const unregisteredPages = files.filter(isUnregisteredPage)
+const checkedFiles = files.filter((f) => unregisteredPages.indexOf(f) < 0)
+const relOf = (f) => path.relative(ROOT, f).replace(/\\/g, '/')
+
 // ---------- 4. 路由目标都存在 ----------
 const navRe = /url:\s*[`'"](\/pages\/[^`'"$]*)[`'"]/g
-for (const f of files) {
+for (const f of checkedFiles) {
   let m
   const src = read(f)
   while ((m = navRe.exec(src))) {
@@ -103,7 +124,7 @@ if (!fs.existsSync(tabsFile)) {
 
 // ---------- 6. @/ 导入都能解析 ----------
 const impRe = /from\s+['"]@\/([^'"]+)['"]/g
-for (const f of files) {
+for (const f of checkedFiles) {
   let m
   const src = read(f)
   while ((m = impRe.exec(src))) {
@@ -118,7 +139,7 @@ for (const f of files) {
 
 // ---------- 7. easycom 组件存在 ----------
 const compsSeen = new Set()
-for (const f of files.filter((x) => x.endsWith('.vue'))) {
+for (const f of checkedFiles.filter((x) => x.endsWith('.vue'))) {
   const re = /<(mp-[a-z-]+)/g
   let m
   const src = read(f)
@@ -137,8 +158,8 @@ function stripComments(text) {
   return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
 }
 
-for (const f of files) {
-  const rel = path.relative(ROOT, f)
+for (const f of checkedFiles) {
+  const rel = relOf(f)
   const src = read(f)
   const code = stripComments(src)
 
@@ -158,8 +179,8 @@ for (const f of files) {
 // ---------- 9. 裸标签选择器 ----------
 // 只看「选择器开头」的裸标签：.live.b / .ent.b 这类修饰类不算
 const badTags = /(?<![.#:\w-])(h4|p|b|i|span|div|a)\s*(?=[{,])/g
-for (const f of files.filter((x) => x.endsWith('.vue') || x.endsWith('.css'))) {
-  const rel = path.relative(ROOT, f)
+for (const f of checkedFiles.filter((x) => x.endsWith('.vue') || x.endsWith('.css'))) {
+  const rel = relOf(f)
   const src = read(f)
   const blocks = src.match(/<style[^>]*>[\s\S]*?<\/style>/g) || []
   const css = stripComments(f.endsWith('.css') ? src : blocks.join('\n'))
@@ -185,6 +206,15 @@ for (const p of declared.slice(5)) {
 console.log('检查文件数:', files.length)
 console.log('声明页面数:', declared.length)
 notes.forEach((n) => console.log('  · ' + n))
+
+// 未注册页面**照实列出来**（不是隐藏）：它们不在包体里，所以上面的逐文件
+// 检查对它们没有意义；来历与处置方式见 miniprogram/README.md §11。
+if (unregisteredPages.length) {
+  console.log(
+    '  · 未注册页面 ' + unregisteredPages.length + ' 个（不在 pages.json → 不参与编译，已跳过逐文件检查）:'
+  )
+  unregisteredPages.forEach((f) => console.log('      - ' + relOf(f)))
+}
 console.log('')
 if (problems.length) {
   console.log(`发现 ${problems.length} 个问题:`)

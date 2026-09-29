@@ -44,6 +44,7 @@
 import { ref } from 'vue'
 import { agentSchedule, agentTranscribe, agentRecognize } from '@/api/agent'
 import { createOrder } from '@/api/reserve'
+import { toast, showLoading, hideLoading } from '@/utils/toast.js'
 
 const requirement = ref('')
 const trace = ref([])
@@ -80,11 +81,19 @@ function startRecord() {
   recorder = uni.getRecorderManager()
   recorder.onStop(async (res) => {
     recording.value = false
-    uni.showLoading({ title: '识别中' })
-    const data = await agentTranscribe(res.tempFilePath)
-    uni.hideLoading()
-    requirement.value = data.text
-    uni.showToast({ title: '已识别，请确认后提交', icon: 'none' })
+    // ⚠️ 2026-09-30：原来是裸的 uni.showLoading/hideLoading —— 一旦 transcribe 抛异常，
+    // hideLoading 就永远执行不到，loading 会一直挂在屏幕上。
+    // 统一走 utils/toast.js 的封装（带配对保护），并用 finally 保证一定收掉。
+    showLoading('识别中')
+    try {
+      const data = await agentTranscribe(res.tempFilePath)
+      requirement.value = data.text
+      toast('已识别，请确认后提交')
+    } catch (e) {
+      toast((e && e.message) || '识别失败')
+    } finally {
+      hideLoading()
+    }
   })
   recorder.start({ format: 'mp3' })
   recording.value = true
@@ -95,10 +104,15 @@ async function chooseImage() {
     uni.chooseImage({ count: 1, success: resolve, fail: () => resolve(null) })
   )
   if (!res || !res.tempFilePaths || !res.tempFilePaths.length) return
-  uni.showLoading({ title: '识别中' })
-  const data = await agentRecognize(res.tempFilePaths[0])
-  uni.hideLoading()
-  requirement.value = data.text
+  showLoading('识别中')
+  try {
+    const data = await agentRecognize(res.tempFilePaths[0])
+    requirement.value = data.text
+  } catch (e) {
+    toast((e && e.message) || '识别失败')
+  } finally {
+    hideLoading()
+  }
 }
 
 // 确认方案 = 直接调 orders/create，落库 agentRequest + agentTrace（§5.3）

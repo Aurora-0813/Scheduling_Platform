@@ -201,7 +201,14 @@ async def get_current_user(
             token=None,
         )
 
-    if credentials is None or not credentials.credentials:
+    # `.strip()` 是必需的：本函数的文档表格写的是
+    #     「没有 Authorization 头 / **头里没有令牌** → TokenMissingError 40101」，
+    # 但 `HTTPBearer` 对 `"Bearer   "`（scheme 后面只有空白）会给出
+    # `credentials="  "` —— 那是个**真值**字符串，于是原来的
+    # `not credentials.credentials` 判不出来，会被当成有效凭据送进 `decode_token`，
+    # 最终报 40102「认证令牌无效」。同一个「没给令牌」的语义分裂成两个码。
+    # 去掉首尾空白后与 `"Bearer"`（无参数）一致，都走 40101。
+    if credentials is None or not credentials.credentials.strip():
         raise TokenMissingError()
 
     # expected_type=ACCESS 是必需的：不校验类型的话，拿到 refreshToken 的人

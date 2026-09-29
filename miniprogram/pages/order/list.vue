@@ -47,7 +47,12 @@
           @tap="openDetail(o)"
         >
           <view class="ohead">
-            <text class="oname">{{ spaceName(o) }}</text>
+            <!--
+              ⚠️ 2026-09-30 修：原先这里是 spaceName(o)，而 /orders/my 的订单对象
+              **根本没有 spaceName**（只有 spaceId），于是每张卡的标题都是空白。
+              名称统一由 utils/nameMap.js 查资源表补出来。
+            -->
+            <text class="oname">{{ spaceLabel(o.spaceId) }}</text>
             <text class="tag" :class="statusTag('order', orderStatus(o), orderStatusText(o))">
               {{ statusLabel('order', orderStatus(o), orderStatusText(o)) }}
             </text>
@@ -59,15 +64,21 @@
           </view>
           <view class="mbrow">
             <text class="k">设备</text>
-            <text class="v">{{ devicesOf(o) }}</text>
+            <text class="v">{{ deviceLabel(o.deviceIds) }}</text>
           </view>
+          <!--
+            ⚠️ 2026-09-30（查真库后更正）：
+            · reserve_order **没有 budget 列**，o.budget 恒为 undefined；
+              这里改显示场地的自身预算（space_resource.budget），标签写明是「场地预算」。
+            · reserve_order **没有 order_no 列**，主键 id 就是订单号（后端自己也叫「订单#66」）。
+          -->
           <view class="mbrow">
-            <text class="k">预算</text>
-            <text class="v">{{ formatMoney(o.budget) || '—' }}</text>
+            <text class="k">场地预算</text>
+            <text class="v">{{ budgetOf(o) }}</text>
           </view>
           <view class="mbrow">
             <text class="k">单号</text>
-            <text class="v mono">{{ o.orderNo || '—' }}</text>
+            <text class="v mono">{{ orderNoOf(o) }}</text>
           </view>
 
           <!-- 只有待确认 / 已确认可取消，与后端校验保持一致 -->
@@ -101,7 +112,8 @@ import { ref, computed } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import { myOrders, cancelOrder } from '@/api/orders.js'
 import { statusLabel, statusTag, canCancelOrder } from '@/utils/dict.js'
-import { spaceName, orderStatus, orderStatusText, orderId } from '@/utils/normalize.js'
+import { ensureNameMaps, deviceLabel, spaceLabel, spaceBudget } from '@/utils/nameMap.js'
+import { orderStatus, orderStatusText, orderId } from '@/utils/normalize.js'
 import { formatTimeRange, formatMoney } from '@/utils/format.js'
 import { confirm, toastOk, toast } from '@/utils/toast.js'
 
@@ -131,15 +143,24 @@ function countOf(key) {
   return list.value.filter((o) => labelOf(o) === key).length
 }
 
+/** 单号：表里没有 order_no，主键 id 就是订单号 */
+function orderNoOf(o) {
+  const id = orderId(o)
+  return id === undefined ? '—' : '#' + id
+}
+
+/** 场地自身预算；预约表没有预算列，别把它当成「本次预约的花费」 */
+function budgetOf(o) {
+  return formatMoney(spaceBudget(o && o.spaceId)) || '—'
+}
+
 function rangeOf(o) {
   return formatTimeRange(o.startTime, o.endTime) || '—'
 }
 
-function devicesOf(o) {
-  const names = o.deviceNames || []
-  if (!names.length) return '无'
-  return names.length > 2 ? `${names.length} 台设备` : names.join(' + ')
-}
+// 原先这里有个 devicesOf(o)，读的是 o.deviceNames —— 该字段在 /orders/my 里
+// **不存在**，所以它恒返回「无」。即使 deviceIds 明明有值也在撒谎。
+// 现改用 utils/nameMap.js 的 deviceLabel(o.deviceIds)，按真实 ID 查名字。
 
 async function load() {
   loading.value = true
@@ -155,12 +176,16 @@ async function load() {
   }
 }
 
-onShow(load)
+// 订单只给 spaceId / deviceIds，名称要靠资源表映射补（失败不影响列表本身）
+onShow(() => {
+  ensureNameMaps()
+  load()
+})
 
 async function askCancel(o) {
   const ok = await confirm({
     title: '取消预约',
-    content: `确定取消「${spaceName(o)}」的预约吗？取消后时段将释放给其他人。`,
+    content: `确定取消「${spaceLabel(o.spaceId)}」的预约吗？取消后时段将释放给其他人。`,
     confirmText: '确定取消',
     confirmColor: '#F56C6C',
   })

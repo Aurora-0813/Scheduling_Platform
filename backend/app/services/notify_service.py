@@ -358,6 +358,54 @@ def _fmt(value: datetime | None, *, with_date: bool = True) -> str:
 # ---------- 派发 ----------
 
 
+def build_dedup_title(
+    template_title: str,
+    *,
+    facts: Mapping[str, Any],
+    order_ids: Sequence[int] = (),
+) -> str:
+    """在模板标题后补上**冲突身份**，得到既给人看、又能当判重键的标题。
+
+    为什么必须补
+    ------------
+    `DbDedup` 只能按标题查库（表结构冻结，加不了指纹列）。而三个角色的模板标题
+    颗粒度并不一致：
+
+    ==========================  ==========================================
+    角色                        模板标题
+    ==========================  ==========================================
+    预约人                      `【预约提醒】{space_name} {start_hm}`  ← 含场地
+    资源管理员                  `【预约提醒·待关注】{rule_label}`      ← **不含**
+    系统管理员                  `【预约提醒·汇总】{rule_label}`        ← **不含**
+    ==========================  ==========================================
+
+    于是「中心广场闲置」与「综合楼小多功能厅闲置」对管理员会渲染出
+    **一模一样**的 `【预约提醒·汇总】长期闲置`。一旦拿它当判重键，
+    第二块场地起会被全部误杀 —— 24 小时内只剩 1 条，**把「刷屏」换成了「漏报」**。
+    正确的去重粒度是「(规则, 场地/订单)」，所以这里把身份补进标题。
+
+    取值优先级：有订单号就用订单号（更精确，同一场地不同订单是两个冲突），
+    否则用场地名。**已经出现在模板标题里的身份不再重复追加**，避免出现
+    `【预约提醒】A栋3楼展厅 14:00·A栋3楼展厅` 这种啰嗦标题。
+
+    返回的字符串同时用于 `DedupKey.template_title` 与落库的 `NotifyMessage.title` ——
+    **两者必须是同一个值**，否则数据库兜底判重又会失效（这正是本次修的 bug）。
+    """
+    parts: list[str] = []
+    if order_ids:
+        parts.append("订单 " + "/".join(f"#{i}" for i in order_ids))
+    space_name = str(facts.get("space_name") or "").strip()
+    if space_name:
+        parts.append(space_name)
+
+    identity = "·".join(parts)
+    base = template_title.strip()
+    if not identity or identity in base:
+        return base
+    # 模板标题本身为空时（facts 缺字段的极端情况）不要留下一个悬空的「·」
+    return f"{base}·{identity}" if base else identity
+
+
 async def generate_and_dispatch(
     *,
     session: AsyncSession,
@@ -394,6 +442,16 @@ async def generate_and_dispatch(
 
     tone: ToneSpec = resolve_tone(notify_type)
 
+    # ⚠️ **rule_label 必须进 facts（2026-09-30 修）。**
+    #
+    # 模板标题形如 `【预约提醒·待关注】{rule_label}`，而 `{rule_label}` 是从
+    # **facts** 里取的（`_SafeDict` 缺字段一律渲染成空串）。规则命中带过来的
+    # facts 里没有这一项，于是管理员的标题实际渲染成 `【预约提醒·待关注】`
+    # —— **规则名整段丢失**，标题退化成一句空话。
+    # 与 §5.20 修过的订单事件路径同源；这里做同一处兜底，
+    # 让所有调用方都不必各自记得塞。
+    facts = {**facts, "rule_label": facts.get("rule_label") or rule_label or ""}
+
     by_role: dict[str, list[Recipient]] = {}
     for recipient in recipients:
         by_role.setdefault(recipient.role_key, []).append(recipient)
@@ -403,6 +461,9 @@ async def generate_and_dispatch(
 
     for role_key, group in by_role.items():
         template_title, _ = render_fallback(tone, role_key, facts)
+        # 判重键与落库标题**必须是同一个值**，否则数据库兜底判重会失效
+        # （本次修的正是这个 bug）。补身份的理由见 build_dedup_title 的 docstring。
+        dedup_title = build_dedup_title(template_title, facts=facts, order_ids=order_ids)
 
         pending: list[tuple[Recipient, DedupKey]] = []
         for recipient in group:
@@ -410,7 +471,7 @@ async def generate_and_dispatch(
                 receiver_id=recipient.user_id,
                 notify_type=tone.notify_type,
                 rule_code=rule_code,
-                template_title=template_title,
+                template_title=dedup_title,
                 order_ids=tuple(order_ids),
                 space_id=space_id,
                 source=source,
@@ -443,7 +504,33 @@ async def generate_and_dispatch(
                         receiver_id=recipient.user_id,
                         notify_type=tone.notify_type,
                         order_id=order_id,
-                        title=draft.title,
+                        # ⚠️ **存 template_title，不是 draft.title（2026-09-30 修）**
+                        #
+                        # 这一行原先存的是 AI 生成的 `draft.title`，于是
+                        # **数据库兜底判重（`DbDedup`）彻底失效**：
+                        # 它按 `notify_message.title == key.template_title` 查历史行，
+                        # 而库里存的是 AI 文案（每轮都不一样，如「中心广场资源闲置温馨提示」
+                        # / 「中心广场闲置状态温馨提示」），跟模板标题
+                        # （`【预约提醒】中心广场 `）**永远不相等** —— 恒查不到，
+                        # `claim()` 恒返回 True，去重形同不存在。
+                        #
+                        # 后果正是本模块开头声明要避免的那个（`dedup.py` 文件头）：
+                        # 「space_idle 每轮扫描都会对所有闲置场地命中，
+                        #   没有去重就是每 5 分钟给全体管理员刷一遍同样的消息」。
+                        # 实测 7 分钟内同一块场地推了 3 条，标题各不相同。
+                        #
+                        # 为什么是存模板标题而不是让判重去匹配 AI 标题：
+                        # ① `notify_message` 结构冻结（开发流程.md 6.3），**不能加指纹列**，
+                        #    能承载判重标识的只有 title/content 这两个自由文本列；
+                        # ② 判重占位发生在**生成之前**（见本函数 docstring：被判重压掉的
+                        #    通知不该白烧一次 token），所以 claim 时根本还没有 AI 标题；
+                        # ③ 模板标题是**确定性**的，同一冲突恒定，且本来就是 LLM 失败时
+                        #    的兜底文案，作为「通知标签」是站得住的。
+                        #
+                        # AI 生成的**正文**仍然写入 `content`，主文案没有被削弱；
+                        # 手工触发接口 `/notify/generate` 返回的依旧是 AI 标题
+                        # （走 `drafts`，不经过本表）。
+                        title=dedup_title,
                         content=draft.content,
                         is_read=0,
                     )
@@ -532,6 +619,20 @@ async def dispatch_order_notification(
     payload: dict[str, Any] = dict(extra_facts or {})
     if reason:
         payload.setdefault("reason", reason)
+    # ⚠️ **2026-09-29 修：`rule_label` 必须进载荷，否则模板标题缺一块。**
+    #
+    # `rule_label` 此前只被传给 `generate_and_dispatch` 用于 **AI Prompt**，
+    # 从未进入 `facts`。而模板标题里有它 —— 管理员与系统管理员两版标题就是
+    # `【预约提醒·待关注】{rule_label}` / `【预约提醒·汇总】{rule_label}` ——
+    # 占位符取不到值，渲染成空串，标题退化成 `【预约提醒·汇总】`。
+    #
+    # 后果不是「标题难看」这么轻：`REDIS_ENABLED=false` 时判重走 `DbDedup` 兜底，
+    # 它按 `(接收人, 标题, 24h)` 近似判重（表里没有指纹列、不能加列，
+    # 只能拿标题当代理键，见 `services/dedup.py`）。标题恒定 ⇒ **同一收件人
+    # 24 小时内的后续通知全被静默跳过** —— 冲突扫描与 Agent 两条路径都中招，
+    # 库里至今只有 2 条通知、且标题尾巴是空的，就是这个原因。
+    if rule_label:
+        payload.setdefault("rule_label", rule_label)
     facts = build_order_facts(snapshot, payload)
 
     # 段2：去重 → 生成 → 写库（短事务）
@@ -618,7 +719,22 @@ async def generate_notification(order_info: dict) -> dict:
             order_id=order_id,
             notify_type=raw_type,
             rule_code="agent_manual",
-            rule_label=str(raw_type),
+            # ⚠️ **2026-09-29 修：rule_label 必须带上订单号。**
+            #
+            # 原先这里只给 `str(raw_type)`（就是「提醒」两个字）。而 `rule_label`
+            # 会进模板标题 —— 管理员/系统管理员角色那两版标题正是
+            # `【预约提醒·待关注】{rule_label}`，于是**每一张订单渲染出的标题完全相同**。
+            #
+            # 为什么这会是故障：`REDIS_ENABLED=false` 时去重走 `DbDedup` 兜底，
+            # 它按 `(receiver_id, title, TTL 内)` 近似判重（表里没有指纹列，
+            # 不能加列，只能拿标题当代理键 —— 见 `services/dedup.py` 的 DbDedup）。
+            # 标题恒等 ⇒ **第一次生成成功之后，24 小时内这个收件人的所有通知全被跳过**。
+            # 现象是 Agent 第 6 步「生成通知文案：失败」，而 reason 是三合一的模糊说法
+            # （「订单不存在、没有可通知的收件人、或已被去重跳过」），极难定位。
+            #
+            # 带上订单号既让标题具备了区分度（与 DbDedup 的设计前提一致：
+            # 「模板标题里含…足以区分」），也让收件人一眼看出是哪一单。
+            rule_label=f"{raw_type}（订单 #{order_id}）" if order_id is not None else str(raw_type),
             reason=reason,
             extra_facts=extra_facts or None,
             source="agent",

@@ -144,7 +144,37 @@ async def create_order(
     if not result["ok"]:
         raise _error_for(result)
 
+    # ⚠️ **2026-09-28 修复：必须先结束请求会话上那个陈旧的读视图。**
+    #
+    # 症状：云库上本接口**必定 HTTP 500**，且订单其实已经落库。
+    #   orders.py:147  db.get(ReserveOrder, ...) 返回 None
+    #   → _order_out(None) → AttributeError: 'NoneType' object has no attribute 'id'
+    #
+    # 根因：order_service.create_order 用的是**它自己的会话**
+    # （order_service.py:485 的 AsyncSessionLocal() + db.begin()），
+    # 在另一条连接上插入并提交，只把 orderId 返回给路由。
+    # 而请求会话 db 在本行之前就已被 get_current_user 用掉过一次**非加锁读**
+    # （查 sys_user）—— 云库是 MySQL/InnoDB 默认的 REPEATABLE READ，
+    # 那一刻本事务的读视图就钉死了。于是这里读的是「提交之前」的快照，
+    # 看不见刚插入的订单。这正是 order_service._lock_devices_stmt 的 docstring
+    # 里分析过的同一个语义。
+    #
+    # 后果不止是报错：前端拿到 500 会当成失败，用户重试即产生**重复预约**。
+    #
+    # 为什么离线测试测不出来：SQLite 走 pysqlite，BEGIN 延迟到第一条 DML，
+    # get_current_user 那条 SELECT 根本不开启事务，也就没有读视图可钉。
+    # 因此本路径**只能在云库上复现**（tests/conftest.py 已写明行锁 / 并发 /
+    # 时区三类行为在本测试环境不可验证）。
+    #
+    # rollback() 这里不丢任何东西：本会话自始至终只做过读（get_db 明确不提交）。
+    # 它的唯一作用是结束当前事务，让下一句读开启新事务、拿到新快照。
+    await db.rollback()
+
     order = await db.get(ReserveOrder, result["orderId"])
+    if order is None:
+        # 正常不会走到：上面已刷新读视图。留着是因为一旦发生，
+        # 原写法会抛 AttributeError 变成一句什么也说明不了的 500。
+        raise OrderNotFoundError("预约已创建，但读回失败，请刷新列表确认")
     return ok(_order_out(order), "预约创建成功")
 
 

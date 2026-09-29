@@ -41,7 +41,15 @@ from app.core.config import settings
 from app.core.error_codes import ErrorCode
 from app.schemas.agent import ScheduleData
 
-pytestmark = pytest.mark.asyncio
+# `reference_seed`：本文件断言的是 §6.9 种子数据的**真实 id 与状态**
+# （展厅 4/5 的容量与预算、设备 12~15 的可借状态、`reserve_order` id=5/9 的占用时段…）。
+# 离线测试库是空的 → 不灌种子这些断言全崩。夹具的行为见 `tests/conftest.py`：
+#   · SQLite 模式 → 重建库并灌 §6.9 数据
+#   · MySQL 模式 → 什么都不做，直接用云库里 `docs/seed.sql` 导入的真实数据
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.usefixtures("reference_seed"),
+]
 
 
 # --------------------------------------------------------------------------
@@ -169,7 +177,20 @@ async def test_seed_supports_the_five_scenarios(seed: dict, slots: dict) -> None
     """
     from app.agent.tools import query_devices, query_spaces
 
-    start, end = slots["free"]
+    # ⚠️ **2026-09-29 修正窗口：用次日（10-16），不用 `slots["free"]`。**
+    #
+    # `query_spaces` 会**按时段占用过滤**，而 `slots["free"]`（10-15 09:00~11:00）
+    # 并不保证会议室都空 —— `tests/conftest.py` 对它的注释是：
+    #     「同一天、同长度，但**没有任何订单**——用于「无冲突」路径。**space 6 在该段是空的**。」
+    # 它只承诺 **space 6** 空。实测（2026-09-29 探针）：该时段
+    # `reserve_order` id=5 占着 **space 2**（10-15 09:00~12:00，场景 E 的前半场），
+    # 于是「cap≥20 的会议室」只查出 1 间而不是 2 间，用例误报「场景 B 的前提没了」。
+    #
+    # 那是**验错了东西**：本用例要守的是**容量前提**（§6.9 里会议室 cap 12/20/30，
+    # 其中 ≥20 的恰好两间），不是「某个整点在不在占用中」。
+    # §6.9 的订单全部落在 10-08 ~ 10-15，故取 **10-16** 作为「无任何订单」的净窗口，
+    # 把容量前提与时段占用彻底解耦。
+    start, end = "2026-10-16 09:00:00", "2026-10-16 11:00:00"
     window = {"start_time": start, "end_time": end}
 
     # A「预算降级」的前提：40 人展厅存在，且它恰好卡在 800 元预算线上
@@ -1042,26 +1063,91 @@ async def test_i05_never_registers_tool_routes(dev_client) -> None:
 # 只报「跑完了/没报错」证明不了——没报错也可能是因为拦截根本没生效。
 # 下面两条主动去触发拦截，把「护栏在场」变成可执行证据。
 async def test_guard_offline_is_actually_armed() -> None:
-    """任一非回环连接都会被打回。**这是「断网跑通」的证据**。"""
+    """任一非回环连接都会被打回。**这是「断网跑通」的证据**。
+
+    ⚠️ **2026-09-29 修后半段：它原本是一条「有没有开隧道」的环境探针。**
+
+    原文是：
+        sock.connect(("127.0.0.1", 3308))    # 期望连接**成功**
+    它假设 3308 上一定有监听（SSH 隧道）。没隧道时抛
+    `ConnectionRefusedError`，用例就红了 ——
+    但红的理由与「离线护栏装没装好」**毫无关系**。
+
+    正确的验法是**看抛出的异常类型**，而不是看连接成不成功：
+
+        · 被护栏拦下 → `AssertionError("用例试图联网")`（= 护栏在起作用）
+        · 护栏放行   → 连上、或者 `ConnectionRefusedError`/`socket.timeout`
+                       （后两者说明护栏**没拦它**，正是回环该有的待遇）
+
+    于是两种模式下都能跑：
+        离线（无隧道）  → 放行，但 3308 上没人监听 → `ConnectionRefusedError` → 通过
+        接上隧道之后    → 放行，且真连上 → 通过
+    """
     import socket
 
     with pytest.raises(AssertionError, match="用例试图联网"):
         socket.socket().connect(("example.com", 80))
-    # 回环必须放行——否则连库的用例自己先跑不起来
+
+    # 回环必须放行——否则连库的用例自己先跑不起来。
+    # ⚠️ 这里**故意不断言连接成功**：本机没有隧道时 3308 上是空的，
+    #    而那**同样**证明护栏放行了 —— 护栏拦的话抛的是 `AssertionError`，
+    #    它不是 `OSError`，不会被下面的 except 吞掉，用例会照常失败。
     sock = socket.socket()
-    sock.connect(("127.0.0.1", 3308))
-    sock.close()
+    try:
+        sock.connect(("127.0.0.1", 3308))
+    except OSError:
+        # 连接被拒 / 超时：都说明护栏放行了（只是没人在听）。
+        pass
+    finally:
+        sock.close()
 
 
-async def test_guard_db_writes_are_actually_blocked(dev_db_session) -> None:
-    """写语句会被前置拒绝。**这是「没写正式表」的证据**（主文档 6.8 红线）。
+async def test_guard_db_writes_follow_the_engine_dialect(dev_db_session) -> None:
+    """§6.8 的写保护**按引擎方言触发**：MySQL 下必须拦、SQLite 下必须让路。
 
-    用一条**只改自己**的 UPDATE 来触发：它即使真被执行也几乎不改变数据，
-    但拦截必须在**执行前**就抛——这正是它与「事后回滚」的安全性差别。
+    ⚠️ **2026-09-29 改写 —— 原文断言「写语句无条件被拒」，该语义已不再成立。**
+
+    `_db_readonly_guard`（`tests/conftest.py`）保护的对象是**云库上的开发库**
+    （§6.8 红线：「测试禁止写 `reserve_order` 正式表」）。但测试进程里
+    `tests/conftest.py` 会把 `DATABASE_URL` 指向**临时 SQLite**，于是：
+
+        · 「开发库」根本不存在 → 护栏没有可保护的对象；
+        · 而 `tests/module3/conftest.py::_fresh_db` 正需要**在同一个全局引擎上**
+          `DROP/CREATE` 表并灌种子 → 护栏若一律拦截，module3 目录 **147 例**
+          会在 setup 阶段**全部 ERROR**（实测）。
+
+    因此护栏的触发条件已收紧为「引擎确实是 MySQL」——那才是它要守的那条红线。
+    本用例相应改为**验这条条件本身**，两种引擎下都能跑：
+
+        SQLite（离线组默认）→ 写入**必须被放行**，否则 module3 全红；
+        MySQL（接云库之后）  → 写入**必须在执行前**被拒 ——
+                              这正是它与「事后回滚」的安全性差别。
+
+    ⚠️ 接云库后本用例会走 MySQL 分支，那时它需要有**测试库**的权限
+    （`smart_scheduler_test`，见 `docs/spec/done/README.md` 硬卡点 #4），
+    否则会真的写到开发库上。
     """
     from sqlalchemy import text
 
+    from app.core.config import settings
+
+    statement = text("UPDATE reserve_order SET order_status = order_status WHERE id = 9")
+
+    if settings.database_url.startswith("sqlite"):
+        # 离线 SQLite：护栏按设计让路，写入应当**成功执行**。
+        # 真的执行它（而不是只读代码相信），让「让路」这件事有可观测的证据。
+        #
+        # 先确保表存在：本文件不在 `tests/module3/` 下，拿不到那边 `_fresh_db`
+        # 的建表；临时库可能是空的时候，直接 UPDATE 会抛「no such table」，
+        # 那是环境问题、不是护栏问题。
+        from app.core.database import Base, async_engine
+
+        async with async_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await dev_db_session.execute(statement)
+        return
+
+    # 引擎是 MySQL（云库）：护栏必须拦在**执行前**
     with pytest.raises(AssertionError, match="用例试图写库"):
-        await dev_db_session.execute(
-            text("UPDATE reserve_order SET order_status = order_status WHERE id = 9")
-        )
+        await dev_db_session.execute(statement)

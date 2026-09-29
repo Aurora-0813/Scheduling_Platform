@@ -26,16 +26,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import AsyncSessionLocal
 from app.core.exceptions import ParamInvalidError
 from app.models.reservation import OCCUPYING_STATUS, ReserveOrder
 from app.models.resource import SpaceResource
 
-__all__ = ["query_spaces", "TIME_FORMATS"]
+__all__ = ["query_spaces", "list_space_bookings", "TIME_FORMATS"]
 
 #: 允许的时间格式。**必须与 `app/agent/tools/_common.py` 的 `TIME_FORMATS` 一致**。
 #:
@@ -157,3 +158,51 @@ async def query_spaces(capacity: int, space_type: int, start_time: str, end_time
     async with AsyncSessionLocal() as session:
         rows = (await session.execute(stmt)).scalars().all()
     return {"count": len(rows), "spaces": [_to_dict(r) for r in rows]}
+
+
+async def list_space_bookings(
+    db: AsyncSession,
+    space_id: int,
+    days: int = 7,
+    *,
+    start: date | None = None,
+) -> list[ReserveOrder]:
+    """某场地在**未来 N 天内已被占用**的预约明细（含待确认与已确认）。
+
+    与 `query_spaces` 的关系：
+        `query_spaces` 回答「这个时段**哪些场地空着**」（剔除占用后返回可用场地）；
+        本函数回答反过来的问题 ——「**这个场地**哪些时段被占了」。
+        两者共用同一个占用口径 `OCCUPYING_STATUS`（见 app/models/reservation.py）：
+        只有状态 1（待确认）与 2（已确认）算占用；已取消 / 已完成都会释放时段。
+
+    参数：
+        db       : AsyncSession  会话。由调用方（HTTP 层）持有 ——
+                   本函数是**端点用的查询**，不进 Agent Tool，故不像
+                   `query_spaces` 那样自管会话；事务边界交给 FastAPI 的 `get_db`。
+        space_id : int           场地 ID。调用方需先确认场地存在。
+        days     : int           查询未来多少天（从 start 当天 00:00 起算）。
+        start    : date | None   起始日期，默认今天。留出口子便于测试与「查历史」。
+
+    返回：
+        list[ReserveOrder]，按 `start_time` 升序。**只返回与区间有重叠的订单**，
+        跨天占用会原样返回（如 20:00~次日 02:00），由展示层决定怎么裁剪。
+
+    区间是左闭右开的：`existing.start < range_end` 且 `existing.end > range_start`，
+    因此「上一场 11:00 结束、下一场 11:00 开始」不算重叠 —— 与 `create_order`
+    的判重规则一致，不会出现「接口说占了、下单却说没占」这种自相矛盾。
+    """
+    base = start or date.today()
+    range_start = datetime.combine(base, time.min)
+    range_end = range_start + timedelta(days=days)
+
+    stmt = (
+        select(ReserveOrder)
+        .where(
+            ReserveOrder.space_id == space_id,
+            ReserveOrder.order_status.in_(OCCUPYING_STATUS),
+            ReserveOrder.start_time < range_end,
+            ReserveOrder.end_time > range_start,
+        )
+        .order_by(ReserveOrder.start_time)
+    )
+    return list((await db.execute(stmt)).scalars().all())

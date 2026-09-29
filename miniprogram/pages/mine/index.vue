@@ -106,11 +106,17 @@ const avatarEmoji = computed(() => {
   return userStore.role === 'admin' ? '🧑💼' : userStore.role === 'resource_admin' ? '🧰' : '🙂'
 })
 
+// value 为 null 表示**没取到**（不是 0）。模板直接渲染 null 会显示成空白，
+// 看起来像「加载中」，所以在这里统一成「—」，与「确实是 0」区分开。
 const stats = computed(() => [
-  { key: 'order', label: '我的预约', value: orderCount.value, tab: 1 },
-  { key: 'ticket', label: '维修工单', value: ticketCount.value, tab: 2 },
-  { key: 'msg', label: '未读消息', value: notifyStore.unreadCount, tab: 3 },
+  { key: 'order', label: '我的预约', value: fmtCount(orderCount.value), tab: 1 },
+  { key: 'ticket', label: '维修工单', value: fmtCount(ticketCount.value), tab: 2 },
+  { key: 'msg', label: '未读消息', value: fmtCount(notifyStore.unreadCount), tab: 3 },
 ])
+
+function fmtCount(v) {
+  return v === null || v === undefined ? '—' : v
+}
 
 const menus = computed(() => [
   { key: 'voice', icon: '🎙', label: '语音预约', url: '/pages/voice/record' },
@@ -125,18 +131,31 @@ const apiModeText = computed(() =>
 )
 
 async function load() {
-  // 未登录时接口会失败，静默处理，保持 0
+  // ⚠️ **2026-09-30：未登录直接返回，连请求都不发。**
+  //
+  // 原先这里「未登录时接口会失败，静默处理，保持 0」—— 但那个 40101 会被
+  // request.js 的 AUTH_FAIL_CODES 分支接住并**强制弹到登录页**，
+  // 于是本页自己写好的「未登录 / 去登录」分支（模板 L16）永远显示不出来。
+  // 现在 request.js 会提前抛 kind='NO_TOKEN'，这里短路更省一次往返。
+  if (!userStore.loggedIn) {
+    orderCount.value = 0
+    ticketCount.value = 0
+    return
+  }
+
   try {
-    const res = await myOrders({ page: 1, pageSize: 1 })
+    const res = await myOrders()
     orderCount.value = res.total
   } catch (e) {
-    orderCount.value = 0
+    // ⚠️ 失败**不能**写成 0：那会让用户以为「我确实没有预约」。
+    // 置 null，模板据此显示「—」而不是 0。
+    orderCount.value = null
   }
   try {
-    const res = await fetchTickets({ page: 1, pageSize: 1 })
+    const res = await fetchTickets()
     ticketCount.value = res.total
   } catch (e) {
-    ticketCount.value = 0
+    ticketCount.value = null
   }
   refreshUnread()
 }

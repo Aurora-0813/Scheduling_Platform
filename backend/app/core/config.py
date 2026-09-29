@@ -157,21 +157,53 @@ class Settings(BaseSettings):
     # 是否计算场地未来空档时段（依赖预约数据，关闭可省一次查询）。
     IMAGE_ENABLE_AVAILABLE_SLOTS: bool = True
 
-    # ---------- 语音识别 ASR（模块 1，百度短语音标准版）----------
-    BAIDU_APP_ID: str = ""  # 百度智能云 AppID
-    BAIDU_API_KEY: str = ""  # API Key，真实值放 .env
-    BAIDU_SECRET_KEY: str = ""  # Secret Key，真实值放 .env
-    # 1537 普通话（含英文/数字，实测最稳）；1737 纯中文。
-    ASR_MODEL_PID: int = 1537
-    # 采样率，需与小程序录音参数对齐。
+    # ---------- 语音识别 ASR（模块 1，阿里云百炼 Qwen3-ASR-Flash）----------
+    #
+    # ⚠️ **2026-09-30 从「百度短语音识别标准版」切换到 Qwen3-ASR-Flash。**
+    #
+    # 切换理由：
+    #   1. **不用新增任何凭据** —— 复用已有的百炼账号（`LLM_API_KEY`），
+    #      而百度那套需要另行注册 AppID / API Key / Secret Key 三件套。
+    #   2. **少一个供应商**：切换前要同时维护 DashScope + 百度 + DeepSeek 三家，
+    #      切换后只剩 DashScope。
+    #   3. **没有 OAuth 环节**：百度要先换 access_token（含 30 天缓存与过期处理），
+    #      Qwen 直接用 API Key。
+    #   4. 实测往返质量好：TTS 合成「明天下午三点在A栋3楼展厅开个二十人的评审会」
+    #      再识别回来得到「明天下午三点在A栋三楼展厅开个二十人的评审会。」。
+    #
+    # 端点说明：走的是百炼**原生**端点，**不是** OpenAI 兼容模式 ——
+    # 实测 `/audio/transcriptions` 挂在兼容模式 base 上是 404（该路径不存在）。
+    # 所以这里必须单独配一个完整 URL，不能拿 `LLM_BASE_URL` 拼。
+    #
+    # 后期要换模型（比如出更快的 ASR），**只改 `ASR_MODEL_NAME` 即可**；
+    # 换供应商才需要动 `ASR_API_BASE` 与 asr_service 的请求体构造。
+    ASR_MODEL_NAME: str = "qwen3-asr-flash"
+    # 留空则回退到 `LLM_API_KEY`（同一个百炼账号，通常不必单独填）。
+    ASR_API_KEY: str = ""
+    ASR_API_BASE: str = (
+        "https://dashscope.aliyuncs.com/api/v1/services/aigc/"
+        "multimodal-generation/generation"
+    )
+    # 采样率，需与小程序录音参数对齐（Qwen 侧音频头自带，这里保留供校验与说明）。
     ASR_RATE: int = 16000
     # 识别音频最长秒数。
     ASR_MAX_DURATION_S: int = 60
 
-    # ---------- 口语格式化（模块 1，DeepSeek 纯文本模型）----------
-    DEEPSEEK_API_KEY: str = ""  # 真实值放 .env
+    # ---------- 已废弃：百度短语音（保留字段，避免旧 .env / 历史代码直接报错）----------
+    # 2026-09-30 起 ASR 走 Qwen3-ASR-Flash，以下四项**不再被任何代码读取**。
+    # 留着是为了「有旧 .env 的人不会因为字段消失而启动失败」，时机成熟后再删。
+    BAIDU_APP_ID: str = ""
+    BAIDU_API_KEY: str = ""
+    BAIDU_SECRET_KEY: str = ""
+    # 百度 dev_pid（1537 普通话 / 1737 纯中文）—— 仅百度链路使用，已无消费者。
+    ASR_MODEL_PID: int = 1537
+
+    # ---------- 已废弃：口语格式化曾用的 DeepSeek ----------
+    # 2026-09-30 起 `services/format_service.py` 复用 `LLM_*`（百炼），
+    # 以下三项不再被读取。保留理由同上。
+    DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
-    DEEPSEEK_MODEL: str = "deepseek-flash"  # 口语清洗所用模型
+    DEEPSEEK_MODEL: str = "deepseek-flash"
 
     # ---------- 大模型配置（Agent 组与模块 8 共用同一套，2026-09-27 定案） ----------
     # 命名：`LLM_` 前缀 + 全大写，与本文件既有 DB_ / JWT_ / APP_ 风格一致。

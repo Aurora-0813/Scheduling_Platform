@@ -151,10 +151,17 @@ def test_index_names_align_with_spec_6_6():
     「不多」这一侧**不是死板的 10 个**：集成组可以补，但要登记进
     `_EXTRA_INDEXES` 并写明依据（`idx_status_start` 就是这么来的）。
 
-    ⚠️ **本用例只验证「模型声明 == §6.6 规范」，不验证云库已建。**
-    云库上这些索引是否真的存在，取决于上述迁移有没有在云库跑过 ——
-    本轮**未复验**（需要 SSH 隧道 + 直查 `information_schema`）。
-    在复验之前，不要把这行绿当成「云库已有索引」的证据。
+    ⚠️ **本用例只验证「模型声明 == §6.6 规范」，不验证云库已建** —— 这是刻意的分工：
+    本文件跑在离线 SQLite 上，看不到云库。
+
+    **云库那一半已于 2026-09-29 复验通过**（此处原写「本轮未复验」，现补上）：
+    在开发库 `smart_scheduler_dev` 上执行 `alembic upgrade head`，
+    `b7f1c4a92e35` **建出 8 条、跳过 3 条**（后者的列序列与既有外键自动索引相同，
+    按设计跳过 —— 不是失败），`alembic_version` 随之变为 `b7f1c4a92e35`；
+    逐条复核列序列无误。明细见 `docs/spec/后端改动1.md` §4.2 / §4.3。
+
+    因此「这行绿」+「迁移已在目标库跑过」两件事**合起来**才等于「云库已有索引」。
+    换机器或换库重新部署时，迁移那一半要重新跑一遍 —— 本用例管不着这件事。
     """
     declared = {
         i.name: table.name for table in Base.metadata.tables.values() for i in table.indexes

@@ -10,19 +10,15 @@
     "enable": false
   },
   "mp-weixin": {
-    "appid": "",
+    "_comment_appid": "真实 AppID。原来这里是空的，而 HBuilderX 重新编译时会用 manifest 的值覆盖 unpackage/dist/dev/mp-weixin/project.config.json —— 一旦被覆盖成空串，开发者工具就退回「无 AppID 体验模式」，真机预览、隐私接口等能力都会受限。与 miniprogram/project.config.json 保持一致。",
+    "appid": "wxbe3bfbb2c6c13c97",
     "setting": {
       "urlCheck": false,
       "es6": true,
       "postcss": true,
       "minified": true
     },
-    "usingComponents": true,
-    "permission": {
-      "scope.record": {
-        "desc": "用于语音预约，把你说的话识别成文字"
-      }
-    }
+    "usingComponents": true
   },
   "h5": {
     "title": "AI 智能空间调度"

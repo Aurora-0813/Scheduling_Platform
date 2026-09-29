@@ -19,8 +19,6 @@
 """
 from datetime import datetime, timedelta, time
 
-import pytest
-
 from app.services import dashboard_service as svc
 from tests.helpers import build_session, make_order_between, make_space
 
@@ -203,27 +201,19 @@ async def test_U2_含空时段场地按14h兜底_20点0():
     assert await usage(session, DAYS) == 20.0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "已知缺口（2026-09-28 解禁 skip 时发现）：分子没按场地状态过滤。"
-        "分母只累加 status=1 的场地容量（273h），分子却把挂在停用场地上那 2h 也算了进去 "
-        "→ 56.6/273 = 20.7%，而本用例要求 20.0%。两侧口径不一致："
-        "**算一个不存在的容量上的占用**。"
-        "真库当前 8 个场地全是 status=1，所以**现在影响为 0**；"
-        "一旦有场地停用（维修、闭馆），使用率会被虚高，且不报错。"
-        "修法：分子查询 JOIN space_resource 并加 `SpaceResource.status == 1`，"
-        "与分母取同一个场地集合（已在内存 SQLite 上验证：JOIN 后 2 条 54.6h → 20.0%）。"
-        "strict=True 的用意：谁修好了这条会 XPASS 报错，逼着把本标记摘掉、"
-        "让 U4 变回一条正常的绿色断言 —— 而不是被静悄悄放过。"
-    ),
-)
 async def test_U4_停用场地的订单不得计入分子_20点0():
     """
     U4：4 个场地，其中 1 个 status=0 停用；有效 3 个同 U2
     分母 273，分子 54.6h（**停用场地的订单不得计入分子**）→ 20.0%
 
-    当前实测 20.7%（= 56.6/273）—— 分子多算了停用场地那 2h，见上方 xfail 理由。
+    **2026-09-28 修复后转绿。** 修复前实测 20.7%（= 56.6/273）—— 分子多算了
+    停用场地那 2h：分母只累加 status=1 的场地，分子却没按场地状态过滤，
+    两侧口径不一致，等于「在一个不存在的容量上算占用」。
+
+    该缺口原先由 `@pytest.mark.xfail(strict=True)` 记录了两天（2026-09-26 ~ 09-28）。
+    strict 的用意正是如此：修好即 XPASS 报错，逼着把标记摘掉，
+    **而不是让它被静悄悄放过**。现在修法已落地（`dashboard_service` 分子
+    JOIN `space_resource` 并加 `status == 1`），标记随之摘除。
     """
     spaces = [
         make_space(1, open_start=time(9, 0), open_end=time(18, 0)),

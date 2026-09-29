@@ -10,6 +10,8 @@ from __future__ import annotations
 import importlib
 import inspect
 
+import pytest
+
 from app.agent.context import agent_run_context
 from app.agent.tools import AGENT_TOOLS
 from app.agent.tools.generate_notification import OrderInfo, generate_notification
@@ -17,6 +19,17 @@ from app.agent.tools.lock_resources import LockResourcesArgs, lock_resources
 from app.agent.tools.query_devices import query_devices
 from app.agent.tools.query_spaces import SPACE_TYPE_LABELS, query_spaces
 from app.agent.tools.submit_plan import PlanPayload
+
+# 本文件里的 `AGENT-U-02` / `AGENT-U-03` / `lock_resources` 共 12 例**直接调用真实
+# service**，断言的是 §6.9 种子数据的**真实 id 与状态**（展厅 4/5、设备 12~15、
+# `reserve_order` id=9 占 space 4 的 13:00~17:00）。而离线测试库是空的
+# —— 不灌种子这些断言全崩（`assert {2} == {4, 5}` / `KeyError: 13` …）。
+#
+# `reference_seed` 是**同步**夹具（内部用 `asyncio.run` 建库），所以本文件
+# 25 个 `async def` 与 6 个同步 guard 用例可以共用同一个 `pytestmark`。
+# 它**每次重建**数据库，理由（为什么要重建而不是灌一次）见 `tests/conftest.py`
+# 里该夹具上方的长注释。
+pytestmark = pytest.mark.usefixtures("reference_seed")
 
 
 # ==========================================================================
@@ -327,8 +340,18 @@ async def test_lock_resources_time_conflict_is_retryable(seed: dict, slots: dict
     assert result["conflictType"] == "time_conflict"
     assert result["retryable"] is True
     assert result["actionHint"], "冲突必须给模型下一步动作，否则它只能原地重试"
-    # conflictDetail 要能被前端屏 3 直接渲染
-    assert result["conflictDetail"]["spaceId"] == seed["space_hall_40"]
+
+    # conflictDetail 要能被前端屏 3 直接渲染 —— 形状是**冻结契约**：
+    #   time_conflict → {"conflicts": [{"orderId", "startTime", "endTime"}, ...]}
+    # 出处：`app/services/order_service.py` 的模块 docstring（返回值表）
+    #       与 `docs/api.md` 里 create_order 的契约。
+    # ⚠️ **2026-09-28 修正**：原文断言 `conflictDetail["spaceId"]`，
+    #    但契约里**从来没有这个键** —— 那是桩期的形状。真实实现只列出「被哪几单占了」，
+    #    场地是调用方自己传进来的、无需回传。故改为断言契约里真实存在的结构。
+    detail = result["conflictDetail"]
+    assert detail and detail["conflicts"], "时段冲突必须指出具体是哪些订单占了它"
+    for item in detail["conflicts"]:
+        assert {"orderId", "startTime", "endTime"} <= set(item), f"冲突项字段不全：{item}"
 
 
 async def test_lock_resources_device_not_found_is_retryable(seed: dict) -> None:
@@ -395,11 +418,18 @@ async def test_lock_resources_reversed_time_is_not_retryable(seed: dict) -> None
 
 
 async def test_lock_resources_free_slot_passes_validation(seed: dict, slots: dict) -> None:
-    """空时段 + 完好设备 → 走到桩的成功分支。
+    """空时段 + 完好设备 → **真实落库成功**。
 
-    ⚠️ 断言里**刻意不断言 `orderId` 是整数**：桩不落库，`orderId` 恒为 `None`。
-    断言 `stub is True` 是**桩期临时代码**——真实 `create_order` 落地后这一行要删
-    （`order_service.py` 顶部明文要求：「任何断言 `stub` 的代码都是桩期临时代码」）。
+    ⚠️ **2026-09-28 改写：删掉两条桩期断言，改为断言真的落了库。**
+
+    原文是：
+        assert result["orderId"] is None   # 桩不落库
+        assert result["stub"] is True      # ← 桩期临时断言，替换真实实现时删除
+
+    而模块 3 的 `create_order` **真实实现已经合入**（本轮合并之前就已并入 `main`），
+    「桩不落库」这个前提不存在了：`orderId` 现在是真实的库侧自增主键。
+    用例自己的 docstring 与 `order_service.py` 顶部都写明
+    「任何断言 `stub` 的代码都是桩期临时代码」，故按指示删除、并补上真实语义的断言。
     """
     start, end = slots["free"]
     with agent_run_context(user_id=1, raw_request="测试：空时段成功"):
@@ -411,8 +441,12 @@ async def test_lock_resources_free_slot_passes_validation(seed: dict, slots: dic
         )
 
     assert result["ok"] is True
-    assert result["orderId"] is None  # 桩不落库
-    assert result["stub"] is True  # ← 桩期临时断言，替换真实实现时删除
+    # 真实实现：`create_order` 在事务内 flush 拿到库侧自增 id 并提交。
+    # `None` 只可能出现在桩期，出现即为回归。
+    assert isinstance(result["orderId"], int), f"应回传真实订单号，实得 {result['orderId']!r}"
+    assert result["orderId"] > 0
+    # `stub` 已不属于契约：Tool 里是 `.get("stub", False)`，真实实现恒为 False
+    assert result.get("stub", False) is False
 
 
 async def test_lock_resources_rejects_string_device_ids(seed: dict) -> None:
@@ -462,56 +496,60 @@ async def test_generate_notification_mapped_type_succeeds() -> None:
     assert "A栋3楼展厅" in result["content"], "场地名要落进正文，否则文案没有信息量"
 
 
-async def test_generate_notification_unmapped_type_fails_closed() -> None:
-    """「延期致歉」在 6.3 的 INT 字典内没有值 → `ok=false`，**不擅自映射**。
+async def test_generate_notification_maps_deprecated_tone_to_existing_value() -> None:
+    """「延期致歉」按裁定映射到既有值 **2（变更致歉）**，Tool 原样转发不擅自改写。
 
-    未决 #6 **已裁定（2026-09-28，黄嵩）：不扩字典，「延期致歉」映射到既有值 2
-    （变更致歉）**；模块 7 已按此实现（`notify_templates.py` 的
-    `ToneSpec(key="延期致歉", notify_type=2)`）。本分支的 service **仍是桩**，
-    所以这里**继续断言失败**——桩就是按「字典外取值一律失败并说明原因」写的，
-    这不是缺陷，是桩期的预期行为（硬卡点 #13）。
+    未决 #6 **已裁定（2026-09-28，黄嵩）：不扩 6.3 的 INT 字典**，
+    「延期致歉」映射到既有值 2；模块 7 已按此实现
+    （`app/agent/prompts/notify_templates.py` 的别名表与 `TONES`）。
 
-    ⚠️ TODO（**等模块 7 落 `main`、service 层映射生效后**改本用例）：
-      1. 断言改为 **Tool 返回值的** `result["notifyType"] == 2`
-         —— 键名是**驼峰 `notifyType`**，不是 DB 列名 `notify_type`；
-      2. 用例名与本文档字符串一并改（不再叫 `..._fails_closed`）；
-      3. 顺带核 `app/agent/tools/generate_notification.py:71` 的 `result.get("notifyType")`
-         在真实 service 上取得到值——若对方返回的是 `notify_type`，这里会**静默拿到
-         `None`**（`ok=True` 但文案为空，不报错）。
+    ⚠️ **2026-09-28 按本用例自己写的 TODO 改写**（不是我自己发明的改法）。
 
-    ⚠️ **2026-09-28 复核更正一处（与「非法类型抛 `ApiError`」的说法不同）**：
-    `resolve_tone`（`notify_templates.py:164`）确实 `raise ApiError(code=400)`，但
-    service 入口 `generate_notification` 用 `try/except` 把它**转成
-    `{"ok": False, "reason": str(exc)}`**（该函数 docstring 明写「本入口不抛异常」，
-    理由是抛栈会打断 Agent 对话，主文档 9.3）。实测其 :605-607 就是这段转换。
-    所以模块 7 落 `main` 后**红的是两处**，不是一处：
-      ① `result["ok"] is False` ——「延期致歉」在模块 7 的 `TONES` 里是合法 key
-         （别名表命中 → `notify_type=2`），`ok` 会变 `True`；
-      ② `"无对应 INT 值" in result["reason"]` —— 文案换成
-         「不支持的通知类型：…，可选：提醒、延期致歉、故障告警」。
+    原文断言的是**桩期行为**（桩按「字典外取值一律失败并说明原因」写）：
+        assert result["ok"] is False
+        assert "无对应 INT 值" in result["reason"]
+    而模块 7 的真实 service **已经合入**，这两条必然变红。用例 docstring 与
+    `docs/spec/done/README.md` 的硬卡点 #13 都把改法写死了，此处照做：
+      1. 断言 Tool 返回值的 `notifyType == 2`（**驼峰**，不是 DB 列名 `notify_type`）；
+      2. 用例名与 docstring 一并改（不再叫 `..._fails_closed`）；
+      3. 核 `generate_notification.py` 的 `result.get("notifyType")` 取得到值
+         —— **已核：真实 service 返回的正是驼峰 `notifyType`**，
+         不存在「静默拿到 `None`（ok=True 但文案为空）」的风险。
 
-    成功返回形状已**实测**（`origin/feat/module7-conflict-notify:notify_service.py:637-642`）：
-    含驼峰 `notifyType`、**不含 `stub`** → 本模块 Tool 层的 `result.get("notifyType")`
-    取得到值、`.get("stub", False)` 得 `False`（表示真实实现），两侧兼容、无需改 Tool。
+    `ok` 之所以从 `False` 变 `True`：`resolve_tone` 对「延期致歉」命中别名表，
+    不再是「字典外取值」。
     """
     result = await generate_notification.coroutine(order_info=OrderInfo(notifyType="延期致歉"))
 
-    assert result["ok"] is False
-    assert "无对应 INT 值" in result["reason"]
-    assert result["title"] is None
+    assert result["ok"] is True
+    assert result["notifyType"] == 2, "「延期致歉」应映射到 2（变更致歉）"
+    assert result["title"] and result["content"], "映射成功后必须给出可用文案"
 
 
 async def test_generate_notification_unknown_type_lists_valid_ones() -> None:
-    # ⚠️ TODO（模块 7 落 `main` 后**本断言会红**）——2026-09-28 实测，黄嵩当时估的是
-    # 「可存活」，**以实测为准**：合法取值由模块 7 的 `"、".join(TONES)` 生成，
-    # 只有 **`提醒` / `延期致歉` / `故障告警`** —— `"预约提醒"` **不在其中**
-    # （实测 `"预约提醒" in reason` → `False`；该 reason 由 `resolve_tone` 抛的
-    # `ApiError` 经 service 入口的 `try/except` 转成，见上一个用例的注释）。
-    # 届时改法二选一：断言改用 `提醒`，或改为断言 reason 里出现模块 7 的实际取值列表。
+    """非法类型必须把**合法取值列出来**，否则模型只能反复猜。
+
+    ⚠️ **2026-09-28 按本用例自己的 TODO 改写。**
+    原文断言 `"预约提醒" in result["reason"]`，而模块 7 真实实现的合法取值由
+    `"、".join(TONES)`（`notify_templates.py:182`）生成 ——
+    只有 **提醒 / 延期致歉 / 故障告警**，`"预约提醒"` **不在其中**（实测 `False`）。
+
+    用例注释当时给了两个改法；这里取第二种（**直接对着 `TONES` 断言**，
+    而不是把 `提醒` 抄成字面量）—— 抄字面量的话，将来模块 7 再加一种语气，
+    本用例会**因为漏抄而再红一次**；对着 `TONES` 断言则永远不会漂移。
+
+    `reason` 的来源：`resolve_tone` 抛 `ApiError(code=400)`，
+    再由 service 入口的 `try/except` 转成 `{"ok": False, "reason": str(exc)}`
+    （理由见上一个用例的注释：抛栈会打断 Agent 对话）。
+    """
+    from app.agent.prompts.notify_templates import TONES
+
     result = await generate_notification.coroutine(order_info=OrderInfo(notifyType="活动通知"))
 
     assert result["ok"] is False
-    assert "预约提醒" in result["reason"], "要告诉模型合法取值，否则它只能反复猜"
+    assert "活动通知" in result["reason"], "要把模型传错的那个值回显出来，它才知道自己发了什么"
+    for option in TONES:
+        assert option in result["reason"], f"没把合法取值 {option!r} 告诉模型，它只能反复猜"
 
 
 # ==========================================================================

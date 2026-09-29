@@ -10,7 +10,13 @@
     # 1. 灌入演示种子数据（场地、设备、用户、历史订单）—— 幂等，可重复执行
     python scripts/seed.py seed
 
-    # 2. 清空本脚本写入的数据后重新灌（不影响其它人写入的数据）
+    # 1b. 只体检、只读、不写库（推荐第一步）
+    python scripts/seed.py seed --dry-run
+
+    # 2. 清空本脚本写入的数据后重新灌
+    #     ⚠️ 若目标库装的是团队权威种子 docs/seed.sql，本命令会被**拒绝**：
+    #        两套数据不同名，--reset 会删一半留一半，把库变成混杂态。
+    #        见下方「为什么用 Python 而不是 docs/seed.sql」与 _guard_reset()。
     python scripts/seed.py seed --reset
 
     # 3. 用真实大模型跑一次端到端识别
@@ -188,16 +194,165 @@ def fail(text: str) -> None:
 
 
 # ===========================================================================
+# 护栏：识别「目标库装的是团队权威种子 docs/seed.sql」
+# ===========================================================================
+
+#: 团队权威种子 `docs/seed.sql` 里的标志性记录：(标签, 模型, 列, 标志值)
+#:
+#: 为什么需要它
+#: ------------
+#: 本脚本的 SEED_* 与 `docs/seed.sql` **是两套不同的数据** —— 场地名与用户名
+#: 的措辞都不同（"A栋2楼小会议室" vs "A栋201会议室"），设备是 5 行聚合 vs
+#: 15 行逐台。而 `_reset_seed_data()` 按**名字**匹配删除，于是它在一套数据上：
+#:
+#:     "A栋2楼小会议室"  != "A栋201会议室"    -> 删 0 条
+#:     "普通使用者"      != "普通用户"        -> 删 0 条
+#:     "系统管理员"      == "系统管理员"      -> **删中！**
+#:
+#: 删掉角色 3 后 `sys_user.admin`(role_id=3) 外键悬空；随后脚本再把本脚本那套
+#: 追加进去，库就变成 16 场地 / 20 设备的混杂态，**且全程没有任何报错**。
+#:
+#: 所以 `--reset` 前先认一次库：命中任一标志即认定装的是权威种子，默认拒绝。
+_AUTHORITATIVE_MARKERS: tuple[tuple[str, object, object, tuple[str, ...]], ...] = (
+    ("sys_user.username", SysUser, SysUser.username, ("zhangsan", "lisi", "admin")),
+    (
+        "space_resource.space_name",
+        SpaceResource,
+        SpaceResource.space_name,
+        ("A栋201会议室", "综合楼大礼堂"),
+    ),
+    (
+        "device_resource.device_name",
+        DeviceResource,
+        DeviceResource.device_name,
+        ("投影仪01", "直播设备02"),
+    ),
+)
+
+
+async def _detect_authoritative_seed(db) -> list[str]:
+    """
+    判断目标库装的是不是团队权威种子 `docs/seed.sql`。
+
+    参数：
+        db : AsyncSession 数据库会话
+
+    返回：
+        命中的证据描述列表；空列表表示未检出（多半是本脚本自己灌的那套）。
+
+    说明：探测失败（表不存在、权限不足）一律当作「未命中」，
+    不因为一次探测异常就阻断脚本的正常用法。
+    """
+    evidence: list[str] = []
+    for label, _model, column, values in _AUTHORITATIVE_MARKERS:
+        try:
+            rows = await db.execute(select(column).where(column.in_(values)))
+            found = set(rows.scalars().all())
+        except Exception:  # noqa: BLE001 - 探测失败不应阻断正常用法
+            continue
+        hit = [v for v in values if v in found]
+        if hit:
+            evidence.append(f"{label} 命中 {hit}")
+    return evidence
+
+
+async def _reset_impact(db) -> list[tuple[str, int, int]]:
+    """
+    统计 `--reset` 会命中哪些行（**只读，不删除**），用于执行前的影响面提示。
+
+    返回：
+        [(标签, 实际命中行数, 本脚本声明条数), ...]
+    """
+    checks = (
+        ("sys_role.role_name", SysRole, SysRole.role_name, [r["role_name"] for r in SEED_ROLES]),
+        ("sys_user.username", SysUser, SysUser.username, [u["username"] for u in SEED_USERS]),
+        (
+            "space_resource.space_name",
+            SpaceResource,
+            SpaceResource.space_name,
+            [s[0] for s in SEED_SPACES],
+        ),
+        (
+            "device_resource.device_name",
+            DeviceResource,
+            DeviceResource.device_name,
+            [d[0] for d in SEED_DEVICES],
+        ),
+    )
+    out: list[tuple[str, int, int]] = []
+    for label, model, column, values in checks:
+        try:
+            n = int(
+                (
+                    await db.execute(
+                        select(func.count()).select_from(model).where(column.in_(values))
+                    )
+                ).scalar()
+                or 0
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        out.append((label, n, len(values)))
+    return out
+
+
+def _guard_reset(evidence: list[str], *, assume_yes: bool, force: bool) -> bool:
+    """
+    `--reset` 的三道关。返回 True 表示放行。
+
+    第 1 关 环境：APP_ENV 不是开发环境一律拒绝，`--force` 也不放行。
+    第 2 关 权威种子：命中即默认拒绝，需显式 `--force`。
+    第 3 关 交互确认：需在终端输入 yes；非终端场景需显式 `--yes`。
+    """
+    if settings.APP_ENV.lower() not in ("dev", "development", "local", "test"):
+        fail(f"--reset 被拒绝：APP_ENV={settings.APP_ENV} 不是开发环境。")
+        say("         生产库禁止执行清空重灌。请把 APP_ENV 改回 dev，或改用 alembic 迁移。")
+        return False
+
+    if evidence and not force:
+        fail("--reset 被拒绝：目标库装的是团队权威种子 docs/seed.sql。")
+        say("         那份数据用固定 id 承载 5 个评审场景的前提（场景 A~E），")
+        say("         而本脚本的 SEED_* 与它不同名 —— 清空重灌会删一半留一半，")
+        say("         使场景前提全部失效，且不会有任何报错。")
+        say("         确需继续：先备份，再加 --force。")
+        return False
+
+    if not assume_yes:
+        try:
+            if not sys.stdin or not sys.stdin.isatty():
+                raise OSError("stdin 不是终端")
+        except Exception:  # noqa: BLE001
+            fail("--reset 需要交互确认，但当前不是终端。")
+            say("         若确认要执行，请加 --yes（CI / 批处理场景）。")
+            return False
+        answer = input("  即将删除本脚本认识的数据并重新灌入。确认请输入 yes：").strip()
+        if answer != "yes":
+            say("  已取消，未对数据库做任何修改。")
+            return False
+
+    return True
+
+
+# ===========================================================================
 # 子命令 1：seed —— 灌入种子数据
 # ===========================================================================
 
 
-async def cmd_seed(reset: bool) -> int:
+async def cmd_seed(
+    reset: bool,
+    *,
+    dry_run: bool = False,
+    assume_yes: bool = False,
+    force: bool = False,
+) -> int:
     """
     写入种子数据。
 
     参数：
-        reset : bool  True 表示先删除本脚本写入的数据再重新灌
+        reset      : bool  True 表示先删除本脚本写入的数据再重新灌
+        dry_run    : bool  True 表示只体检与算影响面，**完全不写库**
+        assume_yes : bool  True 表示跳过 `--reset` 的交互确认（CI / 批处理）
+        force      : bool  True 表示即使目标库装的是权威种子也允许 `--reset`
 
     返回：
         进程退出码（0 成功，1 失败）
@@ -206,9 +361,45 @@ async def cmd_seed(reset: bool) -> int:
         每条数据都用「自然键」判重（用户按 username、场地按 space_name、
         设备按 device_name、角色按 role_name），已存在就跳过。
         这样重复执行不会产生重复数据，也不会覆盖别人手工改过的内容。
+
+    护栏（2026-09-28 加）：
+        执行**任何写入之前**先打印目标库、再识别它装的是哪套种子、再算一遍
+        `--reset` 的影响面。`--reset` 还要过 `_guard_reset()` 的三道关。
+        理由见 `_AUTHORITATIVE_MARKERS` 上方那段。
     """
+    title("目标数据库")
+    say(f"  {settings.masked_database_url}")
+    say(f"  APP_ENV = {settings.APP_ENV}")
+
     async with AsyncSessionLocal() as db:
         try:
+            title("种子数据源识别")
+            evidence = await _detect_authoritative_seed(db)
+            if evidence:
+                warn("目标库装的是**团队权威种子** docs/seed.sql：")
+                for item in evidence:
+                    say(f"           · {item}")
+                say("           本脚本的 SEED_* 与它不是同一套数据（见文件头说明），")
+                say("           两套混灌会让评审场景前提失效。")
+            else:
+                ok("未检出团队权威种子的标志性记录 —— 目标库应是本脚本自己灌的那套。")
+
+            if reset:
+                title("--reset 影响面（仅统计，尚未删除）")
+                for label, hit, want in await _reset_impact(db):
+                    mark = "!!" if 0 < hit < want else "  "
+                    say(f"  {mark} {label:<30} 命中 {hit} / 本脚本声明 {want}")
+                say("       ^ 命中数 < 声明数 说明库里那部分数据**不是本脚本灌的**，")
+                say("         按名字删除会漏删，留下与本脚本新增数据混杂的中间态。")
+
+                if not _guard_reset(evidence, assume_yes=assume_yes, force=force):
+                    return 1
+
+            if dry_run:
+                title("--dry-run")
+                ok("以上为体检与影响面，**未对数据库做任何写入**。")
+                return 0
+
             if reset:
                 title("清理本脚本写入的数据")
                 await _reset_seed_data(db)
@@ -868,6 +1059,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="先删除本脚本写入的数据再重新灌（只删本脚本认识的那几条）",
     )
+    p_seed.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只体检并统计影响面，完全不写库（可与 --reset 联用，预览会删掉什么）",
+    )
+    p_seed.add_argument(
+        "--yes",
+        action="store_true",
+        help="跳过 --reset 的交互确认（CI / 批处理场景）",
+    )
+    p_seed.add_argument(
+        "--force",
+        action="store_true",
+        help="⚠️ 即使目标库装的是团队权威种子 docs/seed.sql 也允许 --reset",
+    )
 
     # ---- test ----
     p_test = sub.add_parser("test", help="端到端识别自测")
@@ -902,7 +1108,12 @@ async def main_async(args) -> int:
         if args.command == "check":
             return await cmd_check()
         if args.command == "seed":
-            return await cmd_seed(reset=args.reset)
+            return await cmd_seed(
+                reset=args.reset,
+                dry_run=args.dry_run,
+                assume_yes=args.yes,
+                force=args.force,
+            )
         if args.command == "test":
             return await cmd_test(
                 image_path=args.image,

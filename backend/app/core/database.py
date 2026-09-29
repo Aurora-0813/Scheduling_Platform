@@ -156,10 +156,45 @@ async_engine = create_async_engine(
             "pool_size": 5,
             "max_overflow": 10,
             "pool_recycle": 3600,
-            # 建连超时。不设时隧道未启动 / 云库不可达要等操作系统的 TCP 超时，
+            # `connect_timeout` 与 `init_command` 都是 **asyncmy（DBAPI）** 的参数，
+            # 不是 SQLAlchemy 的引擎参数，因此只能塞进 `connect_args` 透传下去；
+            # 写在 `connect_args` 外层会被 create_engine 直接拒绝：
+            #   TypeError: Invalid argument(s) 'connect_timeout','init_command'
+            #              sent to create_engine()
+            #
+            # ---- 建连超时 ----
+            # 不设时隧道未启动 / 云库不可达要等操作系统的 TCP 超时，
             # 表现为进程启动卡住、`GET /ready` 长时间无响应。
-            # `connect_timeout` 是 asyncmy 的参数，因此只能走 connect_args。
-            "connect_args": {"connect_timeout": settings.DB_CONNECT_TIMEOUT},
+            #
+            # ---- 会话时区钉死 +08:00（2026-09-30 修，**不是可选优化**）----
+            #
+            # 云库跑在 Docker 里，容器 OS 时区是 **UTC**，于是
+            # `@@global.time_zone = SYSTEM` → `NOW()` 返回 UTC。
+            # 而本项目的时间契约是「全链路 Asia/Shanghai 的 naive datetime」
+            # （见 `app/utils/time_utils.py`），`now()` 取的是**进程本地时间**。
+            #
+            # 两者混用会造成**同一行里两个时钟**：
+            #   `start_time` / `end_time`  由应用写  → 北京（应用进程）
+            #   `create_time` / `update_time` 由 `DEFAULT (now())` 写 → UTC（库会话）
+            # 实测差值 **-8.0 小时**。2026-09-29 已出现「`update_time` 比
+            # `create_time` 早 22 天」这种物理上不可能的数据。
+            #
+            # 为什么用 `init_command` 而不是别的：
+            #   - `SET GLOBAL time_zone` 需要 SYSTEM_VARIABLES_ADMIN，`smart_dev`
+            #     账号只有 USAGE + 库级 ALL，**根本无权**；且重启即失效。
+            #   - 改容器 `TZ` / my.cnf 要动服务器，且影响所有连这个库的人。
+            #   - `init_command` 只在**本应用自己的每条连接**上生效，可逆（删掉即回退）、
+            #     零特权、不动任何服务器配置。
+            # asyncmy 确实支持它（`connection.pyx`：`if self._init_command is not None:
+            # await self.query(...)`），SQLAlchemy 会把 connect_args 原样透传给 DBAPI。
+            #
+            # 注意：DATETIME 列本身**不做**时区换算，写什么存什么；这条改的是
+            # `now()` / `CURRENT_TIMESTAMP` 的求值基准，也就是让两个时钟对齐。
+            # 改完**必须重启后端**（引擎在 import 时创建）。
+            "connect_args": {
+                "connect_timeout": settings.DB_CONNECT_TIMEOUT,
+                "init_command": "SET time_zone='+08:00'",
+            },
         }
     ),
 )

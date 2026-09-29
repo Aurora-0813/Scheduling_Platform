@@ -13,14 +13,15 @@
         <!-- 需求回显：让用户确认 AI 理解的是不是自己说的 -->
         <view v-if="request" class="req">
           <text class="rq">你的需求</text>
-          <text class="rt">{{ request }}</text>
+          <!-- user-select：长文本可长按复制，否则开发者工具会提示，用户也没法拷走 -->
+          <text class="rt" :user-select="true">{{ request }}</text>
         </view>
 
         <view v-for="s in visibleSteps" :key="s.step" class="mbstep">
           <view class="tnum" :class="toneOf(s)">{{ s.step }}</view>
           <view class="txt">
             <text class="ss">{{ s.title }}</text>
-            <text>{{ s.body }}</text>
+            <text :user-select="true">{{ s.body }}</text>
 
             <!-- 工具调用回显。actionInput 的键是 snake_case（后端 Tool 签名原样回显），
                  这里不做字段解析，整串展示 -->
@@ -133,7 +134,9 @@ async function start() {
   visibleCount.value = 0
 
   try {
-    const data = await runSchedule(agentStore.request)
+    // 必须把 imageContext 一起传：拍照识场识别到的场地（含 spaceId）就走这条路
+    // 进 Agent，只传 text 会让它从一句话里重新猜场地
+    const data = await runSchedule(agentStore.request, agentStore.imageContext)
     steps.value = normalizeTrace(data.trace)
     reveal()
   } catch (e) {

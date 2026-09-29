@@ -191,7 +191,9 @@ def test_scan_requires_a_token(monkeypatch, client_with_llm, session, patch_scop
 
     body = client_with_llm.get("/api/v1/conflicts/scan").json()
 
-    assert body["code"] == 401
+    # ⚠️ 2026-09-28 修正：团队规范里「缺少认证令牌」= **40101**（`TOKEN_MISSING`），
+    # `code` 是 5 位业务码，不是 HTTP 数字（《规范》5.2）。
+    assert body["code"] == 40101
     assert body["data"] is None
 
 
@@ -206,7 +208,8 @@ def test_scan_rejects_a_malformed_authorization_header(
         body = client_with_llm.get(
             "/api/v1/conflicts/scan", headers={"Authorization": header}
         ).json()
-        assert body["code"] == 401, f"错误的头未被拦截：{header!r}"
+        # 这些头都取不出凭据（scheme 不匹配 / 令牌为空）→ 40101 `TOKEN_MISSING`
+        assert body["code"] == 40101, f"错误的头未被拦截：{header!r}"
 
 
 def test_scan_rejects_a_forged_token(monkeypatch, client_with_llm, session, patch_scope):
@@ -222,7 +225,8 @@ def test_scan_rejects_a_forged_token(monkeypatch, client_with_llm, session, patc
         "/api/v1/conflicts/scan", headers=auth_header(forged)
     ).json()
 
-    assert body["code"] == 401
+    # 签名不对 → 40102 `TOKEN_INVALID`（与 40101「缺少令牌」区分开）
+    assert body["code"] == 40102
 
 
 def test_scan_rejects_an_expired_token(
@@ -237,8 +241,9 @@ def test_scan_rejects_an_expired_token(
         "/api/v1/conflicts/scan", headers=auth_header(expired)
     ).json()
 
-    assert body["code"] == 401
-    assert "失效" in body["message"] or "登录" in body["message"]
+    # 已过期 → 40103 `TOKEN_EXPIRED`
+    assert body["code"] == 40103
+    assert "过期" in body["message"] or "失效" in body["message"] or "登录" in body["message"]
 
 
 def test_scan_accepts_a_token_without_a_role_claim(
@@ -256,7 +261,7 @@ def test_scan_accepts_a_token_without_a_role_claim(
     assert body["code"] == 200
 
 
-def test_health_endpoint_still_works(client):
-    body = client.get("/api/v1/health").json()
+def test_health_endpoint_still_works(sync_client):
+    body = sync_client.get("/api/v1/health").json()
     assert body["code"] == 200
     assert body["data"]["status"] == "ok"

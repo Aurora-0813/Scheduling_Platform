@@ -41,8 +41,13 @@ STATS = {
 # ⚠️ `degraded` 于 2026-09-28 追加到**末尾**（原 B1 待办：/stats 库不可达兜底）。
 #    前四个字段的位置一个没动 —— 前端按顺序渲染，挪位置才算破坏契约；
 #    往后追加是新字段，但**仍属契约变更，需通知前端**。
+# ⚠️ 2026-09-28 修正：`message` 由 `"ok"` 改为 `"操作成功"`。
+#    原字面量写的是 `"ok"`，但实现（`app/core/response.py` 的 `ok()`）与
+#    《规范》5.2 的原文都是 `"message": "操作成功"`；`app/api/v1/dashboard.py`
+#    走的是 `success(data)` → 默认文案「操作成功」。实测响应确为 `"操作成功"`，
+#    故本条基线**当初就写错了**（模块 8 交付时该用例从未跑通过，见文件头说明）。
 EXPECTED_STATS_TEXT = (
-    '{"code":200,"message":"ok","data":{"spaceUsageRate":46.7,"deviceIdleRate":20.0,'
+    '{"code":200,"message":"操作成功","data":{"spaceUsageRate":46.7,"deviceIdleRate":20.0,'
     '"peakHours":[{"hour":14,"count":5},{"hour":9,"count":3}],'
     '"faultFrequency":[{"deviceName":"投影仪A","count":3}],"degraded":false}}'
 )
@@ -138,17 +143,36 @@ def test_C4_days原样透传到服务层(client, recorded_days, days):
 
 
 @pytest.mark.parametrize("days", ["0", "91", "-1", "abc"])
-def test_C5_越界与非法days被422拦下(client, recorded_days, days):
+def test_C5_越界与非法days被400拦下(client, recorded_days, days):
     """
-    C5：`0` / `91` / `-1` / `abc` → 全部 422。
+    C5：`0` / `91` / `-1` / `abc` → 全部 **HTTP 400 + code 40001**。
 
     `0` 与 `91` 是**边界外**（范围 1–90，闭区间），`abc` 是类型错。
     关键在于：非法请求**不得**落到服务层 —— 否则会拿脏参数去查库。
+
+    ⚠️ **2026-09-28 修正：断言由 422 改为 400。**
+    本条原先断言 422（FastAPI 的默认行为），但**团队在合并时把这个默认改掉了** ——
+    `app/core/response.py` 的 `RequestValidationError` 处理器统一返回
+    「HTTP 400 + `code=40001`」，这是全项目口径，不只本模块：
+
+        docs/api.md:191          「参数校验失败是 HTTP 400 + code=40001」
+        docs/api.md:27           HTTP 按语义返回真实状态（… 参数校验失败 400 …）
+        docs/PR-integrate-module3.md:28
+                                 「Pydantic 校验失败 → 400 / 40001（团队把 FastAPI 默认的 422 改掉了）」
+                                 「422 → 400，测试同步」
+        docs/团队仓库合并冲突比对.md:738-739
+                                 「即 Pydantic 校验失败取『HTTP 400 + 业务码 40001』这条」
+
+    注意这会连带影响**全局**：改成 422 会打坏 test_response_envelope / test_auth_api
+    等一批断言 400 的用例。所以改的是本条，不是处理器。
+    `docs/api-dashboard.md` 与本模块 `app/api/v1/dashboard.py` 的 docstring 里
+    残留的「422」措辞同样是旧口径，属文档待同步项。
     """
     response = client.get(STATS_PATH, params={"days": days})
 
-    assert response.status_code == 422
-    assert recorded_days == [], "被 422 拦下的请求不应触达服务层"
+    assert response.status_code == 400
+    assert response.json()["code"] == 40001
+    assert recorded_days == [], "被参数校验拦下的请求不应触达服务层"
 
 
 # ============================================================

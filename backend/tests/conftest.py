@@ -104,7 +104,8 @@ os.environ["SQL_ECHO"] = "false"
 # 也不能只给第一行加（E402 逐行报），所以整段显式标注。
 
 from collections.abc import AsyncGenerator, Callable, Iterator  # noqa: E402
-from datetime import datetime, timedelta  # noqa: E402
+from datetime import datetime, time, timedelta  # noqa: E402
+from decimal import Decimal  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
 
@@ -852,8 +853,24 @@ def _db_readonly_guard() -> Any:
 
     只挂应用侧的全局引擎：上面那套离线夹具用的 SQLite 引擎是各用例自建的，
     不该被本护栏牵连（它们本来就该能写自己的临时库）。
+
+    ⚠️ **2026-09-28 修正：全局引擎已是临时 SQLite 时必须整体让路。**
+    上面那句「各用例自建的 SQLite 引擎」只对**一半**用例成立 ——
+    `tests/module3/conftest.py` 的 `_fresh_db` 夹具是**故意**用模块级
+    `async_engine`（以及 `AsyncSessionLocal`）来做 `drop_all + create_all` 并灌种子的，
+    见该文件 :106-122 与 `tests/conftest.py` 顶部 :74-85 的说明。
+    而本文件顶部把 `DATABASE_URL` 强制指向临时 SQLite，所以那个全局引擎**不是云库** ——
+    「污染开发库」这个被保护的对象根本不存在，继续拦截却会让 module3 目录下
+    全部 147 个用例在 setup 阶段 ERROR（实测）。
+    因此把拦截条件收紧为「全局引擎确实指向 MySQL」：那时它才真是开发库，
+    拦截才有意义，也才守得住 6.8 的红线。
     """
     from app.core.database import async_engine
+
+    if settings.database_url.startswith("sqlite"):
+        # 全局引擎 = 临时 SQLite（测试默认形态）。没有开发库可保护，放行。
+        yield []
+        return
 
     written: list[str] = []
 
@@ -1240,3 +1257,349 @@ def multimodal_llm():
         {"type": "text", "text": '"content": "分段正文内容。"}'},
     ]
     return FakeMessagesListChatModel(responses=[AIMessage(content=blocks)] * 3)
+
+
+# ===========================================================================
+# 模块 8（AI 数据洞察面板）夹具 —— **2026-09-28 重建**
+# ===========================================================================
+# 为什么是「重建」而不是「搬迁」：
+#   `d8a73f1`（模块 8 交付）**只提交了测试文件**，这 4 个夹具从未进入任何提交 ——
+#   `git log --all -S "def sample_stats"` 与 `-S "def empty_window_stats"` 均零命中，
+#   该提交自己的 `backend/tests/conftest.py` 里也没有它们。
+#   它们当时留在作者本机**未提交**的 conftest 中，于是
+#   test_ai_resilience / test_api_contract / test_business_bounds / test_report_export
+#   四个文件在 setup 阶段就 ERROR（`fixture 'sample_stats' not found`），实测约 43 例。
+#
+# 下面每个夹具的取值都**照抄用例里写死的规格**，出处逐条注明，没有一处凭感觉定。
+# 若将来发现与用例期望不符：先改这里有注释的规格，不要去改用例的断言。
+
+
+@pytest.fixture
+def sample_stats() -> dict[str, Any]:
+    """模块 8 的「有数据」stats 素材。
+
+    规格出处：`tests/test_business_bounds.py:28-29` 的注释 ——
+        sample_stats = 46.7 / 20.0 / peakHours(14, 5) / faultFrequency(3) + days 7
+
+    这些数字同时被同文件的 `VALID_ROWS`（:31-35）逐条引用：
+        「近 7 天场地使用率 46.7%」        → days 7 + spaceUsageRate 46.7
+        「闲置率 20.0%，14 点有 5 条预约」  → deviceIdleRate 20.0 + peakHours{14, 5}
+        「设备「投影仪A」故障 3 单居首」     → faultFrequency{投影仪A, 3}
+
+    `_collect_allowed_numbers` 递归收集**所有**值进白名单，故不必为白名单额外增删字段。
+    键名一律 camelCase：`dashboard_ai_service` 全程按 `stats.get("spaceUsageRate")` 取值。
+    """
+    return {
+        "spaceUsageRate": 46.7,
+        "deviceIdleRate": 20.0,
+        "peakHours": [{"hour": 14, "count": 5}],
+        "faultFrequency": [{"deviceName": "投影仪A", "count": 3}],
+        "degraded": False,
+    }
+
+
+@pytest.fixture
+def empty_window_stats() -> dict[str, Any]:
+    """模块 8 的「窗口内无数据」stats 素材。
+
+    规格出处：`tests/test_ai_resilience.py:307-308`（D14 的 docstring）——
+        「`spaceUsageRate=0 / deviceIdleRate=100` 是**看似具体**的数字，
+          但「没有数据」和「资源闲置」是两回事，不得输出「严重闲置」这类业务结论」
+    以及 `dashboard_ai_service.py:422` ——
+        「窗口内无数据时，spaceUsageRate 会是 0、deviceIdleRate 会是 100」
+
+    两个列表都为空 → `_has_window_data()` 返回 False →
+    `_degraded_suggestions()` 走「不输出误导性结论」分支，只给 1 条。
+    """
+    return {
+        "spaceUsageRate": 0.0,
+        "deviceIdleRate": 100.0,
+        "peakHours": [],
+        "faultFrequency": [],
+        "degraded": False,
+    }
+
+
+@pytest.fixture
+def no_llm_key(monkeypatch) -> Any:
+    """把 `LLM_API_KEY` 清空，逼出**真实降级路径**。
+
+    规格出处：`tests/test_report_export.py:208-210`——
+        「走的是**真实降级路径**（`no_llm_key` → `_build_llm` 抛 `_LLMUnavailable`），
+          刻意**不**装假模型 —— 装了假模型就等于绕过 `_build_llm` 的 key 检查，
+          `degraded` 会是 false，这条用例就测不到降级分支了」
+    实现依据：`dashboard_ai_service.py:316-317`——
+        `if not settings.LLM_API_KEY: raise _LLMUnavailable(...)`
+
+    **只 monkeypatch 设置项，不替换任何函数** —— 这正是用例要的语义。
+    写法与 `tests/test_agent_schedule.py:1006` 等处一致。
+    """
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "LLM_API_KEY", "")
+    return settings
+
+
+@pytest.fixture
+def export_dir(tmp_path, monkeypatch):
+    """把 CSV 导出目录指向临时路径。**刻意不创建目录**。
+
+    规格出处：`tests/test_report_export.py:277-278`——
+        「**要自己建目录** —— `export_dir` fixture 只把 EXPORT_DIR 指到临时路径，
+          并不创建它（平时由 `write_report_csv` 自己 mkdir）」
+
+    两点因此不能动：
+    1. 必须返回 `Path` —— 用例做 `export_dir / url.rsplit("/", 1)[1]`；
+    2. **不能 mkdir** —— 否则 `test_E5` 就验不出「落盘时自己建目录」这件事了。
+    """
+    from app.services import dashboard_export_service as export_svc
+
+    target = tmp_path / "exports"
+    monkeypatch.setattr(export_svc, "EXPORT_DIR", target)
+    return target
+
+
+# ===========================================================================
+# §6.9 参考种子数据 —— 模块 4（核心调度 Agent）的 Tool 层用例需要
+# ===========================================================================
+# 为什么需要它：
+#   `tests/test_agent_tools.py` 的 `AGENT-U-02` / `AGENT-U-03` / `lock_resources`
+#   共 12 例**直接调用真实 service**（`query_devices` / `query_spaces` /
+#   `lock_resources`），断言的是 §6.9 种子数据的**真实 id 与状态**：
+#       展厅 id=4（cap 50）/ id=5（cap 35）
+#       设备 id=12 无人机01（status=1, avail=2）/ id=13 无人机02（status=2, avail=1）
+#            id=14 直播设备01（avail=1）/ id=15 直播设备02（status=1, avail=0）
+#       `reserve_order` id=9 占着 space 4 的 2026-10-15 13:00~17:00（status=1）
+#   而离线测试库是空的 → 断言全崩（`assert {2} == {4, 5}` / `KeyError: 13` …）。
+#
+# 数据来源：**`docs/seed.sql`（§6.9 的唯一真源）**，逐行誊写，未做任何"顺手优化"。
+#
+# ⚠️ 为什么**不用** `backend/scripts/seed.py` 的 `SEED_SPACES` / `SEED_DEVICES`：
+#   它与 `docs/seed.sql` **是两套不同的数据**，实测差异：
+#       · 场地：scripts 的 id=4 是 cap40/¥980、id=5 是 cap25 的"A栋1楼临展厅"；
+#               seed.sql 的 id=4 是 cap50/¥800、id=5 是 cap35 的"C栋1楼展厅"
+#       · 设备：scripts 用 **5 行**（total_count 表达 15 台）；
+#               seed.sql 用 **15 行**、每行 total_count=1
+#   而用例断言的是 seed.sql 那一套。这个不一致是仓库里**既有的**问题
+#   （`scripts/check_data.py` 的量纲判定对它俩会给出相反结论），本次不改它。
+#
+# ⚠️ 为什么每次用例都**重建**（而不是"灌一次就够"）：
+#   `tests/module3/conftest.py::_fresh_db` 是 autouse 的，它对**同一个全局引擎**
+#   做 `drop_all + create_all` 并灌自己的迷你种子（2 场地 / 2 设备）。
+#   两边共用 `tests/conftest.py` 顶部的那个临时 SQLite 文件，
+#   所以谁先跑谁后跑会互相覆盖 —— 只有**每次重建**才能保证 id 与状态确定。
+#   代价是该文件 31 例各多一次建库（SQLite 上约百毫秒级），**用确定性换时间，值得**。
+
+#: 角色（`docs/seed.sql` 第 27-30 行）
+_REFERENCE_ROLES = (
+    (1, "普通用户", ["space:query", "device:query", "order:add", "order:list", "order:cancel"]),
+    (2, "管理员", ["space:*", "device:*", "order:*", "inspect:*", "ticket:*"]),
+    (3, "系统管理员", ["*"]),
+)
+
+#: 用户（`docs/seed.sql` 第 36-39 行）。
+#: 口令哈希对应明文 `Demo@123`（开发库专用演示口令，见 `docs/database.md` 8.2）。
+#: 这里**不写明文**，只带哈希 —— 用例不依赖登录，带哈希只为让数据与真库一致。
+_REFERENCE_PASSWORD_HASH = "$2b$12$WPAzHZb7EolabiZR5BLNMeZs1iYXMklXA9S0GRF4B4soj3Jmh45N."
+_REFERENCE_USERS = (
+    (1, "zhangsan", 1),
+    (2, "lisi", 2),
+    (3, "admin", 3),
+)
+
+#: 场地（`docs/seed.sql` 第 50-63 行）。
+#: 会议室 ×3 / 展厅 ×2 / 多功能厅 ×2 / 户外 ×1。
+#: ⚠️ 三条被评审场景反向约束的数值，**改任何一个都会让用例失效**：
+#:   a) 会议室最大容量 30 < 40          → 场景 B「拆分」的前提
+#:   b) 无「容量 ≥40 且预算 ≤500」的场地 → 场景 D「需求矛盾」的前提
+#:   c) id=4 容量 50 / 预算 800          → 场景 A「预算降级」的落点
+_REFERENCE_SPACES = (
+    (1, "A栋201会议室", 1, 12, "A栋2楼东侧", Decimal("200.00"), time(8, 0), time(22, 0)),
+    (2, "A栋305会议室", 1, 20, "A栋3楼西侧", Decimal("300.00"), time(8, 0), time(22, 0)),
+    (3, "B栋102会议室", 1, 30, "B栋1楼大厅旁", Decimal("450.00"), time(8, 0), time(22, 0)),
+    (4, "A栋3楼展厅", 2, 50, "A栋3楼中庭", Decimal("800.00"), time(9, 0), time(21, 0)),
+    (5, "C栋1楼展厅", 2, 35, "C栋1楼入口", Decimal("600.00"), time(9, 0), time(21, 0)),
+    (6, "综合楼大礼堂", 3, 80, "综合楼1楼", Decimal("1500.00"), time(8, 0), time(22, 0)),
+    (7, "综合楼小多功能厅", 3, 25, "综合楼2楼", Decimal("400.00"), time(8, 0), time(22, 0)),
+    (8, "中心广场", 4, 100, "园区中心", Decimal("1000.00"), time(6, 0), time(23, 0)),
+)
+
+#: 设备（`docs/seed.sql` 第 83-104 行）：投影仪×4 / 音响×4 / 显示屏×3 / 无人机×2 / 直播设备×2。
+#: ⚠️ id=13 与 id=15 是「过滤条件必须真的滤掉东西」的**两个独立见证者**，
+#:    **必须互相独立**（否则漏写任一过滤条件的查询会"碰巧"排除掉它，用例抓不到 bug）：
+#:      id=13：device_status=2 但 available_count=1 → 只被「状态」分支筛掉
+#:      id=15：device_status=1 但 available_count=0 → 只被「可用数」分支筛掉
+_REFERENCE_DEVICES = (
+    (1, "投影仪01", "投影仪", 1, 1, 1),
+    (2, "投影仪02", "投影仪", 1, 1, 1),
+    (3, "投影仪03", "投影仪", 1, 1, 1),
+    (4, "投影仪04", "投影仪", 1, 1, 1),
+    (5, "音响01", "音响", 1, 1, 1),
+    (6, "音响02", "音响", 1, 1, 1),
+    (7, "音响03", "音响", 1, 1, 1),
+    (8, "音响04", "音响", 1, 2, 2),
+    (9, "LED显示屏01", "显示屏", 1, 1, 1),
+    (10, "LED显示屏02", "显示屏", 1, 1, 1),
+    (11, "LED显示屏03", "显示屏", 1, 1, 1),
+    (12, "无人机01", "无人机", 1, 2, 2),
+    (13, "无人机02", "无人机", 2, 1, 1),
+    (14, "直播设备01", "直播设备", 1, 1, 1),
+    (15, "直播设备02", "直播设备", 1, 1, 0),
+)
+
+#: 历史预约（`docs/seed.sql` 第 122-138 行）：10 条，覆盖 4 种状态。
+#: 📌 演示基准日 **2026-10-15**。id=7~10 是场景 C 的关键（四台投影仪在该日
+#:    13:00~17:00 被占满）；id=5/6 是场景 E 的关键（同用户同场地同日连开两场）。
+#: 📌 `agent_trace` 一律留 None：这批数据早于 Agent 上线，编造假 trace 会误导前端联调。
+#: 📌 **id=9（space 4, 13:00~17:00, status=1）是 `test_lock_resources_time_conflict_is_retryable`
+#:    依赖的那一条** —— 它必须占位，且 space 4 在该时段不能有别的占用。
+_REFERENCE_ORDERS = (
+    # (id, user_id, space_id, device_ids, start, end, status, agent_request)
+    (1, 1, 3, [1], "2026-10-08 09:00:00", "2026-10-08 11:00:00", 4,
+     "下周找个30人的会议室开部门例会，需要投影"),
+    (2, 1, 1, [5], "2026-10-09 14:00:00", "2026-10-09 16:00:00", 4,
+     "小会议室，12人左右，要个音响"),
+    (3, 2, 4, [9], "2026-10-12 10:00:00", "2026-10-12 12:00:00", 3,
+     "展厅办个小型产品体验，配一块屏幕"),
+    (4, 3, 6, [], "2026-10-13 09:00:00", "2026-10-13 17:00:00", 2,
+     "大礼堂全天，全员大会"),
+    (5, 1, 2, [6], "2026-10-15 09:00:00", "2026-10-15 12:00:00", 2,
+     "15号上午A栋305开个20人的评审会，要音响"),
+    (6, 1, 2, [7], "2026-10-15 13:00:00", "2026-10-15 17:00:00", 1,
+     "还是同一天下午，同一个房间，接着开"),
+    (7, 2, 1, [1], "2026-10-15 13:00:00", "2026-10-15 17:00:00", 2,
+     "A栋201下午培训，需要投影仪"),
+    (8, 2, 3, [2], "2026-10-15 13:00:00", "2026-10-15 17:00:00", 2,
+     "B栋102下午客户对接，需要投影仪"),
+    (9, 3, 4, [3], "2026-10-15 13:00:00", "2026-10-15 17:00:00", 1,
+     "A栋3楼展厅下午布展，需要投影仪"),
+    (10, 3, 5, [4], "2026-10-15 13:00:00", "2026-10-15 17:00:00", 2,
+     "C栋1楼展厅下午路演，需要投影仪"),
+)
+
+
+def _insert_reference_seed(session) -> None:
+    """把上面的常量写进会话（**显式 id**，与 `docs/seed.sql` 一致）。"""
+    from app.models import DeviceResource, ReserveOrder, SpaceResource, SysRole, SysUser
+
+    # 角色必须最先：sys_user.role_id 指向它
+    session.add_all(
+        SysRole(id=rid, role_name=name, permissions=perms)
+        for rid, name, perms in _REFERENCE_ROLES
+    )
+    session.add_all(
+        SysUser(
+            id=uid,
+            username=username,
+            password=_REFERENCE_PASSWORD_HASH,
+            role_id=role_id,
+            status=1,
+        )
+        for uid, username, role_id in _REFERENCE_USERS
+    )
+    session.add_all(
+        SpaceResource(
+            id=sid,
+            space_name=name,
+            space_type=stype,
+            capacity=capacity,
+            location=location,
+            budget=budget,
+            open_start_time=open_start,
+            open_end_time=open_end,
+            status=1,
+        )
+        for sid, name, stype, capacity, location, budget, open_start, open_end in _REFERENCE_SPACES
+    )
+    session.add_all(
+        DeviceResource(
+            id=did,
+            device_name=name,
+            device_type=dtype,
+            device_status=status,
+            total_count=total,
+            available_count=available,
+        )
+        for did, name, dtype, status, total, available in _REFERENCE_DEVICES
+    )
+    session.add_all(
+        ReserveOrder(
+            id=oid,
+            user_id=user_id,
+            space_id=space_id,
+            device_ids=device_ids,
+            start_time=datetime.strptime(start, "%Y-%m-%d %H:%M:%S"),
+            end_time=datetime.strptime(end, "%Y-%m-%d %H:%M:%S"),
+            order_status=status,
+            agent_request=request,
+            agent_trace=None,
+        )
+        for oid, user_id, space_id, device_ids, start, end, status, request in _REFERENCE_ORDERS
+    )
+
+
+@pytest.fixture
+def reference_seed() -> None:
+    """把 §6.9 参考种子灌进「当前 `DATABASE_URL` 指向的库」（**每次重建**）。
+
+    用法：`tests/test_agent_tools.py` 顶部一句
+    `pytestmark = pytest.mark.usefixtures("reference_seed")`。
+
+    为什么是**同步**夹具：该文件里 25 个用例是 `async def`、另有 6 个纯 guard 用例是
+    `def`。异步夹具无法被同步用例接受，所以这里用 `asyncio.run()` 在夹具内部完成建库，
+    这样两类用例都能挂同一个 `pytestmark`。
+
+    为什么用**独立引擎 + `NullPool`**（而不是复用 `app.core.database.async_engine`）：
+    `asyncio.run()` 会新建一个临时事件循环，而 aiosqlite/asyncmy 的**连接与创建它的
+    loop 绑定**（这条在 `pytest.ini` 里被专门警告过 —— 那里解释为什么
+    `asyncio_default_test_loop_scope` 不能从 session 改成 function）。
+    若用 app 的引擎建连接、再留给 session 级 loop 的用例去用，就可能报
+    `network operation failed` 之类的灵异错误。用一次性引擎并在 `finally` 里
+    `dispose()`，连接随临时 loop 一起消失，两边互不干扰。
+    """
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from app.core.config import settings
+    from app.core.database import Base
+
+    # 不在这里再 `import app.models` —— 本文件顶部第 123 行已经导入过，
+    # 再导一次 ruff 会判 F811「重复定义」。模型注册是**模块级**副作用，
+    # 那时就已经生效了。
+    url = settings.database_url
+    if not url.startswith("sqlite"):
+        # ---- MySQL（云库）模式：**让路，不灌** ----------------------------
+        # 两条理由：
+        #   1. **安全闸**：本夹具会执行 `drop_all`，绝不能对云库做 ——
+        #      那会清掉 §6.9 种子数据，而它正是另一个文件全部断言的基准。
+        #   2. **本来就不该灌**：云库上的 §6.9 数据由 `docs/seed.sql` 导入，
+        #      是**真实数据**；再灌一份既多余又会撞主键。
+        #
+        # ⚠️ **这里故意不 `pytest.skip`**（2026-09-29 由 skip 改为 return）：
+        #    跳过会让 31 个用例在云库模式下**全部变成 skipped** ——
+        #    报告上看起来像"没跑"，而不是"跑了并通过"，掩盖真实状态。
+        #    改成让路之后，同一套用例在两种模式下都自洽：
+        #        SQLite 模式 → 夹具重建库并灌 §6.9 数据
+        #        MySQL 模式  → 夹具不动，用例直接用库里已有的 §6.9 数据
+        return
+
+    async def _reset_and_seed() -> None:
+        engine = create_async_engine(
+            url,
+            poolclass=NullPool,
+            connect_args={"check_same_thread": False},
+        )
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.drop_all)
+                await conn.run_sync(Base.metadata.create_all)
+            factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with factory() as session:
+                _insert_reference_seed(session)
+                await session.commit()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_reset_and_seed())

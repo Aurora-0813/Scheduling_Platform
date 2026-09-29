@@ -17,7 +17,7 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Protocol
 
 from sqlalchemy import select
@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.notification import NotifyMessage
+from app.utils.time_utils import now
 
 logger = logging.getLogger(__name__)
 
@@ -204,8 +205,23 @@ class DbDedup:
     """
     数据库判重兜底。
 
-    表内没有指纹列也不能加列，因此按 (接收人, 模板标题, TTL 内) 近似判重：
-    模板标题里含规则名与场地/设备名，足以区分同一个收件人的不同冲突。
+    表内没有指纹列也不能加列，因此按 **(接收人, 标题, TTL 内)** 近似判重。
+
+    ⚠️ **这条路径依赖「写库时存的就是 `template_title`」（2026-09-30 修）。**
+    在此之前 `generate_and_dispatch` 存的是 AI 生成的标题，与本函数查的
+    `template_title` 永远不相等 —— 于是这条兜底路径**恒判定为「首次，可以推送」**，
+    去重完全失效，`space_idle` 每轮扫描都会重推一遍同样的场地。
+    写侧已改为存模板标题，两侧现在对得上。
+
+    判重键里的 `title` 由 `notify_service.build_dedup_title()` 产出：
+    模板标题 **+ 冲突身份（订单号 / 场地名）**。这一层不能省 ——
+    管理员的模板标题是 `【预约提醒·汇总】{rule_label}`，**不含场地名**，
+    单靠它会让「中心广场闲置」和「综合楼小多功能厅闲置」撞成同一个键，
+    第 2 块场地起被静默漏报（把「刷屏」换成「漏报」）。
+    已知的近似之处：该键仍**不含 `rule_code`**，所以同一场地在 TTL(24h) 内
+    若命中两条不同规则，只有第一条会推送；实践上 `space_idle` 与 `space_overuse`
+    互斥（闲置＝近期无预约，过度占用＝单日长时间占用）。
+    要精确到规则级需要给表加指纹列，而该表结构冻结。
     """
 
     name = BACKEND_DB
@@ -219,7 +235,10 @@ class DbDedup:
         )
 
     async def claim(self, key: DedupKey) -> bool:
-        cutoff = datetime.now() - timedelta(seconds=self._ttl)
+        # 用项目统一的时间源，不要直接 datetime.now()：云库会话时区已被
+        # core/database.py 钉成 +08:00，create_time 是北京时间，
+        # 比较基准必须同源，否则 TTL 窗口整体偏移（见 docs/spec/后端改动1.md §5.24）。
+        cutoff = now() - timedelta(seconds=self._ttl)
         stmt = (
             select(NotifyMessage.id)
             .where(

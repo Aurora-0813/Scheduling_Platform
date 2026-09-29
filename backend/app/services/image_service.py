@@ -175,8 +175,10 @@ async def analyze_space_image(
         # 场地都没匹配上，模型自评的 0.99 毫无意义 —— 必须归零，
         # 否则前端会显示「99% 置信度但没识别出场地」这种自相矛盾的结果
         confidence = 0.0
-    elif confidence == 0.0 and parsed.spaceId is not None:
-        # 模型确实选了场地却忘了给置信度：给一个保守值，逼出人工确认
+    elif confidence == 0.0:
+        # 最终匹配上了场地（不管走的是 id / 名称 / 门牌原文哪一步），
+        # 但模型自己没给置信度：补一个保守值，逼出人工确认。
+        # 原条件写在 parsed.spaceId is not None 上，会漏掉「靠 rawText 兜底命中」这条路径。
         confidence = 0.5
 
     # 6.2 追问判定：两条触发条件取「或」
@@ -537,6 +539,103 @@ def _validate_json_text(text: str, schema: type[RecognitionT]) -> RecognitionT |
 # ===========================================================================
 
 
+#: 门牌原文里常见的分隔符与标点，比对前统一去掉 ——
+#: 「A-201」「A栋 201」「A栋201室」都应当能命中候选「A栋201会议室」。
+_RAW_TEXT_SEPS = re.compile(r"[\s\-_—–·•:：,，.。/\\()（）\[\]【】]")
+
+#: 归一化后从门牌原文里抠出来的「编号」片段（纯数字）。
+#: 门牌「A栋201室」与场地名「A栋201会议室」整串不互相包含，但编号 201 是共同且唯一的证据。
+_DIGIT_RUNS = re.compile(r"\d+")
+
+
+def _norm_for_match(text: str) -> str:
+    """门牌原文归一化：去掉分隔符与大小写差异，便于做子串比对。"""
+    return _RAW_TEXT_SEPS.sub("", (text or "").strip()).lower()
+
+
+def _match_by_raw_text(
+    raw_text: str | None,
+    candidates: list[SpaceCandidate],
+) -> SpaceCandidate | None:
+    """
+    第 4 步（兜底）：拿模型读到的**门牌原文**去匹配候选名称。
+
+    为什么需要这一步（2026-09-30 用真图实测复现）：
+        喂一张写着「201」的清晰门牌照，模型输出的是
+        `{spaceId: null, spaceName: null, rawText: "201", confidence: 0.95}` ——
+        **文字读对了、置信度也很高**，但它只肯做「读文字」，不肯替你做
+        「编号 → 场地」这一步推断，于是 spaceId / spaceName 双双留空。
+        而原来的 `_match_candidate` 只看 spaceId / spaceName，
+        `rawText` 读出来之后就**直接被丢掉**，这一轮识别等于白做。
+
+        所以补第 4 步：用 rawText 去比对候选名称。证据其实很强 ——
+        「201」在候选名单里只出现在「A栋201会议室」一处。
+
+    为什么仍然要求「唯一命中」：
+        若某个编号片段同时出现在两个候选名称里，选谁都是赌一把，
+        与其赌，不如返回 None 交给用户确认（与第 3 步同一条纪律）。
+
+    为什么不匹配太短的串：
+        「1」「2」这种单字符编号片段在候选名称里极易误伤，
+        故要求归一化后至少 2 个字符。
+    """
+    raw = _norm_for_match(raw_text or "")
+    if len(raw) < 2:
+        return None
+
+    # ---- 第 4.1 级：整串比对（双向包含）----
+    # 门牌写的正好就是场地名（"A栋201会议室"），或门牌比名字更长
+    # （"中心广场东侧入口" ⊃ "中心广场"）都能命中。
+    hits = [
+        c
+        for c in candidates
+        if raw in _norm_for_match(c.spaceName) or _norm_for_match(c.spaceName) in raw
+    ]
+    if len(hits) == 1:
+        logger.info(
+            "模型未选出场地，但门牌原文「%s」唯一命中「%s」，按文字采纳",
+            raw_text,
+            hits[0].spaceName,
+        )
+        return hits[0]
+    if len(hits) > 1:
+        logger.info(
+            "门牌原文「%s」匹配到 %d 个候选（%s），存在歧义，交给用户确认",
+            raw_text,
+            len(hits),
+            "、".join(c.spaceName for c in hits),
+        )
+        return None
+
+    # ---- 第 4.2 级：只拿「编号」比 ----
+    # 门牌常写「A栋201室」，系统里却叫「A栋201会议室」——
+    # 前者不是后者的子串（"室" vs "会议室"），整串比对必然落空，
+    # 但编号 201 在候选里是唯一的，这才是真正能用的证据。
+    for token in sorted(_DIGIT_RUNS.findall(raw), key=len, reverse=True):
+        if len(token) < 2:
+            # 单位数编号（"2""3"）在候选名称里极易误伤，不参与匹配
+            continue
+        tok_hits = [c for c in candidates if token in _norm_for_match(c.spaceName)]
+        if len(tok_hits) == 1:
+            logger.info(
+                "模型未选出场地，但门牌编号「%s」（原文「%s」）唯一命中「%s」",
+                token,
+                raw_text,
+                tok_hits[0].spaceName,
+            )
+            return tok_hits[0]
+        if len(tok_hits) > 1:
+            # 这个编号本身就有歧义，再往短的试只会更不准 —— 直接交给用户
+            logger.info(
+                "门牌编号「%s」匹配到 %d 个候选，存在歧义，交给用户确认",
+                token,
+                len(tok_hits),
+            )
+            return None
+
+    return None
+
+
 def _match_candidate(
     parsed: SpaceRecognition,
     candidates: list[SpaceCandidate],
@@ -570,21 +669,21 @@ def _match_candidate(
 
     # ---- 第 2 步：按名称完全一致 ----
     name = (parsed.spaceName or "").strip()
-    if not name:
-        return None
+    if name:
+        for c in candidates:
+            if c.spaceName == name:
+                return c
 
-    for c in candidates:
-        if c.spaceName == name:
-            return c
+        # ---- 第 3 步：名称互相包含，且候选中唯一命中 ----
+        fuzzy = [c for c in candidates if name in c.spaceName or c.spaceName in name]
+        if len(fuzzy) == 1:
+            return fuzzy[0]
+        if len(fuzzy) > 1:
+            logger.info("名称「%s」模糊匹配到 %d 个候选，存在歧义，交给用户确认", name, len(fuzzy))
 
-    # ---- 第 3 步：名称互相包含，且候选中唯一命中 ----
-    fuzzy = [c for c in candidates if name in c.spaceName or c.spaceName in name]
-    if len(fuzzy) == 1:
-        return fuzzy[0]
-    if len(fuzzy) > 1:
-        logger.info("名称「%s」模糊匹配到 %d 个候选，存在歧义，交给用户确认", name, len(fuzzy))
-
-    return None
+    # ---- 第 4 步：门牌原文兜底（模型读对了编号却没做推断时的补救）----
+    # 注意：第 2 步**不能**在 name 为空时直接 return，否则永远走不到这里。
+    return _match_by_raw_text(parsed.rawText, candidates)
 
 
 def _clamp01(value) -> float:

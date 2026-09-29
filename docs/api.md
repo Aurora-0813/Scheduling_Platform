@@ -402,9 +402,18 @@ Authorization: Bearer <token>
 
 ```json
 { "code": 200, "message": "操作成功", "data": [
-  { "conflictType": "时段重叠", "orderIds": [1, 2], "suggestion": "建议将预约 #2 调整至其他时段或更换场地" }
+  { "conflictType": "软冲突", "orderIds": [1001, 1002],
+    "suggestion": "建议将后一场活动延后至少 15 分钟…", "ruleCode": "continuous_activity" }
 ] }
 ```
+
+> ⚠️ **2026-09-28 修正本示例。** 原文写的是
+> `{ "conflictType": "时段重叠", "orderIds": [1, 2], "suggestion": "建议将预约 #2 调整至其他时段或更换场地" }`
+> —— 那是**模块 3 自己那份未注册实现**（`app/api/conflicts.py`）的形状。
+> 现在 `/conflicts/scan` 由模块 7 的正式实现提供，`conflictType` **固定为 `软冲突`**、
+> 且每条带 `ruleCode`；**时段重叠属硬冲突，由事务兜底，不在本接口范围内**。
+> 本文件 §5.2 的字段表（见下）写的一直是对的，是 §5.1 这个示例没跟着改 ——
+> 同一份文档里两处互相矛盾。
 
 ---
 

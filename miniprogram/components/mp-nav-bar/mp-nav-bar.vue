@@ -55,10 +55,22 @@ function measure() {
   let statusBar = 20
   let windowWidth = 375
   try {
-    const sys = uni.getSystemInfoSync()
-    if (sys) {
-      if (sys.statusBarHeight) statusBar = sys.statusBarHeight
-      if (sys.windowWidth) windowWidth = sys.windowWidth
+    // ⚠️ **2026-09-30：改用 uni.getWindowInfo()。**
+    // 原先用的 uni.getSystemInfoSync() 已被微信标记废弃，控制台每次都打
+    // 「wx.getSystemInfoSync is deprecated. Please use wx.getSystemSetting/
+    //   wx.getAppAuthorizeSetting/wx.getDeviceInfo/wx.getWindowInfo/... instead」。
+    // 这里真正需要的两个值（statusBarHeight / windowWidth）恰好都在
+    // getWindowInfo() 里，所以换过去即可。
+    //
+    // **保留旧 API 作兜底**：getWindowInfo 是较新基础库才有的，
+    // 老版本上它不存在，直接调用会拿不到值（甚至报错），于是状态栏高度会退化成 20px、
+    // 导航栏错位。所以先探测再调用，两边都取不到才用默认值。
+    const win =
+      (typeof uni.getWindowInfo === 'function' ? uni.getWindowInfo() : null) ||
+      uni.getSystemInfoSync()
+    if (win) {
+      if (win.statusBarHeight) statusBar = win.statusBarHeight
+      if (win.windowWidth) windowWidth = win.windowWidth
     }
   } catch (e) {
     // 取不到系统信息就用默认值，不影响渲染

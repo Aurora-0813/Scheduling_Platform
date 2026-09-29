@@ -88,7 +88,9 @@ function doRefresh() {
       method: 'POST',
       header: { 'Content-Type': 'application/json' },
       data: { refreshToken },
-      timeout: REQUEST_TIMEOUT,
+      // 续期是「快进快出」的一次调用，不该跟着主请求的 240 秒一起等 ——
+      // 后端不可达时要尽快失败，否则用户会在一个已经失效的页面上干等 4 分钟。
+      timeout: 15000,
       success: (res) => {
         const body = res.data
         if (body && body.code === CODE.OK) {
@@ -162,8 +164,13 @@ function tryFallback(method, path, data) {
 function rawRequest(options) {
   return new Promise((resolve, reject) => {
     uni.request({
-      ...options,
+      // ⚠️ **默认超时必须放在展开之前（2026-09-30 修）。**
+      // 原先写的是 `...options` 然后 `timeout: REQUEST_TIMEOUT`，
+      // 后者**覆盖**了前者 —— 于是调用方传任何 timeout 都不生效，
+      // 全站被钉死在 REQUEST_TIMEOUT 上。现在顺序反过来：默认值先给，
+      // 调用方传了就覆盖它（`request()` 的 options.timeout）。
       timeout: REQUEST_TIMEOUT,
+      ...options,
       success: resolve,
       fail: reject,
     })
@@ -190,10 +197,33 @@ export async function request(options) {
     auth = true,
     mock,
     silent = false,
+    // 逐请求超时。不传则用 config 的 REQUEST_TIMEOUT（已放宽到 240s）。
+    timeout,
     _retried = false,
   } = options
 
   const useMock = mock === undefined ? API_MODE === 'mock' : !!mock
+
+  // ⚠️ **2026-09-30：没登录就**不要**发这个请求。**
+  //
+  // 原先「未登录」也会真的打一次接口，拿到 40101 之后才由下面的
+  // AUTH_FAIL_CODES 分支清 token + 跳登录页。后果有两个：
+  //
+  //   1. **首页 / 消息 / 我的 三个 tab 都在 onShow 里无条件拉鉴权接口**，
+  //      未登录时每进一次页面就白打一轮 401（开发者工具里刷屏），
+  //      然后被**强制弹到登录页** —— 于是页面自己写好的
+  //      「未登录 / 去登录」分支（pages/mine/index.vue 等）**永远显示不出来**，
+  //      退出登录之后也无法再浏览任何 tab。
+  //   2. 40101 的语义是「你**根本没带**令牌」，与「令牌被服务端拒绝」是两回事。
+  //      把它当成会话失效去 clearTokens + 跳转，属于过度反应。
+  //
+  // 这里提前短路，抛一个**独立的 kind**（'NO_TOKEN'）交给页面自己决定展示什么。
+  //
+  // 注意边界：**带了令牌但被服务端拒绝**（40102 签名错 / 40103 过期 …）
+  // 仍然走下面的 AUTH_FAIL_CODES 分支 —— 那才是真正该清会话的情况。
+  if (auth && !getAccessToken()) {
+    throw makeError('未登录', 'NO_TOKEN')
+  }
 
   let res
   try {
@@ -202,6 +232,8 @@ export async function request(options) {
       method,
       data,
       header: buildHeader(header, auth),
+      // 仅在调用方显式传入时才覆盖默认超时，避免把 undefined 塞进去
+      ...(timeout ? { timeout } : {}),
     })
   } catch (e) {
     // 网络层直接失败：后端没启动 / 断网 / 超时
@@ -285,7 +317,11 @@ export function upload(options) {
       name,
       formData,
       header,
-      timeout: REQUEST_TIMEOUT * 2, // 上传比普通请求慢，单独放宽
+      // 上传确实比普通请求慢，但**不能**跟着 REQUEST_TIMEOUT 一起放大：
+      // 后者现在是 240000（为 /agent/schedule 那 39~105 秒留的余量），
+      // 乘 2 会变成 480 秒 —— 用户要干等 8 分钟才看到失败。
+      // 上传是「传字节 + 一次识别」，120 秒足够（60 秒录音的 base64 约 2.6MB）。
+      timeout: options.timeout || 120000,
       success: (res) => {
         let body
         try {

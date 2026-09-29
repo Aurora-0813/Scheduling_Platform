@@ -49,6 +49,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -337,6 +338,47 @@ def create_app() -> FastAPI:
         settings.IMAGE_STORAGE_BASE_URL,
         StaticFiles(directory=str(settings.image_upload_path)),
         name="uploads",
+    )
+
+    # ------------------------------------------------------------------
+    # 静态目录：导出报告下载（模块 8）
+    # ------------------------------------------------------------------
+    # ⚠️ **2026-09-28 补挂 —— 此前这里是漏的，导出按钮恒 404。**
+    #
+    # `dashboard_export_service` 的注释把这件事写得很死：
+    #     「STATIC_MOUNT_PATH 必须与 app/main.py 里 StaticFiles 的挂载点一致 ——
+    #       所以 main.py 直接 import 这个常量，而不是各自手写 "/static" 字符串。
+    #       （改一处而漏另一处，exportUrl 就会指向 404。）」
+    # 而合并后的 main.py 只挂了 /uploads，**从未 import 过 STATIC_MOUNT_PATH**，
+    # 于是 `GET /dashboard/report` 返回的 exportUrl 形如
+    # `/static/exports/dashboard_YYYYMMDD_HHMMSS.csv`，谁也取不到 ——
+    # 正是那句注释预言的失败。前端 `Dashboard.vue` 的导出按钮走
+    # `window.open(report.exportUrl)`，点下去静默无反应。
+    # 护栏用例：`tests/test_report_export.py::test_E10_静态挂载点与export前缀一致_能真的下载到`。
+    #
+    # 用**模块属性**而不是 `from ... import EXPORT_DIR`：后者在 import 期就把值定死了，
+    # 测试里 monkeypatch `dashboard_export_service.EXPORT_DIR` 将不再生效。
+    from app.services import dashboard_export_service as dashboard_export_svc
+
+    export_dir = Path(dashboard_export_svc.EXPORT_DIR)
+    # 目录随仓库存在（`backend/static/exports/.gitignore`），但别赌它一定在：
+    # StaticFiles 在挂载时就检查目录，缺了会让**整个应用起不来**。
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    # ⚠️ **目录要取盘点的父级，不能直接给 EXPORT_DIR —— 这里第一次修就踩了。**
+    # 三者的对齐关系必须一起看：
+    #     挂载点 STATIC_MOUNT_PATH  = "/static"
+    #     URL 前缀 EXPORT_URL_PREFIX = "/static" + "/exports"   → /static/exports
+    #     落盘目录 EXPORT_DIR        = backend/static/exports
+    # 挂在 "/static" 上、再把目录指成 EXPORT_DIR 的话，请求
+    #     /static/exports/x.csv  →  <EXPORT_DIR>/exports/x.csv
+    #                            =  backend/static/exports/exports/x.csv   ← 不存在，仍 404
+    # 所以挂在 "/static" 就必须服务它的**父级** backend/static：
+    #     /static/exports/x.csv  →  backend/static/exports/x.csv  ✓
+    app.mount(
+        dashboard_export_svc.STATIC_MOUNT_PATH,
+        StaticFiles(directory=str(export_dir.parent)),
+        name="exports",
     )
 
     # ------------------------------------------------------------------

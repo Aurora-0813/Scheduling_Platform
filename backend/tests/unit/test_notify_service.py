@@ -330,7 +330,21 @@ async def test_dispatch_writes_notify_message_fields(counting_llm):
     assert message.receiver_id == 7
     assert message.notify_type == 2
     assert message.order_id == 101
-    assert message.title == "AI 标题"
+
+    # ⚠️ **落库的 title 是「判重键」，不是 AI 标题（2026-09-30 改）。**
+    #
+    # 原先这里断言的是 `message.title == "AI 标题"` —— 那条断言把 bug 写进了契约：
+    # 写侧存 AI 标题，而 `DbDedup` 按标题查历史行判重，两者永远不相等，
+    # 于是数据库兜底判重（`REDIS_ENABLED=false` 下的实际路径）**恒失效**，
+    # 同一冲突每轮扫描都会被重推一遍。
+    # 现在 title 存 `build_dedup_title()` 的结果 = 模板标题 + 冲突身份，
+    # 与 `DedupKey.template_title` 是同一个值。详见 `docs/spec/后端改动1.md` §5.25。
+    assert message.title != "AI 标题", "落库的不能是 AI 标题，否则判重查不到"
+    assert message.title.startswith("【预约变更致歉】"), "应当是模板标题形态"
+    assert "A栋3楼展厅" in message.title, "应当带上冲突身份（场地）"
+    assert "订单 #101/#102" in message.title, "有订单号时身份用订单号"
+
+    # AI 生成的**正文**仍然落库 —— 主文案没有被削弱
     assert message.content == "AI 正文内容，用于测试。"
     assert message.is_read == 0
 
@@ -396,7 +410,12 @@ async def test_dispatch_reuses_precomputed_draft(counting_llm):
     )
 
     assert counting_llm.calls == 0
-    assert session.added[0].title == "预生成标题"
+
+    # 同 test_dispatch_writes_notify_message_fields：落库的是判重键，不是预生成标题。
+    # 本用例的 facts 里 space_name 已经在模板标题中，所以不该再重复追加身份。
+    assert session.added[0].title != "预生成标题"
+    assert session.added[0].title == "【预约提醒】A栋3楼展厅"
+    assert session.added[0].content == "预生成正文"
 
 
 async def test_dispatch_survives_ai_outage(monkeypatch):

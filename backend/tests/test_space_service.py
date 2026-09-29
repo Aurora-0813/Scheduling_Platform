@@ -354,22 +354,36 @@ def test_signature_is_frozen() -> None:
 def test_occupying_status_matches_order_service() -> None:
     """本模块取的占位状态必须与模块 3 `create_order` 用的一致。
 
-    该常量当前定义在两处：本模块用的 `app/models/reservation.py`，以及模块 3 的
-    `app/services/order_service.py`。没有合并成一处是因为后者归属于模块 3，且当前
-    不满足 ruff-format —— 动它就会被 pre-commit 的 `ruff-format` 连带重排，给正在改
-    那个文件的人制造无关冲突（详见 `app/models/reservation.py` 该常量的说明）。
+    ⚠️ **2026-09-28 修正：这条护栏原本是断的。**
+
+    原用例写的是 `from app.services.order_service import OCCUPYING_STATUS`，
+    但合并之后 `order_service` 里**已经没有** `OCCUPYING_STATUS` 这个名字 ——
+    它改从 `app.models` 引入 `ACTIVE_ORDER_STATUSES`（见 `order_service.py:97-103`）。
+    于是这一条 import 直接抛 `ImportError`：**整个套件里唯一一条没有任何 xfail 保护、
+    必然变红的用例，而它本身恰恰是「防常量漂移」的护栏 —— 护栏自己断了。**
+    现在改为引用 `create_order` **真正使用**的那一个常量，护栏语义不变。
+
+    口径现状（2026-09-28 实测）：同一语义在仓库里有 4 处声明 ——
+        · `app/models/reservation.py` 的 `ACTIVE_ORDER_STATUSES`（引 `OrderStatus` 枚举，规范版）
+        · `app/models/reservation.py` 的 `OCCUPYING_STATUS`（字面量；空间查询在用）
+        · `app/services/rules/base.py` 的 `ACTIVE_ORDER_STATUSES`（字面量）
+        · `app/services/image_service.py` 的 `_ORDER_ACTIVE_STATUS`（字面量）
+    本用例只钉住**本模块用的那一份**与 `create_order` 用的那一份之间的一致性 ——
+    这是最要命的一条：它俩一分叉，就是并发重复预约（见下）。
 
     两份声明一旦分叉，后果是**并发重复预约**：`create_order` 落下的待确认订单按一边
     算占位、`query_spaces` 按另一边算可订，Agent 就会推荐一个刚被占住的场地。
     故用这条护栏代替注释防漂移。
 
-    ⚠️ 合入 `main` 时本用例要跟着改：蔡玉礼分支已把收敛做完（`ACTIVE_ORDER_STATUSES`，
-    定义在同一个 `app/models/reservation.py`），届时删掉模型层的 `OCCUPYING_STATUS`，
-    本用例改为断言那个常量 —— 步骤见模型层该常量的注释。
+    `int(s)` 转换是必要的：`ACTIVE_ORDER_STATUSES` 装的是 `OrderStatus` 枚举成员，
+    直接与字面量元组比较虽然也相等（IntEnum），但显式取整让意图更清楚、也更抗将来改动。
     """
-    from app.services.order_service import OCCUPYING_STATUS as ORDER_SERVICE_OCCUPYING_STATUS
+    from app.services.order_service import ACTIVE_ORDER_STATUSES as ORDER_SERVICE_ACTIVE
 
-    assert OCCUPYING_STATUS == ORDER_SERVICE_OCCUPYING_STATUS
+    assert OCCUPYING_STATUS == tuple(int(s) for s in ORDER_SERVICE_ACTIVE), (
+        f"占位口径分叉：models.OCCUPYING_STATUS={OCCUPYING_STATUS}，"
+        f"但 create_order 用的是 {tuple(ORDER_SERVICE_ACTIVE)}"
+    )
 
 
 def test_time_formats_match_tool_layer() -> None:
@@ -411,3 +425,105 @@ async def test_unparsable_time_raises(use_test_db) -> None:
 
     with pytest.raises(ParamInvalidError):
         await _query(start="下周五下午", end=WINDOW_END)
+
+
+# ==========================================================================
+# 四、list_space_bookings：某场地被哪些订单占走了（2026-09-30 新增）
+# ==========================================================================
+from datetime import date, timedelta  # noqa: E402
+
+from app.services.space_service import list_space_bookings  # noqa: E402
+
+
+async def test_list_space_bookings_returns_only_occupying_orders(db_session) -> None:
+    """只返回「占用态」（1 待确认 / 2 已确认），并按开始时间升序。
+
+    口径必须与 create_order / query_spaces 同源，否则会出现
+    「这个接口说占了、下单却说没占」这种自相矛盾。
+    """
+    await _add_space(db_session, space_id=6, name="综合楼大礼堂", space_type=3, capacity=80)
+    base = date(2026, 10, 1)
+    # 已确认
+    await _add_order(
+        db_session, order_id=1, space_id=6,
+        start="2026-10-02 10:00:00", end="2026-10-02 12:00:00", order_status=2,
+    )
+    # 待确认 —— 也算占用
+    await _add_order(
+        db_session, order_id=2, space_id=6,
+        start="2026-10-01 09:00:00", end="2026-10-01 11:00:00", order_status=1,
+    )
+    # 已取消 / 已完成 —— 时段必须已经释放
+    await _add_order(
+        db_session, order_id=3, space_id=6,
+        start="2026-10-03 09:00:00", end="2026-10-03 11:00:00", order_status=3,
+    )
+    await _add_order(
+        db_session, order_id=4, space_id=6,
+        start="2026-10-04 09:00:00", end="2026-10-04 11:00:00", order_status=4,
+    )
+    # 别的场地的订单不许串台
+    await _add_space(db_session, space_id=7, name="综合楼小多功能厅", space_type=3, capacity=25)
+    await _add_order(
+        db_session, order_id=5, space_id=7,
+        start="2026-10-02 10:00:00", end="2026-10-02 12:00:00", order_status=2,
+    )
+
+    rows = await list_space_bookings(db_session, 6, days=30, start=base)
+
+    assert [r.id for r in rows] == [2, 1], "按 start_time 升序，且只含待确认/已确认"
+
+
+async def test_list_space_bookings_window_overlap_is_half_open(db_session) -> None:
+    """区间左闭右开：紧贴区间之前的订单不算，跨天占用要算进来。"""
+    await _add_space(db_session, space_id=4, name="A栋3楼展厅", space_type=2, capacity=50)
+    base = date(2026, 10, 10)
+    # 完全落在区间内
+    await _add_order(
+        db_session, order_id=1, space_id=4,
+        start="2026-10-10 09:00:00", end="2026-10-10 11:00:00", order_status=2,
+    )
+    # 区间开始之前就结束了 → 不算
+    await _add_order(
+        db_session, order_id=2, space_id=4,
+        start="2026-10-09 15:00:00", end="2026-10-09 17:00:00", order_status=2,
+    )
+    # 跨天：起始早于区间、结束落在区间内 → 算
+    await _add_order(
+        db_session, order_id=3, space_id=4,
+        start="2026-10-09 20:00:00", end="2026-10-10 02:00:00", order_status=2,
+    )
+
+    rows = await list_space_bookings(db_session, 4, days=2, start=base)
+
+    assert sorted(r.id for r in rows) == [1, 3]
+
+
+async def test_list_space_bookings_defaults_to_today(db_session) -> None:
+    """不传 start 时从「今天」起算——前端走的就是这条默认路径。"""
+    await _add_space(db_session, space_id=8, name="中心广场", space_type=4, capacity=100)
+
+    today = date.today()
+    inside = today + timedelta(days=2)
+    outside = today + timedelta(days=40)
+
+    await _add_order(
+        db_session, order_id=1, space_id=8,
+        start=f"{inside.isoformat()} 10:00:00", end=f"{inside.isoformat()} 12:00:00",
+        order_status=2,
+    )
+    await _add_order(
+        db_session, order_id=2, space_id=8,
+        start=f"{outside.isoformat()} 10:00:00", end=f"{outside.isoformat()} 12:00:00",
+        order_status=2,
+    )
+
+    rows = await list_space_bookings(db_session, 8, days=7)
+
+    assert [r.id for r in rows] == [1], "超出 days 窗口的订单不该返回"
+
+
+async def test_list_space_bookings_empty_is_a_real_answer(db_session) -> None:
+    """没占用就返回空列表而不是抛异常——「没人订」本身就是要展示给用户的信息。"""
+    await _add_space(db_session, space_id=9, name="B栋102会议室", space_type=1, capacity=30)
+    assert await list_space_bookings(db_session, 9, days=7, start=date(2026, 10, 1)) == []

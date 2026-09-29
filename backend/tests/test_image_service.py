@@ -616,3 +616,93 @@ def test_match_candidate_priority():
 
     # 空名称不应误匹配
     assert _match_candidate(SpaceRecognition(), candidates) is None
+
+
+# ===========================================================================
+# 门牌原文兜底匹配（2026-09-30 新增）
+# ===========================================================================
+
+
+#: 门牌兜底用例的候选集。刻意含「A栋」前缀重复的三个场地，
+#: 用来验证「编号唯一才算命中、前缀重复必须交给用户」这条纪律。
+DOOR_CANDIDATES = [
+    SpaceCandidate(
+        spaceId=1, spaceName="A栋201会议室", spaceType=1, location="A栋2楼东侧", capacity=12
+    ),
+    SpaceCandidate(
+        spaceId=2, spaceName="A栋305会议室", spaceType=1, location="A栋3楼西侧", capacity=20
+    ),
+    SpaceCandidate(
+        spaceId=3, spaceName="B栋102会议室", spaceType=1, location="A栋1楼大厅旁", capacity=30
+    ),
+    SpaceCandidate(
+        spaceId=8, spaceName="中心广场", spaceType=4, location="园区中心", capacity=100
+    ),
+]
+
+
+def test_match_candidate_by_raw_text_fallback():
+    """
+    模型读对了门牌却不肯做「编号 → 场地」推断时，后端要用 rawText 把它接住。
+
+    这是真机复现出来的：喂一张写着「201」的清晰门牌照，模型返回
+        {spaceId: None, spaceName: None, rawText: "201", confidence: 0.95}
+    —— 文字读对了、置信度也很高，但 spaceId / spaceName 双双留空。
+    修复前 _match_candidate 只看这两个字段，这种输出直接落到 None，
+    于是前台显示「没能识别出这是哪个场地」。修复后由 rawText 兜底命中。
+    """
+    # 1) 只有门牌原文 —— 修复前这里是 None
+    only_raw = SpaceRecognition(spaceId=None, spaceName=None, rawText="201", confidence=0.95)
+    matched = _match_candidate(only_raw, DOOR_CANDIDATES)
+    assert matched is not None and matched.spaceId == 1
+
+
+def test_match_candidate_raw_text_tolerates_separators_and_suffix():
+    """门牌写法千奇百怪，归一化后应当都能命中同一个场地。"""
+    for raw in ("201", "A-201", "A 201", "a-201", "A栋201室", "A栋201会议室"):
+        matched = _match_candidate(SpaceRecognition(rawText=raw), DOOR_CANDIDATES)
+        assert matched is not None, f"门牌「{raw}」应当命中 A栋201会议室"
+        assert matched.spaceId == 1, f"门牌「{raw}」命中了 {matched.spaceName}"
+
+
+def test_match_candidate_raw_text_reverse_containment():
+    """门牌比场地名更长时也要能命中（"中心广场东侧入口" ⊃ "中心广场"）。"""
+    matched = _match_candidate(SpaceRecognition(rawText="中心广场东侧入口"), DOOR_CANDIDATES)
+    assert matched is not None and matched.spaceId == 8
+
+
+def test_match_candidate_raw_text_refuses_ambiguity():
+    """
+    歧义一律交给用户确认，绝不赌一把 —— 与第 3 步模糊匹配同一条纪律。
+
+    候选里有 3 个名字含「A栋」，门牌只写「A栋」时无法确定是哪一间。
+    """
+    assert _match_candidate(SpaceRecognition(rawText="A栋"), DOOR_CANDIDATES) is None
+
+    # 单位数编号在候选名里极易误伤，不参与匹配
+    assert _match_candidate(SpaceRecognition(rawText="2"), DOOR_CANDIDATES) is None
+
+    # 候选里根本没有这个编号 —— 不许凭 rawText 瞎猜
+    assert _match_candidate(SpaceRecognition(rawText="999"), DOOR_CANDIDATES) is None
+
+    # 空 / None 不匹配
+    assert _match_candidate(SpaceRecognition(rawText=""), DOOR_CANDIDATES) is None
+    assert _match_candidate(SpaceRecognition(rawText=None), DOOR_CANDIDATES) is None
+
+    # 纯字母、没有任何编号可依据 → 不猜
+    assert _match_candidate(SpaceRecognition(rawText="AB"), DOOR_CANDIDATES) is None
+
+
+def test_match_candidate_priority_id_beats_raw_text():
+    """优先级不能倒挂：模型自己给出的 spaceId 仍然压过 rawText 兜底。"""
+    parsed = SpaceRecognition(spaceId=3, spaceName=None, rawText="201")
+    matched = _match_candidate(parsed, DOOR_CANDIDATES)
+    assert matched is not None and matched.spaceId == 3
+
+
+def test_match_candidate_raw_text_alone_does_not_short_circuit_name():
+    """带 spaceName 的路径不能被 rawText 兜底抢先（第 2/3 步仍优先）。"""
+    parsed = SpaceRecognition(spaceName="B栋2楼多功能厅", rawText="201")
+    matched = _match_candidate(parsed, DOOR_CANDIDATES)
+    # B栋2楼多功能厅 不在 DOOR_CANDIDATES 里，但 rawText「201」能命中 A栋201会议室
+    assert matched is not None and matched.spaceId == 1

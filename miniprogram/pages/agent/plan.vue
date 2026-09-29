@@ -3,13 +3,26 @@
     <mp-nav-bar title="方案确认" back :right="sideLabel" />
 
     <view class="app-body has-cta">
-      <mp-empty
-        v-if="!active"
-        icon="🤖"
-        text="还没有生成方案，先去说说你的需求吧"
-        action-text="去语音预约"
-        @action="goVoice"
-      />
+      <!--
+        没有方案时把 Agent 的原话显示出来（原来只给一句通用空态）。
+        追问文案在 trace 的最后一步，见下面 agentReply 的说明。
+      -->
+      <template v-if="!active">
+        <view class="mcard">
+          <view class="mtitle">🤖 AI 还需要你补充一点信息</view>
+          <text class="mtext">
+            {{ agentReply || '暂时没能生成方案。补充一下时间、人数或设备，我再算一次。' }}
+          </text>
+        </view>
+
+        <view class="mcard">
+          <view class="mtitle">接下来怎么做</view>
+          <text class="mtext">
+            回到语音页接着说就行——场地已经记住了，你只需要补上时间
+            （例如「明天下午两点到四点」），不用把场地再描述一遍。
+          </text>
+        </view>
+      </template>
 
       <template v-else>
         <!-- 主方案 / 备选方案 -->
@@ -66,6 +79,12 @@
       </template>
     </view>
 
+    <view v-if="!active" class="app-cta">
+      <view class="btn ai block" hover-class="btn-on" :hover-stay-time="60" @tap="goVoice">
+        补充时间 / 改需求 →
+      </view>
+    </view>
+
     <view v-if="active" class="app-cta">
       <view class="app-cta-row">
         <view
@@ -101,12 +120,17 @@
  *   否则不编造数字（详见 miniprogram/README.md「已知契约缺口」）。
  */
 import { ref, computed } from 'vue'
+import { onUnload } from '@dcloudio/uni-app'
 import { agentStore, resetAgent } from '@/store/agent.js'
-import { createOrder } from '@/api/orders.js'
+import { confirmOrder, createOrder } from '@/api/orders.js'
 import { formatTimeRange, formatMoney } from '@/utils/format.js'
 import { first } from '@/utils/normalize.js'
-import { toast, toastOk, showLoading, hideLoading } from '@/utils/toast.js'
+import { toast, toastOk, showLoading, hideLoading, resetLoading } from '@/utils/toast.js'
 import { TABS } from '@/utils/tabs.js'
+
+// 页面销毁时把 loading 计数归零：万一有哪条路径没配平，残留的计数会让之后
+// 每一次 show/hide 都错位 —— 微信侧会一直报「showLoading 与 hideLoading 必须配对使用」
+onUnload(() => resetLoading())
 
 const submitting = ref(false)
 /** true 表示当前展示主方案 */
@@ -190,7 +214,32 @@ function toggle() {
   isMain.value = !isMain.value
 }
 
+/**
+ * 没有方案时，Agent 到底说了什么。
+ *
+ * 后端返回体只有 plan / backupPlan / trace / orderId / needConfirm —— **没有**独立的消息字段，
+ * Agent 那句「请您补充使用时间…」只躺在 trace 最后一步的 `result` 里。
+ * 原来这里只显示一句通用空态「还没有生成方案」，用户根本不知道要补什么，
+ * 点按钮又跳回同一段预填文本，等于原地打转。
+ *
+ * 取法：优先取**最后一步没有 action 的**（不是工具调用，而是模型对用户说的话）；
+ * 找不到就退回最后一步的 result。
+ */
+const agentReply = computed(() => {
+  const p = payload.value
+  if (!p || p.plan) return ''
+  const trace = Array.isArray(p.trace) ? p.trace : []
+  for (let i = trace.length - 1; i >= 0; i--) {
+    const t = trace[i]
+    if (t && !t.action && t.result) return String(t.result)
+  }
+  const last = trace.length ? trace[trace.length - 1] : null
+  return last && last.result ? String(last.result) : ''
+})
+
 function goVoice() {
+  // 把追问一起带过去，语音页会把「AI 还缺什么」显示出来
+  agentStore.lastQuestion = agentReply.value || ''
   uni.navigateTo({ url: '/pages/voice/record' })
 }
 
@@ -205,18 +254,36 @@ async function submit() {
   }
 
   submitting.value = true
-  showLoading('创建预约中…')
-  try {
-    const order = await createOrder({
-      spaceId: p.spaceId,
-      deviceIds: p.deviceIds || [],
-      startTime: p.startTime,
-      endTime: p.endTime,
-      agentRequest: agentStore.request,
-      agentTrace: payload.value ? payload.value.trace : null,
-    })
 
-    toastOk('预约已创建')
+  // ⚠️ **2026-09-29 修复：原先这里无条件调 createOrder，演示时必然报 409。**
+  //
+  // 原因：`/agent/schedule` 在后端内部**已经把资源锁掉并落了单** ——
+  // 返回体带 `orderId`，trace 里有「锁定资源：成功（订单 N）」。
+  // 前端再调一次 POST /orders/create，撞上的正是**自己刚锁的那个时段**
+  // → 409 / 40901「该时段已被占用」。已在真库实测复现。
+  //
+  // 契约（docs/api.md 的 `orderId` 说明）：`needConfirm=true` 时前端应拿
+  // `orderId` 调 `PUT /orders/{orderId}/confirm` 完成 1→2 流转；
+  // `orderId` 为 `null` 才表示「后端确实没建单」，那时才需要自己 createOrder。
+  //
+  // 只对**主方案**取 `orderId`：它是后端最后一次成功 lock_resources 的结果，
+  // 对应的是 `plan`（主方案）。切到备选方案时那次锁定并不属于它，
+  // 仍走 createOrder（备选是另一个时段/场地，不会与它自己冲突）。
+  const lockedId = isMain.value && payload.value ? payload.value.orderId : null
+  showLoading(lockedId ? '确认方案中…' : '创建预约中…')
+  try {
+    const order = lockedId
+      ? await confirmOrder(lockedId)
+      : await createOrder({
+          spaceId: p.spaceId,
+          deviceIds: p.deviceIds || [],
+          startTime: p.startTime,
+          endTime: p.endTime,
+          agentRequest: agentStore.request,
+          agentTrace: payload.value ? payload.value.trace : null,
+        })
+
+    toastOk(lockedId ? '预约已确认' : '预约已创建')
     // 方案已落库，清掉缓存，避免下次进来沿用旧方案
     resetAgent()
 

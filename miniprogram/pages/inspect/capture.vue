@@ -19,6 +19,17 @@
         <view v-if="analyzing" class="scanline"></view>
       </view>
 
+      <!-- 相机 / 相册分开给按钮：合并的 action sheet 在开发者工具里常常只弹相册，
+           分开后「拍照」是明确的 camera-only 调用，失败也会把原因说出来 -->
+      <view class="pickrow">
+        <view class="pbtn" hover-class="pbtn-on" :hover-stay-time="60" @tap="takePhoto">
+          📷 拍照
+        </view>
+        <view class="pbtn" hover-class="pbtn-on" :hover-stay-time="60" @tap="pickAlbum">
+          🖼 从相册选
+        </view>
+      </view>
+
       <!-- 空间选择：巡检要关联到具体场地，后端才能派单 -->
       <view class="mcard">
         <view class="mbrow pick" @tap="chooseSpace">
@@ -104,13 +115,13 @@
  * ⚠️ inspectorId 由后端从 JWT 解析，前端不传（§5.1）。
  */
 import { ref, computed } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
+import { onLoad, onUnload } from '@dcloudio/uni-app'
 import { submit } from '@/api/inspect.js'
 import { spaces as fetchSpaces } from '@/api/resources.js'
 import { statusLabel, statusTag } from '@/utils/dict.js'
-import { spaceName } from '@/utils/normalize.js'
+import { first, spaceName } from '@/utils/normalize.js'
 import { IMAGE_LIMIT } from '@/config/index.js'
-import { toast, showLoading, hideLoading } from '@/utils/toast.js'
+import { toast, showLoading, hideLoading, resetLoading } from '@/utils/toast.js'
 import { TABS } from '@/utils/tabs.js'
 
 const photo = ref('')
@@ -145,6 +156,10 @@ onLoad(() => {
   loadSpaces()
 })
 
+// 页面销毁时把 loading 计数归零：万一有哪条路径没配平，残留的计数会让之后
+// 每一次 show/hide 都错位 —— 微信侧会一直报「showLoading 与 hideLoading 必须配对使用」
+onUnload(() => resetLoading())
+
 async function loadSpaces() {
   try {
     const res = await fetchSpaces({ page: 1, pageSize: 50 })
@@ -172,43 +187,88 @@ function chooseSpace() {
   })
 }
 
-/** 选图：优先 chooseMedia（新版基础库），不可用时退回 chooseImage */
-function pick() {
-  if (analyzing.value) return
+function onPicked(path, size) {
+  if (!validate(path, size)) return
+  photo.value = path
+  result.value = null
+  analyze(path)
+}
 
-  const onPicked = (path, size) => {
-    if (!validate(path, size)) return
-    photo.value = path
-    result.value = null
-    analyze(path)
+/**
+ * 选图统一入口。
+ * @param {string|string[]} source 'camera' | 'album' | ['camera','album']
+ *
+ * 两个坑：
+ *  1. 原来 fail 回调是空的——用户点「拍照」没反应时页面毫无提示，
+ *     看起来就像「摄像头点不开」。现在把失败原因说出来（主动取消不提示）。
+ *  2. chooseMedia 在部分基础库 / 开发者工具版本上相机通道不可用，
+ *     失败后退回 chooseImage 再试一次；还不行才提示。
+ */
+function chooseImage(source, onPickedCb) {
+  const sourceType = Array.isArray(source) ? source : [source]
+  let retried = false
+
+  const onFail = (err) => {
+    const msg = String((err && err.errMsg) || '')
+    if (/cancel/i.test(msg)) return
+    if (!retried) {
+      retried = true
+      chooseImageLegacy(sourceType, onPickedCb, onFail)
+      return
+    }
+    toast(msg ? `打开失败：${msg}` : '打开失败，请重试')
   }
 
   if (typeof uni.chooseMedia === 'function') {
     uni.chooseMedia({
       count: 1,
       mediaType: ['image'],
-      sourceType: ['camera', 'album'],
+      sourceType,
       sizeType: ['compressed'],
+      camera: 'back',
       success: (res) => {
         const f = res.tempFiles && res.tempFiles[0]
-        if (f) onPicked(f.tempFilePath, f.size)
+        if (f) onPickedCb(f.tempFilePath, f.size)
       },
-      fail: () => {},
+      fail: onFail,
     })
     return
   }
 
+  chooseImageLegacy(sourceType, onPickedCb, onFail)
+}
+
+/** 退路：基础库 < 2.10.0 没有 chooseMedia，或相机通道不可用 */
+function chooseImageLegacy(sourceType, onPickedCb, onFail) {
   uni.chooseImage({
     count: 1,
     sizeType: ['compressed'],
-    sourceType: ['camera', 'album'],
+    sourceType,
     success: (res) => {
       const path = res.tempFilePaths && res.tempFilePaths[0]
       const file = res.tempFiles && res.tempFiles[0]
-      if (path) onPicked(path, file ? file.size : 0)
+      if (path) onPickedCb(path, file ? file.size : 0)
     },
-    fail: () => {},
+    fail: onFail,
   })
+}
+
+/** 取景框 / 主按钮：交给系统菜单让用户选拍照还是相册 */
+function pick() {
+  if (analyzing.value) return
+  chooseImage(['camera', 'album'], onPicked)
+}
+
+/** 明确拍照 */
+function takePhoto() {
+  if (analyzing.value) return
+  chooseImage('camera', onPicked)
+}
+
+/** 明确从相册选 */
+function pickAlbum() {
+  if (analyzing.value) return
+  chooseImage('album', onPicked)
 }
 
 /**
@@ -235,9 +295,20 @@ async function analyze(path) {
   analyzing.value = true
   showLoading('AI 识别中…')
   try {
+    // ⚠️ **2026-09-30 修：原先这里取的是 .id。**
+    //
+    // 后端 /resources/spaces 返回的主键字段是 **spaceId**，根本没有 id
+    // （见 backend/app/api/resources.py 的 _space_out），所以这里恒为 undefined；
+    // 而 api/inspect.js 在 spaceId 为 undefined 时**不会写进 formData**，
+    // 后端 /inspect/submit 的 spaceId 又是必填 Form（required=["file","spaceId"]）
+    // —— 于是**拍照巡检每一次都必然被参数校验拦下**。
+    //
+    // 之前一直没暴露，是因为 FALLBACK_TO_LOCAL 的兜底数据恰好同时给了 id 和 name，
+    // 只有「后端离线走兜底」那一路能跑通。兜底已关（config/index.js），这条路必须修。
+    // first(...) 同时容忍两种命名，兜底数据若将来复用也不会再踩。
     const spaceId =
       spaceIndex.value >= 0 && spaceList.value[spaceIndex.value]
-        ? spaceList.value[spaceIndex.value].id
+        ? first(spaceList.value[spaceIndex.value].spaceId, spaceList.value[spaceIndex.value].id)
         : undefined
     result.value = await submit(path, spaceId)
   } catch (e) {
@@ -283,5 +354,28 @@ function goTickets() {
   color: var(--t3);
   padding: 0 30rpx;
   line-height: 1.7;
+}
+
+/* 拍照 / 相册 双按钮 */
+.pickrow {
+  display: flex;
+  gap: 20rpx;
+  margin-bottom: 22rpx;
+}
+
+.pbtn {
+  flex: 1;
+  height: 84rpx;
+  line-height: 84rpx;
+  text-align: center;
+  font-size: 26rpx;
+  color: var(--t1);
+  background: #fff;
+  border: 1px solid var(--bd-l);
+  border-radius: 20rpx;
+}
+
+.pbtn-on {
+  background: #f2f6fd;
 }
 </style>

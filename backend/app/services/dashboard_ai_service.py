@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import re
+from decimal import Decimal
 
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,8 +34,49 @@ from app.services import dashboard_export_service, dashboard_service
 
 logger = logging.getLogger(__name__)
 
-# LLM 总超时（秒）。超时即走纯统计降级
-LLM_TIMEOUT_SECONDS = 8
+
+def _json_default(value):
+    """`json.dumps` 的兜底编码器：把 `Decimal` 编成 float。
+
+    为什么需要它（2026-09-29 实测踩到）
+    ----------------------------------
+    `_invoke_llm` 要把 stats 塞进 Prompt，用的是 `json.dumps(stats)`。
+    而 `get_device_idle_rate` 在 **MySQL** 上返回 `Decimal`（`SUM()` 是 DECIMAL），
+    `json.dumps` 不认识它 → 抛 `TypeError: Object of type Decimal is not JSON serializable`
+    → 被 `generate_report` 的外层 except 收成「走纯统计降级」。
+
+    表现是：**根本没调到大模型**，页面上却是一份看起来像模像样的报告
+    （规则模板拼的），只有 `degraded=true` 一个字段在提示异常 ——
+    而它太容易被读成「模型不稳定」，导致真因被掩盖。
+
+    根因已在 `dashboard_service` 修掉（返回 float）。这里再兜一层是**防复发**：
+    以后统计口径再加字段时，不会因为一个 Decimal 又把整份 AI 报告打回降级。
+    """
+    if isinstance(value, Decimal):
+        return float(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+# LLM 超时（秒）。超时即走纯统计降级。
+#
+# ⚠️ **2026-09-29：由硬编码 8 秒改为跟随 `settings.LLM_TIMEOUT`。**
+#
+# 原来写死 8 秒，理由是「演示脚本第 4 屏只有 20s 预算」。但它**同时**被用作
+# `ChatOpenAI` 的 HTTP 超时（见下方 `_build_llm`），而真模型根本来不及 ——
+# 实测 `qwen3.7-flash` 生成这份报告需要 **51.6 秒**；8 秒下三层容错各自超时、
+# 合计 16.7 秒后抛 `_LLMUnavailable`，**整份报告静默降级成规则模板**。
+#
+# 这个失败方式极具误导性：页面上仍有一份「看起来像模像样」的报告，
+# 只有 `degraded=true` 一个字段在提示异常，极易被读成「模型不稳定」。
+# 实测定位过程见 `docs/spec/后端改动1.md` §5.18。
+#
+# 现在跟随 `.env` 的 `LLM_TIMEOUT`（当前 60），与其它 LLM 配置同一口径；
+# 需要为演示压缩预算时改 `.env` 即可，不必改代码。
+#
+# 注：`tests/test_ai_resilience.py` 用 `monkeypatch.setattr(ai_svc,
+# "LLM_TIMEOUT_SECONDS", 0.2)` 驱动超时分支 —— 它在本模块**被调用时**读取该全局变量，
+# 所以把值来源换成 settings 不影响那些用例。
+LLM_TIMEOUT_SECONDS = float(settings.LLM_TIMEOUT)
 
 # 单次报告最多返回的建议条数
 MAX_SUGGESTIONS = 5
@@ -347,7 +389,7 @@ async def _invoke_llm(stats: dict, days: int, extra_instruction: str = "") -> li
         ("system", _SYSTEM_PROMPT),
         ("human", _USER_PROMPT_TEMPLATE.format(
             days=days,
-            stats_json=json.dumps(stats, ensure_ascii=False, indent=2),
+            stats_json=json.dumps(stats, ensure_ascii=False, indent=2, default=_json_default),
             max_suggestions=MAX_SUGGESTIONS,
         ) + extra_instruction),
     ]
