@@ -89,6 +89,8 @@ Tool 签名 `lock_resources(space_id, device_ids, start_time, end_time)`（`§5.
 """
 
 from collections import Counter
+from datetime import datetime, timedelta
+from typing import Any
 
 from sqlalchemy import select
 
@@ -133,11 +135,11 @@ _ALLOWED_CREATE_STATUS = (OrderStatus.PENDING.value, OrderStatus.CONFIRMED.value
 # 名字保留在 service 层是为了让「取值只有一处定义」这条约定成立：
 # `app/agent/tools/lock_resources.py` 的可重试集合与 `tests/test_agent_tools.py`、
 # `tests/test_agent_concurrency.py` 都从这里取，不要在实现里另写字面量。
-CONFLICT_TIME = "time_conflict"                  # 场地时段冲突
-CONFLICT_DEVICE_MISSING = "not_found"            # 设备 ID 不存在（→ HTTP 404）
+CONFLICT_TIME = "time_conflict"  # 场地时段冲突
+CONFLICT_DEVICE_MISSING = "not_found"  # 设备 ID 不存在（→ HTTP 404）
 CONFLICT_DEVICE_UNAVAILABLE = "device_conflict"  # 设备非完好状态（reason=status）
-CONFLICT_DEVICE_SHORTAGE = "device_conflict"     # 设备库存不足（reason=exhausted）
-CONFLICT_INVALID_TIME = "invalid_param"          # 起止时间本身非法
+CONFLICT_DEVICE_SHORTAGE = "device_conflict"  # 设备库存不足（reason=exhausted）
+CONFLICT_INVALID_TIME = "invalid_param"  # 起止时间本身非法
 
 
 def _as_int(value) -> int | None:
@@ -285,6 +287,87 @@ def _hit_device_ids(raw, wanted: set[int]) -> list[int]:
         if value in wanted:
             hit.add(value)
     return sorted(hit)
+
+
+def _peak_occupancy(windows: list[tuple[Any, Any]]) -> int:
+    """
+    一组时间区间在**同一时刻**的最大并发数（扫描线）。
+
+    实现：把每个区间拆成 (开始, +1) 与 (结束, -1) 两个事件，按时间排序后扫描，
+    记录过程中的最大值。
+
+    同一时刻**先处理结束、再处理开始**（见下方 sort key）——
+    否则「11:00 结束」与「11:00 开始」会被算成同时在用，凭空多占一个名额。
+    这与下单判重的半开区间口径一致（`_device_conflicts`：`start < end` 且
+    `end > start`），
+    所以相邻时段不会被重复计入。
+
+    复杂度 O(n log n)，n 是命中该设备的订单数（很小）。
+    """
+    events: list[tuple[Any, int]] = []
+    for start, end in windows:
+        events.append((start, 1))
+        events.append((end, -1))
+
+    # 同一时刻：先 -1（释放）后 +1（占用）
+    events.sort(key=lambda item: (item[0], item[1]))
+
+    current = 0
+    peak = 0
+    for _when, delta in events:
+        current += delta
+        peak = max(peak, current)
+    return peak
+
+
+async def peak_device_occupancy(db, *, horizon_days: int, now: Any = None) -> dict[int, int]:
+    """
+    `{device_id: 窗口内同时占用该设备的最大活跃单数}`。
+
+    供「资源与设备」页显示**实时剩余**用：
+        remaining = device_resource.available_count − 本函数给出的峰值
+
+    ⚠️ **本函数只读，不写任何列。**
+    `available_count` 按已定口径**只读不写**（见
+    `docs/available_count口径判据.md`）：它是**静态上限**，不是「还剩几台」；
+    剩余量必须用时推导。所以「可用数要减一」这件事的正确实现是
+    **把推导出来的剩余量显示出来**，而不是去扣那一列 ——
+    扣了就会串台（周一借走吃掉周二的名额），且一旦扣到 0 就再也借不回来。
+
+    取窗口内**峰值**（最坏情况）而不是「此刻在用的数量」：
+    列表页给不出时间上下文，只有峰值才对得上「任何时段来借，至少还剩几台」。
+    若取此刻，用户会在一个空闲的上午看到满额、下午却借不到，反而更迷惑。
+
+    占用口径与下单严格同源：`ACTIVE_ORDER_STATUSES`（1 待确认 / 2 已确认），
+    取消 / 完成离开该集合后名额自动回来 —— 不需要任何回补代码。
+    """
+    anchor = now or datetime.now()
+    start = anchor
+    end = anchor + timedelta(days=max(1, int(horizon_days)))
+
+    rows = (
+        await db.execute(
+            select(ReserveOrder.device_ids, ReserveOrder.start_time, ReserveOrder.end_time).where(
+                ReserveOrder.order_status.in_(ACTIVE_ORDER_STATUSES),
+                ReserveOrder.end_time > start,
+                ReserveOrder.start_time < end,
+            )
+        )
+    ).all()
+
+    # device_id -> 该设备的所有占用区间（裁剪到窗口内）
+    windows: dict[int, list[tuple[Any, Any]]] = {}
+    for device_ids, win_start, win_end in rows:
+        for raw_id in device_ids or []:
+            try:
+                device_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            clipped_start = max(win_start, start)
+            clipped_end = min(win_end, end)
+            windows.setdefault(device_id, []).append((clipped_start, clipped_end))
+
+    return {device_id: _peak_occupancy(ws) for device_id, ws in windows.items()}
 
 
 async def _device_conflicts(
@@ -520,9 +603,7 @@ async def create_order(
 
                 conflicts = await _time_conflicts(db, space_id, start, end)  # 3.
                 if conflicts:
-                    raise _Reject(
-                        CONFLICT_TIME, "该时段已被占用", {"conflicts": conflicts}
-                    )
+                    raise _Reject(CONFLICT_TIME, "该时段已被占用", {"conflicts": conflicts})
 
                 await _check_devices(db, device_ids, locked_devices, start, end)  # 4.
 

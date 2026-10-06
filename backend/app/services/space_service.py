@@ -35,8 +35,9 @@ from app.core.database import AsyncSessionLocal
 from app.core.exceptions import ParamInvalidError
 from app.models.reservation import OCCUPYING_STATUS, ReserveOrder
 from app.models.resource import SpaceResource
+from app.state_machine import OrderStatus
 
-__all__ = ["query_spaces", "list_space_bookings", "TIME_FORMATS"]
+__all__ = ["query_spaces", "list_space_bookings", "space_occupancy", "TIME_FORMATS"]
 
 #: 允许的时间格式。**必须与 `app/agent/tools/_common.py` 的 `TIME_FORMATS` 一致**。
 #:
@@ -160,6 +161,143 @@ async def query_spaces(capacity: int, space_type: int, start_time: str, end_time
     return {"count": len(rows), "spaces": [_to_dict(r) for r in rows]}
 
 
+async def space_occupancy(db: AsyncSession, *, now: datetime | None = None) -> dict[int, str]:
+    """
+    每个场地**当前**的占用状态：`{space_id: "使用中" | "已被预约"}`。
+
+    **不含空闲的场地** —— 查不到 key 就是空闲（"空闲" 由调用方补，见
+    `app/api/resources.py::_space_out`）。
+
+    口径（按时间推导，**不写任何列**）：
+        · `使用中`    **已确认**（状态 2）的单，其 `[start, end)` 包含当前时刻
+        · `已被预约`  没有正在使用的单，但存在一条**本周内**尚未开始、或在用但
+                      **待确认**（状态 1）的单
+        两者都不满足 → 空闲（本函数不返回）
+
+    ⚠️ 「使用中」只认**已确认**（2026-10-06 修）
+    ------------------------------------------
+    初版把「待确认（1）」也算进「使用中」，于是场地 7 因为一条 11:00~13:00 的
+    **待确认**单，在 11:13 显示成「使用中」—— 用户直接报「它没有使用，显示使用中」。
+
+    业务上确实说不通，而且本仓库**自己的界面文案**就写着
+    （`frontend/src/views/AgentWorkbench.vue`）：
+        「确认后才会进入『已确认』，**占用才算真正落实**。」
+    所以「正在用但还没确认」的单落到「已被预约」，而不是「使用中」。
+
+    注意：**待确认仍然算「已被预约」**，因为 `OCCUPYING_STATUS`（1 与 2）都占住
+    时段 —— 下单判重与 `query_spaces` 都不把它当空闲。区别只在**文案强度**：
+    「已被预约」＝时段被占住；「使用中」＝已确认、正在用。
+
+    ⚠️ 为什么**不**改 `space_resource.status`
+    ----------------------------------------
+    那一列是「可用 / 停用」（`comment="可用状态：1可用 0停用"`），
+    且被 5 处查询当作「能不能借」的判据（`space_service.query_spaces`、
+    `image_service`、`dashboard_service`、`rules/idle` 等）。
+    若预约时把它改成 0，那个场地会**从所有可用场地里消失**，
+    而订单结束后又没有人负责改回来 —— 这正是本仓库踩过两次的
+    「单向状态机」坑（设备报损那次就是）。
+    所以占用状态**只推导、不落库**：它是 (场地, 时刻) 的函数，
+    与 `available_count`/剩余量同一条设计原则。
+
+    口径（按时间推导，**不写任何列**）：
+        · `使用中`    存在一条活跃单，其 `[start, end)` **包含当前时刻**
+        · `已被预约`  没有正在使用的单，但存在一条活跃单落在**本周内**且尚未开始
+        两者都不满足 → 空闲（本函数不返回）
+
+    为什么限制在「本周」（2026-10-06 业务口径）
+    -----------------------------------------
+    「已被预约」只反映**近期的占用**，不是「历史上被订过」。
+    下周及以后的单不进这一列 —— 提前两周的预约就让场地长期显示「已被预约」，
+    会让这一列失去区分度（场地页几乎全是「已被预约」）。
+    想看更远的占用，用 `list_space_bookings`（按天查明细）。
+
+    周界口径：以**周一为一周开始**、周日结束，与主文档
+    「相对时间的换算规则」一致（那儿也是「这一周从星期一开始」）。
+    本周一 = 今天 − `weekday()` 天；本周日 = 本周一 + 6 天（用日期比较，不看时刻）。
+
+    另：「使用中」在订单状态机里**没有对应取值**（只有 1 待确认 / 2 已确认 /
+    3 已取消 / 4 已完成），只能按时间算。不要为了这个显示去加第 5 个状态 ——
+    那会波及列表、文案与全部状态机用例。
+
+    参数：
+        now : datetime | None  当前时刻，留出口子便于测试。默认取系统时间
+                                （与 `order_service` 的判重口径同为本地时间）。
+    """
+    anchor = now or datetime.now()
+    # 本周一 00:00 ~ 本周日 23:59:59（用日期比较，不看时刻）
+    week_start = (anchor - timedelta(days=anchor.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    week_end = week_start + timedelta(days=7)
+
+    # 只取「还在占用中」的活跃单，两个下界缺一不可：
+    #   · `end_time > anchor`      排掉已经结束的（它们仍留在活跃集合里没人推终态）
+    #   · `start_time < week_end`  排掉下周及以后的（本周口径，见 docstring）
+    # SQL 层就排掉，既少读行，也让谓词吃得上 idx_status_start 的最左前缀
+    # （order_status 等值 + start_time 范围）。
+    #
+    # ⚠️ 必须连 `order_status` 一起 select 回来：判定要区分「已确认(2)」与
+    #    「待确认(1)」，少了这一列就只能猜。
+    rows = (
+        await db.execute(
+            select(
+                ReserveOrder.space_id,
+                ReserveOrder.order_status,
+                ReserveOrder.start_time,
+                ReserveOrder.end_time,
+            ).where(
+                ReserveOrder.order_status.in_(OCCUPYING_STATUS),
+                ReserveOrder.space_id.is_not(None),
+                ReserveOrder.end_time > anchor,
+                ReserveOrder.start_time < week_end,
+            )
+        )
+    ).all()
+
+    result: dict[int, str] = {}
+    for space_id, order_status, start, end in rows:
+        verdict = _judge_space(order_status, start, end, anchor=anchor, week_end=week_end)
+        if verdict is None:
+            continue
+        in_use = start <= anchor < end
+        # 「使用中」优先级最高：同一场地若既有正在用的已确认单、又有别的单，
+        # 不能被后面的「已被预约」覆盖。
+        if in_use and order_status == OrderStatus.CONFIRMED:
+            result[space_id] = verdict
+        else:
+            result.setdefault(space_id, verdict)
+    return result
+
+
+def _judge_space(
+    order_status: int, start: datetime, end: datetime, *, anchor: datetime, week_end: datetime
+) -> str | None:
+    """
+    一条订单对「它占用的场地此刻该显示什么」的判定。**None = 这条单不该影响显示**。
+
+    抽成独立函数是为了**可归因**：`space_occupancy` 只返回 `{场地: 文案}`，
+    看到「使用中」时无从判断是哪条单导致的。有了本函数，可以直接拿一条单
+    （甚至一条**排除掉候选单之后**的集合）来问「它会不会让它显示使用中」——
+    排查「这个场地为什么显示使用中」时就是靠这个把责任定位到具体单号。
+
+    判定口径（详见 `space_occupancy` 的 docstring）：
+        · 已确认 + 在时段内          → 使用中
+        · 尚未开始（本周内）          → 已被预约
+        · 在时段内但**未确认**        → 已被预约（占住了，但没落实）
+        · 已结束                     → None（不该影响显示）
+    """
+    if order_status not in OCCUPYING_STATUS:
+        return None
+    in_use = start <= anchor < end
+    if in_use and order_status == OrderStatus.CONFIRMED:
+        return "使用中"
+    if start > anchor or in_use:
+        return "已被预约"
+    # 已结束（`end_time <= anchor`）：在线库里常见「单子做完了没人推终态」，
+    # 不能让它继续占着显示。
+    return None
+
+
 async def list_space_bookings(
     db: AsyncSession,
     space_id: int,
@@ -167,7 +305,8 @@ async def list_space_bookings(
     *,
     start: date | None = None,
 ) -> list[ReserveOrder]:
-    """某场地在**未来 N 天内已被占用**的预约明细（含待确认与已确认）。
+    """
+    某场地在**未来 N 天内已被占用**的预约明细（含待确认与已确认）。
 
     与 `query_spaces` 的关系：
         `query_spaces` 回答「这个时段**哪些场地空着**」（剔除占用后返回可用场地）；

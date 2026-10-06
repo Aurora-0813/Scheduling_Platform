@@ -228,8 +228,15 @@ def test_u04_lock_resources_distinguishes_persisted_from_stub() -> None:
 
 
 def test_u04_result_is_clipped() -> None:
-    """`result` 有长度上限——前端卡片放不下长文本。"""
-    long_reason = "很长的原因" * 40
+    """`result` 有长度上限——防御模型把整段分析塞进一个字段。
+
+    ⚠️ 这里的输入长度要**明显超过 `_RESULT_MAX_LEN`**：该常量 2026-10-06 一度
+    提到 300 又改回 80（经过见 trace.py 该常量上方）。若哪天它再被放宽，
+    而输入还是「刚好超一点」，用例就会**假通过** ——
+    它验的是「超长会被截」，而输入根本没超长。
+    所以这里用 1000 字，无论上限是 80 还是 300 都成立。
+    """
+    long_reason = "很长的原因" * 200  # 1000 字，远超任何合理的 _RESULT_MAX_LEN
     steps = build_trace(
         [
             (
@@ -241,6 +248,49 @@ def test_u04_result_is_clipped() -> None:
     )
 
     assert len(steps[0].result) <= trace_mod._RESULT_MAX_LEN
+    assert steps[0].result.endswith("…"), "超长 result 应被截断并以省略号结尾"
+
+
+def test_u04_submit_plan_points_to_the_plan_panel() -> None:
+    """交付方案这一步只给指路，不复述方案 —— 方案全文由各端自行渲染。
+
+    背景：这一步的 `result` 曾经是「提交方案：已提交」，而真正长的方案说明由
+    `builder` 放在 `submit_plan` 的入参里、并不进 `result`；但 `result` 一旦被
+    用来承载方案文字，就会与响应里的 `plan` / `backupPlan` 形成**两份方案**，
+    既撑长中栏又容易不一致。故改为固定指路文案。
+
+    ⚠️ 文案**刻意不写方位、也不写点击**（2026-10-06）：
+       同一份 `result` 由 Web 端与小程序端共用，而两端方案位置不同 ——
+       Web 在右侧常驻面板（不用点），小程序在另一页（需要点）。
+       写「右侧」只对 Web 准，写「点击」只对小程序准，都会在另一端变成错话。
+       所以断言里**同时禁止**这两个词，防止以后又被写回去。
+
+    同时这条用例钉住**中文标签必须还在**：`_ACTION_LABEL` 的标签是
+    `test_u04_labels_are_chinese` 的断言对象，改文案时不能把它丢掉。
+    """
+    ok = _tool('{"ok": true, "accepted": true, "message": "方案已提交"}', "submit_plan")
+    steps = build_trace(
+        [
+            (_ai("提交", [_call("submit_plan", {})]), "2026-09-25 14:00:00"),
+            (ok, "2026-09-25 14:00:01"),
+        ]
+    )
+
+    assert "提交方案" in steps[0].result, "中文标签不能丢（test_u04_labels_are_chinese 依赖它）"
+    assert "详情请查看方案" in steps[0].result, "应给出「去哪儿看方案」的指路语"
+    assert "右侧" not in steps[0].result, "不能写方位：小程序端方案不在右侧，共用文案会变成错话"
+    assert "点击" not in steps[0].result, "不能写点击动作：Web 端方案是常驻面板，无需点击"
+
+    # 失败时不能指路：那样会把人引到一个没有方案的区域，得说清失败原因
+    failed = _tool('{"ok": false, "reason": "字段缺失"}', "submit_plan")
+    failed_steps = build_trace(
+        [
+            (_ai("提交", [_call("submit_plan", {})]), "2026-09-25 14:00:00"),
+            (failed, "2026-09-25 14:00:01"),
+        ]
+    )
+    assert "失败" in failed_steps[0].result
+    assert "字段缺失" in failed_steps[0].result
 
 
 def test_u04_pending_observation_is_marked_as_such() -> None:

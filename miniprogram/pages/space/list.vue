@@ -40,6 +40,16 @@
               <view class="sptop">
                 <text class="spname">{{ nameOf(s) }}</text>
                 <text class="tag blue">{{ spaceTypeLabel(s.spaceType) }}</text>
+                <!--
+                  占用状态（2026-10-06 加）：后端按活跃单时段与当前时刻**推导**的文案。
+                    使用中＝已确认的单正在时段内；已被预约＝本周内已有人订；
+                    空闲＝本周内没有。
+                  它与「可用/停用」不是一回事 —— 后者是台账开关，预约不改写它。
+                  只加一个 tag，不动原来的标题行结构。
+                -->
+                <text class="tag" :class="statusTag('space', 0, s.occupancyText)">
+                  {{ s.occupancyText || '空闲' }}
+                </text>
               </view>
               <text class="spmeta">📍 {{ s.location || '位置未登记' }}</text>
               <text class="spmeta">👥 可容纳 {{ s.capacity }} 人 · 🕘 {{ openText(s) }}</text>

@@ -45,3 +45,12 @@ export function confirmOrder(orderId) {
 export function cancelOrder(orderId) {
   return bizHttp.put(`/orders/${orderId}/cancel`)
 }
+
+// PUT /orders/{orderId}/complete 完成预约（状态机 2→4）
+//
+// 2026-10-06 补：在此之前**没有任何入口**能把预约标成「已完成」，
+// 于是用完了的单子长期停在「已确认(2)」，而活跃集合含 2 ——
+// 场地会被一直算作「已被预约」。只允许 2→4，待确认的单要先确认或取消。
+export function completeOrder(orderId) {
+  return bizHttp.put(`/orders/${orderId}/complete`)
+}

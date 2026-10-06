@@ -84,6 +84,21 @@ export function confirmOrder(orderId) {
   return request({ path: `/orders/${orderId}/confirm`, method: 'PUT' })
 }
 
+/**
+ * 完成预约（状态机 2已确认 → 4已完成）。
+ *
+ * ⚠️ **2026-10-06 补。** 后端此前**没有任何接口**能走到「已完成」——
+ * `OrderStatus.COMPLETED` 只写在状态机迁移表里。后果是小程序无法结束一张
+ * 用过的预约单，它会一直停在「已确认(2)」，而活跃集合含 2 →
+ * **场地永远显示被占用**（Web 端已同步修好，这里是对齐）。
+ *
+ * 只能对「已确认」调：待确认会 409（状态迁移表只允许 2→4）。
+ * 完成后该单离开 `ACTIVE_ORDER_STATUSES`，场地立刻不再算占用。
+ */
+export function completeOrder(orderId) {
+  return request({ path: `/orders/${orderId}/complete`, method: 'PUT' })
+}
+
 /** 取消预约（只有待确认 / 已确认可取消，判断见 utils/dict.js 的 canCancelOrder） */
 export function cancelOrder(orderId) {
   return request({ path: `/orders/${orderId}/cancel`, method: 'PUT' })
@@ -92,4 +107,12 @@ export function cancelOrder(orderId) {
 /** 把 Date 或后端时间串统一成提交用的格式，供页面直接调用 */
 export const toApiTime = formatDateTime
 
-export default { myOrders, getOrder, createOrder, confirmOrder, cancelOrder, toApiTime }
+export default {
+  myOrders,
+  getOrder,
+  createOrder,
+  confirmOrder,
+  completeOrder,
+  cancelOrder,
+  toApiTime,
+}

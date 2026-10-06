@@ -19,24 +19,39 @@
         <view v-if="analyzing" class="scanline"></view>
       </view>
 
-      <!-- 相机 / 相册分开给按钮：合并的 action sheet 在开发者工具里常常只弹相册，
-           分开后「拍照」是明确的 camera-only 调用，失败也会把原因说出来 -->
-      <view class="pickrow">
-        <view class="pbtn" hover-class="pbtn-on" :hover-stay-time="60" @tap="takePhoto">
-          📷 拍照
-        </view>
-        <view class="pbtn" hover-class="pbtn-on" :hover-stay-time="60" @tap="pickAlbum">
-          🖼 从相册选
-        </view>
-      </view>
+      <!--
+        2026-10-06：**去掉了「拍照」与「从相册选」两个按钮。**
+        取景框（`.imgbox`，上面的 `@tap="pick"`）本身就是统一入口 ——
+        `pick()` 用 `chooseMedia(['camera','album'])` 弹系统菜单让用户选，
+        与那两个按钮是同一个动作，留着只是多两个入口。
+        文案也随之改成「点击拍照，或从相册选」以说明这一处即可。
+      -->
 
-      <!-- 空间选择：巡检要关联到具体场地，后端才能派单 -->
+      <!--
+        空间选择：巡检要关联到具体场地，后端才能派单。
+
+        ⚠️ 2026-10-06 修「巡检区域点不动」：这里原来用的是
+        `uni.showActionSheet({ itemList: names })`，而 **`itemList` 最多 6 项** ——
+        `/resources/spaces` 返回 **8 个场地**，超限后该调用**直接失败**；
+        原来的 `fail` 回调又是空的，于是点下去毫无反应（连提示都没有）。
+        实测接口返回 8 条，必然踩中。
+
+        改用原生 `<picker>`（与 `pages/reserve/create.vue` 同一写法）：
+        它用系统滚轮，**不受条数限制**，也不会像 action sheet 那样在场地变多后
+        悄悄失灵。`range-key="spaceName"` 让 options 直接取字段，不必自己拼名字数组。
+      -->
       <view class="mcard">
-        <view class="mbrow pick" @tap="chooseSpace">
-          <text class="k">巡检区域</text>
-          <text class="v">{{ spaceLabel }}</text>
-          <text class="ma">›</text>
-        </view>
+        <picker
+          :range="spaceList"
+          range-key="spaceName"
+          @change="onSpaceChange"
+        >
+          <view class="mbrow pick">
+            <text class="k">巡检区域</text>
+            <text class="v">{{ spaceLabel }}</text>
+            <text class="ma">›</text>
+          </view>
+        </picker>
       </view>
 
       <!-- 识别结果 -->
@@ -172,19 +187,18 @@ async function loadSpaces() {
   }
 }
 
-function chooseSpace() {
-  if (!spaceList.value.length) {
-    toast('场地列表加载失败，稍后再试')
-    return
+/**
+ * 选择巡检区域。
+ *
+ * 用原生 `<picker>` 的 `change` 事件（`e.detail.value` 是选中项的下标），
+ * 替掉原来的 `uni.showActionSheet` —— 后者的 `itemList` **最多 6 项**，
+ * 而场地有 8 个，超限即静默失败（详见模板里的说明）。
+ */
+function onSpaceChange(e) {
+  const index = Number(e && e.detail && e.detail.value)
+  if (Number.isInteger(index) && index >= 0 && index < spaceList.value.length) {
+    spaceIndex.value = index
   }
-  const names = spaceList.value.map((s) => spaceName(s) || '未命名场地')
-  uni.showActionSheet({
-    itemList: names,
-    success: (res) => {
-      spaceIndex.value = res.tapIndex
-    },
-    fail: () => {},
-  })
 }
 
 function onPicked(path, size) {
@@ -253,22 +267,19 @@ function chooseImageLegacy(sourceType, onPickedCb, onFail) {
   })
 }
 
-/** 取景框 / 主按钮：交给系统菜单让用户选拍照还是相册 */
+/**
+ * 取景框 / 底部主按钮：交给系统菜单让用户选拍照还是相册。
+ *
+ * ⚠️ 2026-10-06：原先还有 `takePhoto()` / `pickAlbum()` 两个「明确相机」「明确相册」
+ *    的独立按钮，已随按钮一起删除（用户要求去掉那两个按钮）。
+ *    那两个函数当时的存在理由写在原注释里 ——「合并的 action sheet 在开发者工具里
+ *    常常只弹相册」。若将来在开发者工具里发现 `pick()` **只弹相册、不弹相机**，
+ *    说明那个老问题回来了，届时把两个明确入口加回来即可（`chooseImage` 已支持
+ *    传单个 source，不需要改底层）。
+ */
 function pick() {
   if (analyzing.value) return
   chooseImage(['camera', 'album'], onPicked)
-}
-
-/** 明确拍照 */
-function takePhoto() {
-  if (analyzing.value) return
-  chooseImage('camera', onPicked)
-}
-
-/** 明确从相册选 */
-function pickAlbum() {
-  if (analyzing.value) return
-  chooseImage('album', onPicked)
 }
 
 /**
@@ -354,28 +365,5 @@ function goTickets() {
   color: var(--t3);
   padding: 0 30rpx;
   line-height: 1.7;
-}
-
-/* 拍照 / 相册 双按钮 */
-.pickrow {
-  display: flex;
-  gap: 20rpx;
-  margin-bottom: 22rpx;
-}
-
-.pbtn {
-  flex: 1;
-  height: 84rpx;
-  line-height: 84rpx;
-  text-align: center;
-  font-size: 26rpx;
-  color: var(--t1);
-  background: #fff;
-  border: 1px solid var(--bd-l);
-  border-radius: 20rpx;
-}
-
-.pbtn-on {
-  background: #f2f6fd;
 }
 </style>

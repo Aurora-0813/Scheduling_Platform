@@ -21,6 +21,8 @@ from pydantic import BaseModel, Field
 __all__ = [
     "InspectAnalysis",
     "InspectSubmitData",
+    "HandleVerifyAnalysis",
+    "TicketHandleData",
     "TicketItem",
     "TicketListData",
     "TicketStatusUpdate",
@@ -64,6 +66,44 @@ class InspectAnalysis(BaseModel):
 
 
 # ===========================================================================
+# 1b. 大模型对「处理后照片」的结构化输出
+# ===========================================================================
+class HandleVerifyAnalysis(BaseModel):
+    """
+    大模型对一张**维修完成后**照片的结构化判断。
+
+    字段刻意与 `InspectAnalysis` 同名同义，**不新造一套口径**：
+    「设备是否修好」与「设备是否完好」是同一件事的两种问法，
+    另立一套「处理成功 / 处理失败」的二值口径等于把同一判断标准写两遍，
+    而本仓库反复踩过的坑正是「同一件事两处实现、改一处漏一处」。
+
+    与 `InspectAnalysis` 的差异只有一处：**没有 repairSuggestion** ——
+    核验环节不需要再给维修建议：通过了就没得修，没通过则该重做，
+    而不是再写一条建议。
+    """
+
+    deviceStatus: str = Field(
+        ...,
+        description=(
+            "维修后设备状况判定，只能取这四个值之一："
+            "完好 / 损坏 / 缺失配件 / 无法识别。"
+            "照片空白、严重模糊或完全遮挡时填 无法识别。"
+        ),
+    )
+    report: str = Field(
+        ...,
+        description=(
+            "核验说明：先客观描述画面中设备现在的状况，再说明是否已恢复正常。"
+            "200 字以内，不要分点编号。"
+        ),
+    )
+    deviceName: str | None = Field(
+        None,
+        description="画面中设备的名称（如 投影仪01）。认不出填 null，不要编造。",
+    )
+
+
+# ===========================================================================
 # 2. 对外响应模型
 # ===========================================================================
 class InspectSubmitData(BaseModel):
@@ -74,6 +114,10 @@ class InspectSubmitData(BaseModel):
     repairSuggestion: str = ""
     #: 只有判定为异常时才建工单；完好 / 无法识别时为 None
     ticketId: int | None = None
+    #: 设备台账**部分成功**时的提示，目前只有一种情形：
+    #: 该设备可借数已经是 0（可借台数用光 / 已有人报修），本次只记录故障、未再减。
+    #: 不回传的话，用户会看到「工单建了但可借数没变」，以为是 bug。
+    deviceWarning: str | None = None
 
 
 class TicketItem(BaseModel):
@@ -89,6 +133,13 @@ class TicketItem(BaseModel):
     statusText: str
     report: str | None = None
     createTime: str | None = None
+
+    # ---------- 处理结果与 AI 核验（模块 6 追加，均可空）----------
+    #: 处理结果照片地址；没走过 /handle 的工单为 None
+    handleImageUrl: str | None = None
+    #: AI 核验结论（四值，同 deviceStatus）；未核验为 None
+    verifyStatus: str | None = None
+    verifyReport: str | None = None
 
 
 class TicketListData(BaseModel):
@@ -119,4 +170,36 @@ class TicketUpdatedData(BaseModel):
     statusText: str
     handlerId: int | None = None
     handleTime: str | None = None
+    #: 推进到「已完成」且成功恢复设备时，回传恢复的设备与它的新可借数；
+    #: 未推进到已完成 / 未匹配到设备时为 None。前端可据此提示「设备已恢复可借」。
+    deviceId: int | None = None
+    availableCount: int | None = None
 
+
+class TicketHandleData(BaseModel):
+    """
+    `POST /tickets/{ticketId}/handle` 的 data —— 处理结果照片 + AI 核验。
+
+    比 `TicketUpdatedData` 多出核验相关的四项，其中 **`passed` 是给前端直接用
+    的布尔判定**，不要让它自己拿 `verifyStatus` 去和字符串比 ——
+    「哪个取值算通过」是业务口径，只能有一处定义（后端 `ABNORMAL_STATUSES`
+    的补集），前端再判一次就是第二处。
+    """
+
+    id: int
+    status: int
+    statusText: str
+    handlerId: int | None = None
+    handleTime: str | None = None
+
+    #: AI 核验是否通过。`verifyStatus == "完好"` 即 True。
+    passed: bool
+    #: 核验结论（四值）。模型彻底不可用时为 None，此时 passed=False 且 verifyReport 给出原因。
+    verifyStatus: str | None = None
+    verifyReport: str | None = None
+    #: 处理结果照片地址；落盘失败时为 None（不阻断核验，见 image_storage.save_image）
+    handleImageUrl: str | None = None
+    #: 核验通过并恢复设备时回传：恢复的设备 id 与它的新可借数。
+    #: 未通过 / 未匹配到设备时为 None。
+    deviceId: int | None = None
+    availableCount: int | None = None

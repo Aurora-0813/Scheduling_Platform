@@ -51,6 +51,25 @@
             :prefix-icon="Search"
           />
         </div>
+
+        <!--
+          「占用」列的口径说明。放在列附近而不是塞进 tooltip：
+          这两个词都有容易误解的边界（「已被预约」只算本周内；「使用中」只算已确认），
+          不写清楚就会被当成 bug —— 两种情况都真实发生过，这一条就是这么来的。
+          用设计系统的 .sp-ai-bar 通知条，与其它页面的提示保持同一套观感。
+        -->
+        <div class="sp-ai-bar occ-hint">
+          <div class="sp-ic">ℹ</div>
+          <span>
+            <b>占用</b>共三种：<b>使用中</b>＝<b>已确认</b>的预约正在时段内；
+            <b>已被预约</b>＝<b>本周内</b>已有人预约（下周及以后的预约不在此列，
+            那时该场地仍显示「空闲」；预约还在「待确认」的也算这一档）；
+            <b>空闲</b>＝本周内没有预约。
+            它与最后一列「状态」（可用 / 停用）不是一回事 ——
+            后者是管理员维护的台账开关，预约不会改动它。
+          </span>
+        </div>
+
         <el-empty
           v-if="!filteredSpaces.length"
           class="sp-empty"
@@ -65,6 +84,10 @@
               <th class="w-type">类型</th>
               <th class="c w-cap">可容纳人数</th>
               <th>位置</th>
+              <!-- 「占用」是**推导值**（按活跃单时段与当前时间算），与「状态」不是一回事：
+                   状态是「可用 / 停用」的台账开关，由管理员维护，预约绝不改写它
+                   （改了会让被预约的场地从所有可用场地查询里消失）。 -->
+              <th class="c w-status">占用</th>
               <th class="c w-status">状态</th>
             </tr>
           </thead>
@@ -75,6 +98,11 @@
               <td>{{ row.spaceTypeText }}</td>
               <td class="c">{{ row.capacity }}</td>
               <td>{{ row.location || '—' }}</td>
+              <td class="c">
+                <span class="sp-tag" :class="occupancyTagClass(row.occupancyText)">
+                  {{ row.occupancyText }}
+                </span>
+              </td>
               <td class="c">
                 <span class="sp-tag" :class="row.status === 1 ? 'is-green' : 'is-gray'">
                   {{ row.statusText }}
@@ -114,8 +142,11 @@
               <th>设备名称</th>
               <th class="w-type">类型</th>
               <!-- 原「所属场地」列已删：真实 device_resource **没有 space_id**（设备是全局资源，
-                   跨场地共用），那一列在真数据下永远是空的。换成真实存在的库存字段。 -->
-              <th class="c w-inv">可用 / 总数</th>
+                   跨场地共用），那一列在真数据下永远是空的。换成真实存在的库存字段。
+                   「剩余」是**推导值**（可借上限 − 窗口内峰值占用），与「可借上限」不是一回事：
+                   存储的那一列按口径只读不写，所以它不会因为有人下单就减少 ——
+                   会减少的是这里的「剩余」。 -->
+              <th class="c w-inv">剩余 / 可借 / 总数</th>
               <th class="c w-status">状态</th>
               <th class="c w-act">操作</th>
             </tr>
@@ -125,7 +156,7 @@
               <td class="c">{{ row.deviceId }}</td>
               <td class="strong">{{ row.deviceName }}</td>
               <td>{{ row.deviceType || '—' }}</td>
-              <td class="c">{{ row.availableCount }} / {{ row.totalCount }}</td>
+              <td class="c">{{ row.remainingCount }} / {{ row.availableCount }} / {{ row.totalCount }}</td>
               <td class="c">
                 <span class="sp-tag" :class="deviceTagClass(row.deviceStatus)">
                   {{ row.deviceStatusText }}
@@ -301,6 +332,19 @@ function deviceTagClass(status) {
   return TAG_CLASS[deviceTagType(status)] || 'is-gray'
 }
 
+/**
+ * 场地占用状态 → 标签配色。
+ *
+ * 「使用中」用**橙色**而不是红色：它表示场地正被正常使用，不是故障或告警。
+ * 红色留给真正的异常（设备损坏那种）。「空闲」用灰而不是绿 ——
+ * 绿在本页已经表示「可用」这个台账状态，两种绿会让人分不清哪个是哪个。
+ */
+const OCCUPANCY_CLASS = { 使用中: 'is-orange', 已被预约: 'is-blue', 空闲: 'is-gray' }
+
+function occupancyTagClass(text) {
+  return OCCUPANCY_CLASS[text] || 'is-gray'
+}
+
 /** 拉取两张表。抽成函数是因为「新增场地 / 改设备状态」提交后要重新拉一次 ——
  *  原先的提示语写着「mock 数据为常量，列表不实时变化」，那是 Mock 时代的说法；
  *  现在是真实接口，提交后会真的落库，必须刷新才看得到。 */
@@ -321,6 +365,23 @@ onMounted(refresh)
 </script>
 
 <style scoped>
+/*
+ * 「占用」口径提示条。`.sp-ai-bar` 默认 `align-items: center`，
+ * 那是为**单行**提示设计的；这条说明有两三行，图标会被垂直居中到中间，
+ * 看着像浮在文字旁。改为顶对齐并微调行高，让图标与首行文字齐平。
+ */
+.occ-hint {
+  align-items: flex-start;
+}
+
+.occ-hint .sp-ic {
+  margin-top: 2px;
+}
+
+.occ-hint span {
+  line-height: 1.75;
+}
+
 /* 表格列宽与对齐：原型把这些写在内联 style 里，这里收进 scoped，避免模板堆样式 */
 .sp-table .w-id {
   width: 76px;

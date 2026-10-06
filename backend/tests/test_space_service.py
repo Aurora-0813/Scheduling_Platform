@@ -100,6 +100,249 @@ def _ids(result: dict) -> list[int]:
 
 
 # ==========================================================================
+# 占用状态推导（`space_occupancy`）—— 不写库，按时间算
+#
+# ⚠️ 本组用例必须带 `use_test_db`：其余 `space_service` 函数用的是模块级的
+#    `AsyncSessionLocal`，少了这个夹具就会连回真实库（本地镜像或云库），
+#    既拿不到夹具种的数据、又会把测试数据写进真库。
+# ==========================================================================
+async def test_space_occupancy_is_derived_not_stored(use_test_db, db_session) -> None:
+    """「使用中 / 已被预约」是按当前时间**推导**的，且**不碰** `space_resource.status`。
+
+    这条对应「预约成功的场地在使用中时场地状态没变」的反馈。
+    结论是**不该改那一列**：它是「可用 / 停用」的台账开关，被多处
+    「能不能借」的查询依赖（`query_spaces` 等）。改它会让被预约的场地
+    从可用列表里消失，而订单结束后又没人改回来 —— 单向状态机坑。
+    所以占用只推导：`space_occupancy` 返回 {space_id: 文案}，查不到即空闲。
+    """
+    from app.services.space_service import space_occupancy
+
+    now = datetime(2026, 10, 6, 12, 0, 0)
+    await _add_space(db_session, space_id=901, name="在用场地", space_type=1, capacity=10)
+    await _add_space(db_session, space_id=902, name="待用场地", space_type=1, capacity=10)
+    await _add_space(db_session, space_id=903, name="空闲场地", space_type=1, capacity=10)
+
+    # 901：此刻正在用（11:00~13:00 覆盖 12:00）
+    db_session.add(
+        ReserveOrder(
+            space_id=901,
+            user_id=1,
+            order_status=2,
+            start_time=datetime(2026, 10, 6, 11, 0),
+            end_time=datetime(2026, 10, 6, 13, 0),
+        )
+    )
+    # 902：今天稍后（14:00 开始，还没到）
+    db_session.add(
+        ReserveOrder(
+            space_id=902,
+            user_id=1,
+            order_status=1,
+            start_time=datetime(2026, 10, 6, 14, 0),
+            end_time=datetime(2026, 10, 6, 15, 0),
+        )
+    )
+
+    occ = await space_occupancy(db_session, now=now)
+    assert occ.get(901) == "使用中"
+    assert occ.get(902) == "已被预约"
+    assert 903 not in occ, "空闲场地不该出现在结果里（由调用方补『空闲』）"
+
+    # ⚠️ 关键：占用推导**没有写任何列**
+    for space_id in (901, 902, 903):
+        space = await db_session.get(SpaceResource, space_id)
+        assert space.status == 1, (
+            f"场地 {space_id} 的 status（可用/停用）不该被占用推导改写 —— 它是多处可用性查询的判据"
+        )
+
+
+async def test_space_occupancy_ignores_terminal_orders(use_test_db, db_session) -> None:
+    """已取消 / 已完成的单**不再算占用** —— 口径与下单判重同取 OCCUPYING_STATUS。
+
+    与 AGENT-C-01/02 第 5 条同源：取消后名额自动回来，不需要任何回补代码。
+    """
+    from app.services.space_service import space_occupancy
+
+    now = datetime(2026, 10, 6, 12, 0, 0)
+    await _add_space(db_session, space_id=911, name="已取消场地", space_type=1, capacity=10)
+    await _add_space(db_session, space_id=912, name="已完成场地", space_type=1, capacity=10)
+
+    for space_id, status in ((911, 3), (912, 4)):  # 3 已取消 / 4 已完成
+        db_session.add(
+            ReserveOrder(
+                space_id=space_id,
+                user_id=1,
+                order_status=status,
+                start_time=datetime(2026, 10, 6, 11, 0),
+                end_time=datetime(2026, 10, 6, 13, 0),
+            )
+        )
+
+    occ = await space_occupancy(db_session, now=now)
+    assert 911 not in occ, "已取消的单不该让场地显示「使用中」"
+    assert 912 not in occ, "已完成的单同样不占用"
+
+
+async def test_space_occupancy_in_use_beats_reserved(use_test_db, db_session) -> None:
+    """同一场地既有「正在用」又有「今天稍后」的单时，显示**使用中**（优先级更高）。"""
+    from app.services.space_service import space_occupancy
+
+    now = datetime(2026, 10, 6, 12, 0, 0)
+    await _add_space(db_session, space_id=921, name="连续两场", space_type=1, capacity=10)
+
+    db_session.add(
+        ReserveOrder(
+            space_id=921,
+            user_id=1,
+            order_status=2,
+            start_time=datetime(2026, 10, 6, 14, 0),
+            end_time=datetime(2026, 10, 6, 15, 0),
+        )
+    )
+    db_session.add(
+        ReserveOrder(
+            space_id=921,
+            user_id=1,
+            order_status=2,
+            start_time=datetime(2026, 10, 6, 11, 0),
+            end_time=datetime(2026, 10, 6, 13, 0),
+        )
+    )
+
+    assert (await space_occupancy(db_session, now=now)).get(921) == "使用中"
+
+
+async def test_space_occupancy_pending_is_not_in_use(use_test_db, db_session) -> None:
+    """**待确认（状态 1）不算「使用中」**，落到「已被预约」。
+
+    这条来自真实反馈：场地 7（报告厅多功能厅）因为一条 11:00~13:00 的
+    **待确认**单，在 11:13 显示成「使用中」，用户报「它没有使用，显示使用中」。
+
+    依据是**本仓库自己的界面文案**（`AgentWorkbench.vue`）：
+        「确认后才会进入『已确认』，**占用才算真正落实**。」
+    所以正在时段内但没确认的单，不能算「在用」。
+
+    但**时段确实被它占住了**（`OCCUPYING_STATUS` 含 1），所以仍要显示
+    「已被预约」而不是「空闲」—— 否则用户以为能订，下单才被拒。
+    """
+    from app.services.space_service import space_occupancy
+
+    now = datetime(2026, 10, 6, 12, 0, 0)
+    # 951：正在时段内，但是**待确认**
+    await _add_space(db_session, space_id=951, name="待确认在用", space_type=1, capacity=10)
+    db_session.add(
+        ReserveOrder(
+            space_id=951,
+            user_id=1,
+            order_status=1,  # 待确认
+            start_time=datetime(2026, 10, 6, 11, 0),
+            end_time=datetime(2026, 10, 6, 13, 0),
+        )
+    )
+    # 952：同样时段，但是**已确认** —— 对照组
+    await _add_space(db_session, space_id=952, name="已确认在用", space_type=1, capacity=10)
+    db_session.add(
+        ReserveOrder(
+            space_id=952,
+            user_id=1,
+            order_status=2,  # 已确认
+            start_time=datetime(2026, 10, 6, 11, 0),
+            end_time=datetime(2026, 10, 6, 13, 0),
+        )
+    )
+
+    occ = await space_occupancy(db_session, now=now)
+    assert occ.get(951) == "已被预约", "待确认的单不能算「使用中」"
+    assert occ.get(952) == "使用中", "已确认且在时段内才是「使用中」"
+
+
+async def test_space_occupancy_reserved_only_within_this_week(use_test_db, db_session) -> None:
+    """「已被预约」只算**本周内**尚未开始的单；下周及以后不算（业务口径）。
+
+    这条来自真实反馈：用户约了 **10-20**（两周后），「资源与设备」页那个场地
+    仍显示「空闲」，被当成 bug。业务方裁定：**本周内**的预约才改变状态 ——
+    否则提前很多天的预约会让场地长期挂着「已被预约」，这一列失去区分度。
+
+    现在 `now = 2026-10-06`（周二）→ 本周为 **10-05 ~ 10-11**：
+        · 10-11（本周日）算 → 已被预约
+        · 10-12（下周一）不算 → 空闲
+        · 10-20（下周又下周）不算 → 空闲
+    """
+    from app.services.space_service import space_occupancy
+
+    now = datetime(2026, 10, 6, 12, 0, 0)
+    # 三个场地各放一条本周内 / 下周一 / 两周后的活跃单
+    cases = {
+        931: datetime(2026, 10, 11, 9, 0),
+        932: datetime(2026, 10, 12, 9, 0),
+        933: datetime(2026, 10, 20, 9, 0),
+    }
+    for space_id, start in cases.items():
+        await _add_space(
+            db_session, space_id=space_id, name=f"场地{space_id}", space_type=1, capacity=10
+        )
+        db_session.add(
+            ReserveOrder(
+                space_id=space_id,
+                user_id=1,
+                order_status=2,
+                start_time=start,
+                end_time=start.replace(hour=11),
+            )
+        )
+
+    occ = await space_occupancy(db_session, now=now)
+    assert occ.get(931) == "已被预约", "本周日（10-11）的单应算「已被预约」"
+    assert 932 not in occ, "下周一（10-12）已出本周，不该算"
+    assert 933 not in occ, "两周后（10-20）更不该算"
+
+
+async def test_space_occupancy_already_ended_order_is_not_reserved(use_test_db, db_session) -> None:
+    """已经结束、但状态仍是「活跃」的单不该让场地显示「已被预约」。
+
+    在线库里常见：单子做完了没人推到终态。两种都要挡掉，对应的下界不同：
+
+    · **前几天**的历史单（`end_time <= now`）→ 靠 `end_time > anchor` 挡
+    · **今天早些时候**刚结束的单（`start_time < now < end_time` 不成立，
+      但 `start_time > anchor` 也不成立）→ **必须靠 `start_time > anchor` 挡**
+
+    第二条是本用例的重点：2026-10-06 实测场地 4 因为一条 10-03 的旧单被标成
+    「已被预约」，根因就是当时只判了 `start_time < 本周日`、漏了「还没开始」。
+    只写「前几天」那种输入的话，`end_time > anchor` 一个条件就够了，
+    这个用例**不会红** —— 那是假通过。
+    """
+    from app.services.space_service import space_occupancy
+
+    now = datetime(2026, 10, 6, 12, 0, 0)
+    # 941：今天早上刚结束（09:00~11:00，now=12:00）—— 只有 start > now 这个下界能挡住它
+    await _add_space(db_session, space_id=941, name="今早结束", space_type=1, capacity=10)
+    db_session.add(
+        ReserveOrder(
+            space_id=941,
+            user_id=1,
+            order_status=2,  # 状态还是「已确认」
+            start_time=datetime(2026, 10, 6, 9, 0),
+            end_time=datetime(2026, 10, 6, 11, 0),
+        )
+    )
+    # 942：几天前的历史单
+    await _add_space(db_session, space_id=942, name="几天前", space_type=1, capacity=10)
+    db_session.add(
+        ReserveOrder(
+            space_id=942,
+            user_id=1,
+            order_status=2,
+            start_time=datetime(2026, 10, 5, 9, 0),
+            end_time=datetime(2026, 10, 5, 11, 0),
+        )
+    )
+
+    occ = await space_occupancy(db_session, now=now)
+    assert 941 not in occ, "今早已结束的单不该让场地显示「已被预约」（start > now 才能挡）"
+    assert 942 not in occ, "几天前的历史单同样不该算"
+
+
+# ==========================================================================
 # 一、时段重叠排除
 # ==========================================================================
 async def test_stage03_reported_case_is_fixed(use_test_db, db_session) -> None:
@@ -445,28 +688,48 @@ async def test_list_space_bookings_returns_only_occupying_orders(db_session) -> 
     base = date(2026, 10, 1)
     # 已确认
     await _add_order(
-        db_session, order_id=1, space_id=6,
-        start="2026-10-02 10:00:00", end="2026-10-02 12:00:00", order_status=2,
+        db_session,
+        order_id=1,
+        space_id=6,
+        start="2026-10-02 10:00:00",
+        end="2026-10-02 12:00:00",
+        order_status=2,
     )
     # 待确认 —— 也算占用
     await _add_order(
-        db_session, order_id=2, space_id=6,
-        start="2026-10-01 09:00:00", end="2026-10-01 11:00:00", order_status=1,
+        db_session,
+        order_id=2,
+        space_id=6,
+        start="2026-10-01 09:00:00",
+        end="2026-10-01 11:00:00",
+        order_status=1,
     )
     # 已取消 / 已完成 —— 时段必须已经释放
     await _add_order(
-        db_session, order_id=3, space_id=6,
-        start="2026-10-03 09:00:00", end="2026-10-03 11:00:00", order_status=3,
+        db_session,
+        order_id=3,
+        space_id=6,
+        start="2026-10-03 09:00:00",
+        end="2026-10-03 11:00:00",
+        order_status=3,
     )
     await _add_order(
-        db_session, order_id=4, space_id=6,
-        start="2026-10-04 09:00:00", end="2026-10-04 11:00:00", order_status=4,
+        db_session,
+        order_id=4,
+        space_id=6,
+        start="2026-10-04 09:00:00",
+        end="2026-10-04 11:00:00",
+        order_status=4,
     )
     # 别的场地的订单不许串台
     await _add_space(db_session, space_id=7, name="综合楼小多功能厅", space_type=3, capacity=25)
     await _add_order(
-        db_session, order_id=5, space_id=7,
-        start="2026-10-02 10:00:00", end="2026-10-02 12:00:00", order_status=2,
+        db_session,
+        order_id=5,
+        space_id=7,
+        start="2026-10-02 10:00:00",
+        end="2026-10-02 12:00:00",
+        order_status=2,
     )
 
     rows = await list_space_bookings(db_session, 6, days=30, start=base)
@@ -480,18 +743,30 @@ async def test_list_space_bookings_window_overlap_is_half_open(db_session) -> No
     base = date(2026, 10, 10)
     # 完全落在区间内
     await _add_order(
-        db_session, order_id=1, space_id=4,
-        start="2026-10-10 09:00:00", end="2026-10-10 11:00:00", order_status=2,
+        db_session,
+        order_id=1,
+        space_id=4,
+        start="2026-10-10 09:00:00",
+        end="2026-10-10 11:00:00",
+        order_status=2,
     )
     # 区间开始之前就结束了 → 不算
     await _add_order(
-        db_session, order_id=2, space_id=4,
-        start="2026-10-09 15:00:00", end="2026-10-09 17:00:00", order_status=2,
+        db_session,
+        order_id=2,
+        space_id=4,
+        start="2026-10-09 15:00:00",
+        end="2026-10-09 17:00:00",
+        order_status=2,
     )
     # 跨天：起始早于区间、结束落在区间内 → 算
     await _add_order(
-        db_session, order_id=3, space_id=4,
-        start="2026-10-09 20:00:00", end="2026-10-10 02:00:00", order_status=2,
+        db_session,
+        order_id=3,
+        space_id=4,
+        start="2026-10-09 20:00:00",
+        end="2026-10-10 02:00:00",
+        order_status=2,
     )
 
     rows = await list_space_bookings(db_session, 4, days=2, start=base)
@@ -508,13 +783,19 @@ async def test_list_space_bookings_defaults_to_today(db_session) -> None:
     outside = today + timedelta(days=40)
 
     await _add_order(
-        db_session, order_id=1, space_id=8,
-        start=f"{inside.isoformat()} 10:00:00", end=f"{inside.isoformat()} 12:00:00",
+        db_session,
+        order_id=1,
+        space_id=8,
+        start=f"{inside.isoformat()} 10:00:00",
+        end=f"{inside.isoformat()} 12:00:00",
         order_status=2,
     )
     await _add_order(
-        db_session, order_id=2, space_id=8,
-        start=f"{outside.isoformat()} 10:00:00", end=f"{outside.isoformat()} 12:00:00",
+        db_session,
+        order_id=2,
+        space_id=8,
+        start=f"{outside.isoformat()} 10:00:00",
+        end=f"{outside.isoformat()} 12:00:00",
         order_status=2,
     )
 

@@ -43,6 +43,77 @@ FROZEN_PARAMS = [
 FROZEN_RESULT_KEYS = {"ok", "orderId", "reason", "conflictType", "conflictDetail"}
 
 
+# ==========================================================================
+# `available_count` 只读不写 + 剩余量用时推导
+# ==========================================================================
+def test_peak_occupancy_is_a_sweep_not_a_sum() -> None:
+    """峰值是**同时并发数**，不是区间个数。
+
+    「剩余 = 上限 − 占用」里的占用必须是**同一时刻**的并发数：
+    把一天里 3 个不重叠的预约算成「占 3 台」会让剩余量凭空变负。
+    """
+    from app.services.order_service import _peak_occupancy
+
+    # 两段重叠 → 峰值 2（不是 2 个区间的和那么简单，但结果同为 2，用下面的例区分）
+    assert _peak_occupancy([(1, 3), (2, 4)]) == 2
+    # ⚠️ 关键：3 段**互不重叠** → 峰值 1。若实现写成计数，这里会得 3。
+    assert _peak_occupancy([(1, 2), (3, 4), (5, 6)]) == 1
+    # 相邻不算并发（半开区间，与下单判重同口径）
+    assert _peak_occupancy([(1, 2), (2, 3)]) == 1
+    # 一长两短都被它盖住
+    assert _peak_occupancy([(1, 10), (2, 3), (4, 5)]) == 2
+    # 空窗口
+    assert _peak_occupancy([]) == 0
+
+
+async def test_remaining_count_drops_after_booking(client):
+    """下单后 `/resources/devices` 的 `remainingCount` 减少，而 `availableCount` **不变**。
+
+    这是用户反馈「有一个未处理，可用数没有减一」的**回归用例**。
+    口径（`docs/available_count口径判据.md`）是：`available_count` 是静态上限、
+    **只读不写**，剩余量用时推导。所以「减一」要发生在**推导值**上，
+    而不是去改那一列。
+
+    顺带钉住另一件事：这个接口必须真的把推导跑起来 —— 只加字段不接线的话，
+    `remainingCount` 会恒等于 `availableCount`，用例就白写了。
+    """
+    device_id = await _add_device(
+        device_name="剩余量测试机", device_type="其他", total_count=2, available_count=2
+    )
+
+    async def remaining() -> dict:
+        rows = (await client.get("/api/v1/resources/devices")).json()["data"]
+        return next(r for r in rows if r["deviceId"] == device_id)
+
+    before = await remaining()
+    assert before["availableCount"] == 2, "静态上限"
+    assert before["remainingCount"] == 2, "还没人订，剩余=上限"
+
+    # 下一单占用它（明天 09:00~10:00，落在推导窗口内）
+    r = await client.post(
+        "/api/v1/orders/create",
+        json={
+            "spaceId": 1,
+            "deviceIds": [device_id],
+            "startTime": time_str(1, 9),
+            "endTime": time_str(1, 10),
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    after = await remaining()
+    assert after["remainingCount"] == 1, "订走 1 台后剩余应减 1"
+    assert after["availableCount"] == 2, "静态上限按口径**不能**被下单改写"
+
+    # 取消后名额自动回来 —— 不需要任何回补代码
+    order_id = r.json()["data"]["orderId"]
+    r = await client.put(f"/api/v1/orders/{order_id}/cancel")
+    assert r.status_code == 200, r.text
+
+    restored = await remaining()
+    assert restored["remainingCount"] == 2, "取消后名额应自动回来（从没扣过，无需回补）"
+
+
 async def _call(**overrides):
     """按 Agent Tool 的调法调一次服务层。"""
     kwargs = {

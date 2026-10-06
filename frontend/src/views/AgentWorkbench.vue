@@ -119,17 +119,29 @@
               <div class="sp-tb">
                 <h5>
                   {{ step.result }}
-                  <span v-if="step.action" class="sp-tag is-purple">{{ step.action }}</span>
-                  <span v-else class="sp-tag is-gray">推理</span>
+                  <!--
+                    这里原本还有一个紫色标签显示 `step.action`，即**内部工具名**
+                    （英文函数名，如查场地/查设备那两个）。已删掉：
+                    `step.result` 本身就是中文结论（「查询场地：命中 2 个候选场地」），
+                    再挂一个英文函数名对使用者没有信息量，纯属噪音。
+                    纯推理步的「推理」标签保留 —— 它是中文，用来区分「这步有没有动系统」。
+                    注：注释里不写具体工具名，否则它们会随 HTML 注释一起到浏览器，
+                    用「查看源代码」仍能搜到。
+                  -->
+                  <span v-if="!step.action" class="sp-tag is-gray">推理</span>
                   <span class="step-time">{{ (step.timestamp || '').slice(11) }}</span>
                 </h5>
-                <p v-if="step.thought">{{ step.thought }}</p>
-                <div v-if="step.actionInput" class="sp-code">
-                  Input: {{ compact(step.actionInput) }}
-                </div>
-                <div v-if="step.observation" class="sp-code">
-                  Observation: {{ compact(step.observation) }}
-                </div>
+
+                <!--
+                  只展示每步的**最终结果**（`step.result` + 时间）。
+                  以下内容**按产品决定全部不渲染**：
+                    · `step.thought`    —— 模型的逐步推理正文
+                    · `step.actionInput` —— 工具入参
+                    · `step.observation` —— 工具返回
+                  一段几百字的内部思考加两坨 JSON 会把 7 步撑成好几屏。
+                  这三项数据**仍在接口响应里**（`TraceStep` 契约未变），
+                  将来若要「展开看明细」，用 `<details>` 包一层即可恢复，无需改后端。
+                -->
               </div>
             </div>
           </div>
@@ -260,106 +272,56 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 
 import { ElMessage } from 'element-plus'
+import { storeToRefs } from 'pinia'
 
-import { agentSchedule } from '@/api/monitor'
-import { cancelOrder, confirmOrder, getOrder } from '@/api/orders'
-import { getDevices } from '@/api/resources'
-import { devicesOf, orderStatusLabel } from '@/utils/normalize'
-
-const text = ref(
-  '',
-)
-
-const running = ref(false)
-const acting = ref(false)
-const elapsed = ref(0)
-
-const trace = ref([])
-const plan = ref(null)
-const backupPlan = ref(null)
-const orderId = ref(null)
-const needConfirm = ref(true)
-const orderStatus = ref(null)
-
-/** 降级路径的可读原因。它来自 agentSchedule 返回的 message，不在 data 里。 */
-const fallbackMessage = ref('')
-
-/** deviceId -> deviceName。Agent 只返回设备 ID，名字得自己查真库补上。 */
-const deviceMap = ref(new Map())
-
-let timer = null
-
-/* ------------------------------------------------------------------ *
- * 派生数据
- * ------------------------------------------------------------------ */
-
-const toolCalls = computed(() => {
-  const byName = new Map()
-  for (const step of trace.value) {
-    if (!step.action) continue
-    const entry = byName.get(step.action) || { name: step.action, count: 0 }
-    entry.count += 1
-    byName.set(step.action, entry)
-  }
-  return [...byName.values()]
-})
-
-const totalToolCalls = computed(() => toolCalls.value.reduce((sum, t) => sum + t.count, 0))
-
-const orderStatusText = computed(() => {
-  if (orderStatus.value === null || orderStatus.value === undefined) return ''
-  return orderStatusLabel(orderStatus.value)
-})
-
-const statusTagClass = computed(() => {
-  switch (orderStatus.value) {
-    case 2:
-      return 'is-green'
-    case 3:
-      return 'is-gray'
-    case 4:
-      return 'is-blue'
-    default:
-      return 'is-orange'
-  }
-})
+import { useAgentWorkbenchStore } from '@/store/agentWorkbench'
 
 /**
- * 方案要素完整度 —— 由 Plan 契约里那 5 个字段的真实有无算出来。
+ * 调度状态全部来自 store，**不是本组件的局部 ref**。
  *
- * 原型画的是一「AI 方案置信度 88%」，但**后端根本不返回置信度**
- * （app/schemas/agent.py::Plan 只有 spaceId/spaceName/deviceIds/startTime/endTime/reason）。
- * 与其编一个 88%，不如算一个用户能自己核对的东西。
+ * 原因见 store 的模块文档：一次调度要 40~105 秒，若状态挂在组件上，
+ * 用户切到别的页面就会把它连同「调用过程与结果」一起丢掉。
+ * 放进 store 后，切页回来仍能看到完整的思考链与方案。
  */
-const planFields = computed(() => {
-  const p = plan.value
-  if (!p) return []
-  return [
-    { label: '场地', ok: p.spaceId !== null && p.spaceId !== undefined },
-    { label: '开始时间', ok: Boolean(p.startTime) },
-    { label: '结束时间', ok: Boolean(p.endTime) },
-    { label: '设备', ok: Array.isArray(p.deviceIds) && p.deviceIds.length > 0 },
-    { label: '理由', ok: Boolean(p.reason) },
-  ]
-})
+const store = useAgentWorkbenchStore()
 
-const planFilled = computed(() => planFields.value.filter((f) => f.ok).length)
+const {
+  running,
+  acting,
+  elapsed,
+  trace,
+  plan,
+  backupPlan,
+  orderId,
+  needConfirm,
+  orderStatus,
+  fallbackMessage,
+  toolCalls,
+  totalToolCalls,
+  orderStatusText,
+  statusTagClass,
+  planFields,
+  planFilled,
+  planScore,
+} = storeToRefs(store)
 
-const planScore = computed(() =>
-  planFields.value.length ? Math.round((planFilled.value / planFields.value.length) * 100) : 0,
-)
+/** 输入框里的草稿。切页丢掉可接受，每次调度都要重新输入需求。 */
+const text = ref('')
 
 /* ------------------------------------------------------------------ *
  * 展示辅助
  * ------------------------------------------------------------------ */
 
-function compact(value) {
-  if (value === null || value === undefined) return '—'
-  const json = typeof value === 'string' ? value : JSON.stringify(value)
-  return json.length > 160 ? `${json.slice(0, 160)}…` : json
+/**
+ * 有 Action 的步骤给紫渐变，纯推理给绿 —— 让「哪几步真的动了系统」一眼可见。
+ *
+ * 注意：`step.action`（内部工具名）**只用于这个判断**，不再渲染成标签。
+ */
+function stepNumberClass(step) {
+  return step.action ? '' : 'is-g'
 }
 
 function formatRange(p) {
@@ -374,51 +336,21 @@ function deviceNames(p) {
   if (!ids.length) return '未指定'
   return ids
     .map((id) => {
-      const name = deviceMap.value.get(Number(id))
+      const name = store.deviceMap.get(Number(id))
       return name ? `${name}（#${id}）` : `#${id}`
     })
     .join('、')
-}
-
-/** 有 Action 的步骤给紫渐变，纯推理给绿 —— 让「哪几步真的动了系统」一眼可见。 */
-function stepNumberClass(step) {
-  return step.action ? '' : 'is-g'
 }
 
 /* ------------------------------------------------------------------ *
  * 交互
  * ------------------------------------------------------------------ */
 
-function startTimer() {
-  elapsed.value = 0
-  timer = setInterval(() => {
-    elapsed.value += 1
-  }, 1000)
-}
-
-function stopTimer() {
-  if (timer) {
-    clearInterval(timer)
-    timer = null
-  }
-}
-
-function onReset() {
-  trace.value = []
-  plan.value = null
-  backupPlan.value = null
-  orderId.value = null
-  orderStatus.value = null
-  fallbackMessage.value = ''
-}
-
 /**
  * 跑一次真实调度。
  *
- * agentSchedule 返回的是 `{ data, message }`（passMessage: true）：降级路径
- * （模型没交方案 / 输出格式错乱）是 **HTTP 200 + code=200**，但 data.plan 是 null，
- * 「为什么没有方案」这句话**只在 message 里**。只要 data 的话会渲染出一个空白方案区，
- * 用户完全不知道发生了什么。
+ * 实际的请求与状态写入都在 store 里（见 `store/agentWorkbench.js` 的 `run`），
+ * 这里只负责**提示分级** —— 弹哪个 toast 是视图层的选择，不是 store 的。
  */
 async function onRun() {
   const value = (text.value || '').trim()
@@ -427,89 +359,41 @@ async function onRun() {
     return
   }
 
-  running.value = true
-  startTimer()
-  try {
-    const res = await agentSchedule({ text: value })
-    const data = (res && res.data) || {}
-    const message = (res && res.message) || ''
+  const res = await store.run(value)
+  if (!res.ok) return
 
-    trace.value = Array.isArray(data.trace) ? data.trace : []
-    plan.value = data.plan || null
-    backupPlan.value = data.backupPlan || null
-    orderId.value = data.orderId || null
-    needConfirm.value = data.needConfirm !== false
-    // 「操作成功」是正常路径的固定文案，拿它当降级原因显示会很怪
-    fallbackMessage.value = !data.plan && message && message !== '操作成功' ? message : ''
-
-    if (orderId.value) {
-      ElMessage.success(`已生成方案并创建预约 #${orderId.value}（待确认）`)
-      // 单号已经有了，顺手把真实状态读回来，别靠猜
-      await refreshOrderStatus()
-    } else if (!data.plan) {
-      ElMessage.warning('本次没有生成方案，原因见思考链上方')
-    } else {
-      ElMessage.info('方案已生成，但本次没有落库（没有单号可确认）')
-    }
-  } catch {
-    // request.js 已经弹过后端的真实 message，这里不重复打扰
-  } finally {
-    running.value = false
-    stopTimer()
-  }
-}
-
-async function refreshOrderStatus() {
-  if (!orderId.value) return
-  try {
-    const order = await getOrder(orderId.value)
-    orderStatus.value = order && order.orderStatus
-  } catch {
-    // 拿不到状态不影响主流程，按钮仍可用
+  if (store.orderId) {
+    ElMessage.success(`已生成方案并创建预约 #${store.orderId}（待确认）`)
+  } else if (!store.plan) {
+    ElMessage.warning('本次没有生成方案，原因见思考链上方')
+  } else {
+    ElMessage.info('方案已生成，但本次没有落库（没有单号可确认）')
   }
 }
 
 async function onConfirm() {
-  if (!orderId.value) return
-  acting.value = true
-  try {
-    await confirmOrder(orderId.value)
-    ElMessage.success(`预约 #${orderId.value} 已确认`)
-    await refreshOrderStatus()
-  } catch {
-    // 409（当前状态不允许确认）等由 request.js 弹出真实原因
-    await refreshOrderStatus()
-  } finally {
-    acting.value = false
+  if (await store.confirm()) {
+    ElMessage.success(`预约 #${store.orderId} 已确认`)
   }
 }
 
 async function onCancel() {
-  if (!orderId.value) return
-  acting.value = true
-  try {
-    await cancelOrder(orderId.value)
-    ElMessage.success(`预约 #${orderId.value} 已取消`)
-    await refreshOrderStatus()
-  } catch {
-    await refreshOrderStatus()
-  } finally {
-    acting.value = false
+  if (await store.cancel()) {
+    ElMessage.success(`预约 #${store.orderId} 已取消`)
   }
 }
 
-onMounted(async () => {
-  try {
-    deviceMap.value = new Map(
-      devicesOf(await getDevices()).map((d) => [Number(d.deviceId), d.deviceName]),
-    )
-  } catch {
-    // 补不到设备名就退化成显示 ID，不影响调度
-    deviceMap.value = new Map()
-  }
+function onReset() {
+  store.onReset()
+}
+
+onMounted(() => {
+  store.loadDeviceMap()
 })
 
-onUnmounted(stopTimer)
+// ⚠️ 这里**不再**有 onUnmounted(stopTimer)：
+// 计时器归 store 所有，组件卸载不能停它 —— 停了秒数就不走了，
+// 而调度仍在后台继续，用户切回来会看到一个卡住的计时。
 </script>
 
 <style scoped>

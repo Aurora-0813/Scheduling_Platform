@@ -656,6 +656,21 @@ body {
   align-items: center;
   gap: 7px;
   flex-wrap: wrap;
+  /*
+   * 挂起缩进（hanging indent）。
+   *
+   * `h5` 是 flex 容器，`step.result` 那段中文结论是其中一个**匿名 flex 项**
+   * （没包标签的裸文本节点，而 flex 容器会给它生成匿名项）。
+   * 结论现在可达 300 字（见 backend/app/agent/chains/trace.py 的
+   * _RESULT_MAX_LEN），必然折行；不处理的话第二行会顶到该项的最左边，
+   * 也就是「查询场地：」那四个字的下面，而不是与它们对齐。
+   *
+   * `text-indent` 负值正是干这个的：整块右推半行，首行再拉回来。
+   * 只对块内首行生效，所以后续行保持缩进 —— 一个属性就够，不必动结构。
+   * 取值 1.3em ≈ 3 个中文字：与左侧那排「查询场地：」的视觉宽度相当。
+   */
+  text-indent: -1.3em;
+  padding-left: 1.3em;
 }
 
 .sp-tb p {
@@ -801,6 +816,13 @@ body {
 .sp-witem.is-blue {
   border-left-color: var(--sp-accent);
   background: #f2f8ff;
+}
+
+/* 正向结果（如 AI 核验通过）。原先只有 warning / is-red / is-blue 三档，
+ * 而「通过」不是告警、也不该用蓝色（蓝在本系统里表示信息/主色），故补 green。 */
+.sp-witem.is-green {
+  border-left-color: var(--sp-success);
+  background: #f6fbf3;
 }
 
 /* 雷达 */

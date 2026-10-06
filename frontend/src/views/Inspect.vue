@@ -8,7 +8,7 @@
         </p>
       </div>
       <div class="sp-acts">
-        <button class="sp-btn is-ai is-sm" @click="inspectDialog.visible = true">
+        <button class="sp-btn is-ai is-sm" @click="openInspectDialog">
           <el-icon><Camera /></el-icon>提交巡检
         </button>
       </div>
@@ -17,23 +17,42 @@
     <div class="inspect-grid">
       <!-- ===== 左栏：现场照片 + 多模态识别结论 ===== -->
       <div class="col-left">
-        <div class="sp-imgbox photo-box">
-          <!-- 提交巡检的响应只有 deviceStatus / report / repairSuggestion / ticketId，不含图片地址；
-               这里预览的是用户本地上传的原始文件（真实图片），没有文件才退回相机空态。 -->
-          <img v-if="previewUrl" :src="previewUrl" alt="巡检照片" />
-          <div v-else class="sp-cam">
-            <span>📷</span>
-            现场照片 · 提交巡检后显示
+        <!--
+          整个照片框就是「提交巡检」的入口：点它打开提交弹窗，与右上角那个
+          「提交 AI 巡检」按钮同一个动作（都是把 inspectDialog.visible 置 true）。
+
+          用真实的 <button> 而不是给 div 挂 @click：键盘 Tab 可达、回车/空格可触发、
+          读屏能念出用途，这些都是原生按钮白送的。类型必须显式写 type="button"，
+          否则在表单里会被当提交按钮。
+
+          注意按钮内的交互内容都必须在 `.sp-imgbox` 这个子元素里：`overflow: hidden`
+          与 `position: relative` 都在它身上，识别框（`.sp-bbox`）与扫描线要靠它定位。
+        -->
+        <button
+          type="button"
+          class="photo-box photo-trigger"
+          aria-label="提交 AI 巡检"
+          title="点击提交巡检照片"
+          @click="openInspectDialog"
+        >
+          <div class="sp-imgbox">
+            <!-- 提交巡检的响应只有 deviceStatus / report / repairSuggestion / ticketId，不含图片地址；
+                 这里预览的是用户本地上传的原始文件（真实图片），没有文件才退回相机空态。 -->
+            <img v-if="previewUrl" :src="previewUrl" alt="巡检照片" />
+            <div v-else class="sp-cam">
+              <span>📷</span>
+              点击此处 · 提交巡检照片
+            </div>
+            <!-- 识别框位置由本页样式居中，**只是示意**：接口不返回真实检测坐标，
+                 真正的信息是 data-label 里的 AI 结论。 -->
+            <div
+              v-if="aiResult.deviceStatus"
+              class="sp-bbox"
+              :data-label="`AI 识别：${aiResult.deviceStatus}`"
+            ></div>
+            <div class="sp-scanline"></div>
           </div>
-          <!-- 识别框位置由本页样式居中，**只是示意**：接口不返回真实检测坐标，
-               真正的信息是 data-label 里的 AI 结论。 -->
-          <div
-            v-if="aiResult.deviceStatus"
-            class="sp-bbox"
-            :data-label="`AI 识别：${aiResult.deviceStatus}`"
-          ></div>
-          <div class="sp-scanline"></div>
-        </div>
+        </button>
 
         <div class="sp-card">
           <div class="sp-card-head"><b>🤖 多模态识别结论</b></div>
@@ -164,6 +183,7 @@
         </el-form-item>
         <el-form-item label="巡检照片">
           <el-upload
+            ref="inspectUploadRef"
             :auto-upload="false"
             :limit="1"
             accept="image/*"
@@ -200,15 +220,128 @@
         <el-button type="primary" @click="resultDialog.visible = false">知道了</el-button>
       </template>
     </el-dialog>
+
+    <!-- ==================== 提交处理结果（维修后照片） ==================== -->
+    <el-dialog v-model="handleDialog.visible" title="提交处理结果" width="480px">
+      <div v-if="handleDialog.ticket" class="handle-target">
+        <div class="sp-mbrow">
+          <span class="sp-k">工单</span>
+          <span class="sp-v">#{{ handleDialog.ticket.id }}</span>
+        </div>
+        <div class="sp-mbrow">
+          <span class="sp-k">场地 / 设备</span>
+          <span class="sp-v">
+            {{ spaceMap[handleDialog.ticket.spaceId] || '场地未知' }}
+            ·
+            {{ handleDialog.ticket.deviceName || '未关联设备' }}
+          </span>
+        </div>
+        <!-- 把原巡检结论摆出来，处理人对着修，AI 也拿它当对照基准 -->
+        <div v-if="handleDialog.ticket.report" class="dialog-report">
+          <div class="sp-section-title">维修前的巡检结论</div>
+          <p class="summary-text">{{ handleDialog.ticket.report }}</p>
+        </div>
+      </div>
+
+      <el-form label-width="90px">
+        <el-form-item label="处理后照片">
+          <el-upload
+            ref="handleUploadRef"
+            :auto-upload="false"
+            :limit="1"
+            accept="image/*"
+            list-type="picture-card"
+            :on-change="onHandleFileChange"
+            :on-remove="onHandleFileRemove"
+          >
+            <el-icon><Plus /></el-icon>
+          </el-upload>
+        </el-form-item>
+      </el-form>
+
+      <p class="sp-muted handle-hint">
+        AI 会核验设备是否已修好。<b>核验通过</b>才会把工单置为已完成；
+        未通过则保持当前状态，你可以重拍再传。
+      </p>
+
+      <template #footer>
+        <el-button @click="handleDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="handling" @click="submitHandle">
+          提交并核验
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ==================== AI 核验结果 ==================== -->
+    <el-dialog v-model="verifyDialog.visible" title="AI 核验结果" width="520px">
+      <template v-if="verifyResult">
+        <!--
+          成功 / 失败用同一套配色语义：通过=绿、未通过=红，
+          与列表里的判定标签（judgeTagClass）保持一致，不另立一套颜色。
+        -->
+        <div class="sp-witem verify-banner" :class="verifyResult.passed ? 'is-green' : 'is-red'">
+          <span class="verify-ic">{{ verifyResult.passed ? '✅' : '⚠️' }}</span>
+          <div>
+            <b>{{ verifyResult.passed ? '核验通过，工单已完成' : '核验未通过，工单状态未变更' }}</b>
+            <p>{{ verifyResult.message }}</p>
+          </div>
+        </div>
+
+        <div class="sp-mbrow">
+          <span class="sp-k">工单</span>
+          <span class="sp-v">#{{ verifyResult.id }}</span>
+        </div>
+        <div class="sp-mbrow">
+          <span class="sp-k">AI 判定</span>
+          <span class="sp-v">
+            <span v-if="verifyResult.verifyStatus" class="sp-tag" :class="judgeTagClass(verifyResult.verifyStatus)">
+              {{ verifyResult.verifyStatus }}
+            </span>
+            <!-- 模型不可用时没有判定值，此时**不能**假装设备损坏：
+                 只说明「这次没验成」，原因在下面的核验说明里 -->
+            <span v-else class="sp-tag is-gray">未完成核验</span>
+          </span>
+        </div>
+        <div class="sp-mbrow">
+          <span class="sp-k">工单状态</span>
+          <span class="sp-v">
+            <span class="sp-tag" :class="verifyResult.status === 3 ? 'is-green' : 'is-orange'">
+              {{ verifyResult.statusText }}
+            </span>
+          </span>
+        </div>
+
+        <div v-if="verifyResult.verifyReport" class="dialog-report">
+          <div class="sp-section-title">核验说明</div>
+          <p class="summary-text">{{ verifyResult.verifyReport }}</p>
+        </div>
+      </template>
+
+      <template #footer>
+        <el-button v-if="verifyResult && !verifyResult.passed" @click="reopenHandleFromVerify">
+          重拍再传
+        </el-button>
+        <el-button type="primary" @click="verifyDialog.visible = false">知道了</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { Camera, Plus, Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
-import { getTickets, submitInspect, updateTicketStatus } from '@/api/inspect'
+// ⚠️ API 函数 `handleTicket` 必须**重命名导入**：本文件另有一个同名的
+//    点击处理器 `function handleTicket(row)`（打开弹窗用）。
+//    直接同名导入会被局部声明遮蔽，`submitHandle` 里那一行就变成**调用它自己** ——
+//    JS 不报错，只是弹窗反复打开、请求永远发不出去。
+//
+// 不再导入 `updateTicketStatus`：本页的「处理」已改为「传照片 + AI 核验」，
+// 不走那条「直接标完成」的路径了。**后端接口仍然保留**
+// （`PUT /tickets/{id}/status`），供「到场发现是误报、直接标记完成」这类
+// 人工判断使用，只是本页不再调它 —— 所以这里去掉 import 而不是删掉那个函数。
+import { getTickets, handleTicket as submitTicketHandle, submitInspect } from '@/api/inspect'
 import { getSpaces } from '@/api/resources'
 import { spacesOf } from '@/utils/normalize'
 
@@ -223,6 +356,22 @@ const uploadFile = ref(null)
 const inspectDialog = reactive({ visible: false, spaceId: null })
 const resultDialog = reactive({ visible: false })
 const aiResult = reactive({})
+
+// ---------- 处理工单：提交维修后照片 + AI 核验 ----------
+const handling = ref(false)
+//: 当前正在处理的工单（整行），弹窗里要显示它的场地 / 设备 / 原巡检结论
+const handleDialog = reactive({ visible: false, ticket: null })
+const handleFile = ref(null)
+const verifyDialog = reactive({ visible: false })
+const verifyResult = ref(null)
+
+// 两个 <el-upload> 的组件实例。
+// ⚠️ **必须用 ref 才能清空它们的文件列表**：`uploadFile` / `handleFile`
+//    只保存了我自己需要的 File 对象，上传框里那张缩略图是 el-upload 的**内部状态**
+//    （`uploadFiles` 列表），不受这两个变量控制。不清它，下次打开弹窗
+//    上一张图还挂在那里 —— 看起来像「历史记录没清掉」。
+const inspectUploadRef = ref(null)
+const handleUploadRef = ref(null)
 
 const spaceMap = computed(() => {
   const map = {}
@@ -272,6 +421,18 @@ const previewUrl = computed(() => {
   return previewObjectUrl
 })
 
+// 离开本页时释放最后一张 objectURL。
+// `previewUrl` 只在「文件变了」或「文件被清空」时释放旧的，而清空那一步依赖
+// computed 被重新求值 —— 组件卸载后不会再求值，最后一张 URL 就会一直挂着，
+// 把 File 背后的内存钉住不放。
+onUnmounted(() => {
+  if (previewObjectUrl) {
+    URL.revokeObjectURL(previewObjectUrl)
+    previewObjectUrl = ''
+    previewFile = null
+  }
+})
+
 // 本次巡检建出的那张工单。工单列表已在提交后重新拉取，能从里面取回真实的场地 / 设备，
 // 不必拿下拉框的当前选中值充当结论。
 const resultTicket = computed(
@@ -303,6 +464,12 @@ const resultRows = computed(() => {
       ? { k: '生成工单', v: `#${aiResult.ticketId}`, cls: 'is-blue' }
       : { k: '生成工单', v: `未生成 —— 判定为「${aiResult.deviceStatus}」，无需维修` },
   )
+  // 设备台账**部分成功**时的提示（目前只有一种：可借数已是 0、已有人报修，
+  // 本次只记录故障、未再减可借数）。不回显的话，用户看到「工单建了、可借数没变」
+  // 会以为是 bug —— 这正是上一轮被反馈的问题。
+  if (aiResult.deviceWarning) {
+    rows.push({ k: '设备台账', v: aiResult.deviceWarning, cls: 'is-orange' })
+  }
   return rows
 })
 
@@ -339,6 +506,23 @@ function onFileRemove() {
   uploadFile.value = null
 }
 
+/**
+ * 打开「提交 AI 巡检」弹窗。
+ *
+ * `el-dialog` **没有 destroy-on-close**，所以弹窗关闭时里面的一切都还在，
+ * 包括 `<el-upload>` 内部的文件列表。不清它，上次挑的那张缩略图会留在
+ * 上传框里，看起来像「历史记录没清掉」。
+ *
+ * 为什么把「清空」放在**打开时**而不是关闭时：
+ * 关闭有三条路径（取消 / 提交成功 / 点遮罩），逐个挂钩子会漏。
+ * 打开只有一条路径，挂在这里不会漏。
+ */
+function openInspectDialog() {
+  inspectUploadRef.value?.clearFiles()
+  uploadFile.value = null
+  inspectDialog.visible = true
+}
+
 async function submitInspection() {
   if (!inspectDialog.spaceId) {
     ElMessage.warning('请选择所属场地')
@@ -360,15 +544,76 @@ async function submitInspection() {
   }
 }
 
-async function handleTicket(row) {
-  await updateTicketStatus(row.id, { status: 3 })
-  ElMessage.success(`工单 #${row.id} 已标记完成`)
-  // ⚠️ **必须重新拉列表。**
-  // 真实接口会真的落库，但**列表是本地数组**，不重新拉就一直是旧状态 ——
-  // 表现就是「点了处理，状态标签没变」。
-  // 原提示语写着「mock 数据为常量，列表不实时变化」，那是 Mock 时代的说法，
-  // 现在后端是真的，不刷新属于**前端漏了一步**，不是设计如此。
-  await loadTickets()
+/**
+ * 点「处理」 → 打开「提交处理结果」弹窗（**不是**直接标记完成）。
+ *
+ * 口径变更（业务已确认）：处理完成需要有凭据 —— 维修后拍一张照片，
+ * 由 AI 核验是否真的修好了。核验通过后端才把工单置为已完成。
+ *
+ * ⚠️ 原实现是直接调 `updateTicketStatus(row.id, { status: 3 })` 把工单标完成，
+ * 不接受任何照片。那条路径**后端仍然保留**（`PUT /tickets/{id}/status`），
+ * 用于「到场发现是误报、直接标记完成」这类人工判断 ——
+ * 只是本页的按钮不再走它，避免「点一下就算修好了」。
+ */
+function handleTicket(row) {
+  openHandleDialog(row)
+}
+
+/**
+ * 打开「提交处理结果」弹窗，并**清空上一次留下的照片**。
+ *
+ * 与 `openInspectDialog` 同样的理由：`el-dialog` 没开 destroy-on-close，
+ * `<el-upload>` 的内部文件列表会跨开关存活，不清就会看到
+ * 「点了处理，上次传的图还挂在那儿」。清空放在打开时，三条关闭路径都不用管。
+ */
+function openHandleDialog(row) {
+  handleUploadRef.value?.clearFiles()
+  handleFile.value = null
+  handleDialog.ticket = row
+  handleDialog.visible = true
+}
+
+function onHandleFileChange(fileItem) {
+  handleFile.value = fileItem.raw
+}
+
+function onHandleFileRemove() {
+  handleFile.value = null
+}
+
+/**
+ * 提交处理结果照片 → 后端调 AI 核验 → 展示核验结果。
+ *
+ * 后端在**核验未通过时不改工单状态**，所以这里无论成败都要重新拉列表：
+ * 通过时状态会从 1/2 变成 3，未通过时状态不变 —— 不重拉的话，
+ * 通过的那种情况下列表还显示旧状态，用户会以为没生效。
+ */
+async function submitHandle() {
+  if (!handleFile.value) {
+    ElMessage.warning('请上传处理后的照片')
+    return
+  }
+  const ticketId = handleDialog.ticket?.id
+  if (!ticketId) return
+
+  handling.value = true
+  try {
+    const res = await submitTicketHandle(ticketId, handleFile.value)
+    // passMessage 打开后返回 { data, message }：判定结论在后端算好，
+    // 前端不自己拿 verifyStatus 和字符串比（那是第二处口径）。
+    verifyResult.value = { ...(res.data || {}), message: res.message || '' }
+    handleDialog.visible = false
+    verifyDialog.visible = true
+    await loadTickets()
+  } finally {
+    handling.value = false
+  }
+}
+
+/** 核验未通过 → 直接把弹窗切回「提交处理结果」，处理人不必自己找那一行。 */
+function reopenHandleFromVerify() {
+  verifyDialog.visible = false
+  openHandleDialog(tickets.value.find((item) => item.id === verifyResult.value?.id) || null)
 }
 
 /** 巡检判定 → 标签配色。「完好」不该显示成红色告警。 */
@@ -431,6 +676,52 @@ onMounted(async () => {
   height: 296px;
 }
 
+/*
+ * 照片框本身是「提交巡检」的入口。这里是把它作为**按钮**所需的复位：
+ * 浏览器默认按钮带 border / padding / 背景 / 居中文字，不清掉就会在
+ * 设计好的照片框外面套一圈灰边。
+ * 交互反馈只做「边框提色 + 相机图标变清晰」，不动布局，避免和内部的
+ * 识别框、扫描线抢视觉。
+ */
+.photo-trigger {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  appearance: none;
+}
+
+.photo-trigger .sp-imgbox {
+  height: 100%;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+/* 悬停 / 键盘聚焦：给一个明确「这里能点」的信号，两者用同一种表现 */
+.photo-trigger:hover .sp-imgbox,
+.photo-trigger:focus-visible .sp-imgbox {
+  border-color: var(--sp-accent);
+  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.16);
+}
+
+.photo-trigger:focus-visible {
+  outline: none;
+}
+
+.photo-trigger:hover .sp-cam span,
+.photo-trigger:focus-visible .sp-cam span {
+  opacity: 0.85;
+}
+
+.photo-trigger:active .sp-imgbox {
+  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.26);
+}
+
 .photo-box img {
   display: block;
 }
@@ -488,6 +779,35 @@ onMounted(async () => {
   margin-top: 14px;
   padding-top: 14px;
   border-top: 1px solid var(--sp-border-l);
+}
+
+/* ---------------- 处理结果提交 / AI 核验 ---------------- */
+
+.handle-target {
+  margin-bottom: 4px;
+}
+
+.handle-hint {
+  margin: 0;
+  line-height: 1.8;
+}
+
+/*
+ * 核验结论横幅：直接复用设计系统的告警条目 `.sp-witem`（见 styles/index.css），
+ * 只补一条 `.is-green` 给「核验通过」用 —— 它原先只有 warning / is-red / is-blue。
+ * 不另起一套 .verify-banner 配色：同一件事在列表和弹窗里颜色不同，
+ * 是这类页面最容易积累的不一致。
+ */
+.verify-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.verify-ic {
+  font-size: 17px;
+  line-height: 1.3;
+  flex: none;
 }
 
 /* 窄屏下改为上下堆叠，避免左栏 392px 把表格挤扁 */

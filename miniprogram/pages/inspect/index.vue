@@ -3,8 +3,11 @@
     <mp-nav-bar title="AI 智能巡检" />
 
     <view class="app-body">
-      <!-- 入口：取景框视觉来自原型 M5 -->
-      <view class="imgbox entry" @tap="goCapture">
+      <!-- 入口：取景框视觉来自原型 M5。
+           2026-10-06：**去掉了下面那个「开始拍照巡检」按钮** ——
+           它与这个取景框是同一个 `goCapture`，功能完全重复。
+           取景框本身就是入口（`.entry` 加了 hover 反馈），少一个按钮更干净。 -->
+      <view class="imgbox entry" hover-class="btn-on" :hover-stay-time="60" @tap="goCapture">
         <view class="cam">
           <text class="big">📷</text>
           <text>拍下设备，AI 自动识别状态并生成工单</text>
@@ -19,10 +22,6 @@
           <text class="lbl">对准设备</text>
         </view>
         <view class="scanline"></view>
-      </view>
-
-      <view class="btn ai block" hover-class="btn-on" :hover-stay-time="60" @tap="goCapture">
-        开始拍照巡检
       </view>
 
       <!-- 工单列表 -->
@@ -81,6 +80,21 @@
                 所以原先恒显示「尚未派单」—— 连已完成的工单也这么说，是句错话。
                 要显示处理人得后端在列表里补字段，本轮不自行发明。
               -->
+              <!--
+                两个动作（2026-10-06 对齐 Web 端）：
+                  · 拍照核验 —— **机器判定**：传维修后的照片，AI 核验通过才置完成，
+                    并且会把设备恢复为「完好」、可借数 +1
+                  · 标记完成 —— **人工决定**：到场发现是误报等场景直接关单
+                    （后端在这条路径上同样会恢复设备）
+                核验是带凭据的正式路径，所以排在前面。
+              -->
+              <view
+                v-if="canFinish(t)"
+                class="btn ai tiny"
+                hover-class="btn-on"
+                :hover-stay-time="60"
+                @tap.stop="verifyWithPhoto(t)"
+              >拍照核验</view>
               <view
                 v-if="canFinish(t)"
                 class="btn ghost tiny"
@@ -110,11 +124,11 @@
  */
 import { ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
-import { tickets as fetchTickets, updateTicketStatus } from '@/api/inspect.js'
+import { tickets as fetchTickets, updateTicketStatus, handleTicket } from '@/api/inspect.js'
 import { userStore } from '@/store/user.js'
 import { statusLabel, statusTag } from '@/utils/dict.js'
 import { ensureNameMaps, spaceLabel } from '@/utils/nameMap.js'
-import { toast, toastOk, confirm } from '@/utils/toast.js'
+import { toast, toastOk, confirm, showLoading, hideLoading } from '@/utils/toast.js'
 
 const tickets = ref([])
 const loading = ref(true)
@@ -167,6 +181,60 @@ async function finish(t) {
   } catch (e) {
     toast(e.message || '操作失败')
   }
+}
+
+/**
+ * 拍照核验：传一张维修后的照片，由 AI 判断是否真的修好。
+ *
+ * 与 `finish`（人工标记完成）的区别：这条是**带凭据**的路径 ——
+ * 核验通过后后端会把工单置为已完成，**同时恢复设备为「完好」、可借数 +1**。
+ *
+ * 未通过时后端**不改工单状态**，`verifyReport` 给出原因，这里如实提示并让用户重拍。
+ */
+async function verifyWithPhoto(t) {
+  const picked = await chooseImage()
+  if (!picked) return
+
+  showLoading('AI 核验中…')
+  try {
+    const res = await handleTicket(t.id, picked)
+    hideLoading()
+
+    if (res && res.passed) {
+      // 核验结论由后端算好（passed），前端不拿 verifyStatus 和字符串比
+      toastOk('核验通过，工单已完成')
+    } else {
+      // 未通过 / 模型不可用：把后端给的原因显示出来，别让用户猜
+      const why = (res && res.verifyReport) || 'AI 核验未通过'
+      uni.showModal({
+        title: '核验未通过',
+        content: `${why}\n\n工单状态未变更，可以重拍一张更清晰的照片再试。`,
+        showCancel: false,
+        confirmText: '知道了',
+      })
+    }
+    load()
+  } catch (e) {
+    hideLoading()
+    toast((e && e.message) || '核验失败')
+    load()
+  }
+}
+
+/** 选图（相册或拍照）→ 返回临时路径；用户取消则 null */
+function chooseImage() {
+  return new Promise((resolve) => {
+    uni.chooseImage({
+      count: 1,
+      sizeType: ['compressed'],
+      sourceType: ['camera', 'album'],
+      success: (res) => {
+        const files = res.tempFilePaths || []
+        resolve(files[0] || null)
+      },
+      fail: () => resolve(null),
+    })
+  })
 }
 
 function goCapture() {
@@ -246,6 +314,8 @@ function goCapture() {
 .tfoot {
   display: flex;
   align-items: center;
+  /* 两个动作并列（拍照核验 / 标记完成），必须有间距，否则两个按钮贴在一起 */
+  gap: 16rpx;
   margin-top: 20rpx;
 }
 

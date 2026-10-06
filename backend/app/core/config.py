@@ -93,6 +93,21 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_MB: int = 10
     UPLOAD_DIR: str = "uploads"
 
+    # ==================== 设备剩余量推导（模块 5/3 交界）====================
+    # 「资源与设备」页要显示**实时剩余**，而 `device_resource.available_count`
+    # 是**静态上限**、按口径**只读不写**（见 docs/available_count口径判据.md）。
+    # 所以剩余量必须**用时推导**：
+    #     remaining = available_count − 该窗口内「同时占用该设备」的最大活跃单数
+    #
+    # 本项就是这个"窗口"的长度（天）。为什么需要它：
+    # 「还剩几台」是 (设备, 时段) 的函数，没有窗口就算不出一个**单值**给列表显示。
+    # 取窗口内**最大占用**（最坏情况）而不是"现在这一刻"，是为了让这个数在
+    # 用户选时段之前也偏保守、不会给出"看着有、下单却没有"的假象。
+    #
+    # 取 30 天：预约平台的实际提前期通常以周计，7 天会漏掉下下周的占用，
+    # 用户会看到「明明订了却没减」。窗口越长越保守，代价只是一次范围查询。
+    DEVICE_REMAINING_HORIZON_DAYS: int = 30
+
     # ==================== 密码哈希配置 ====================
     # bcrypt cost。12 约需 200-300ms/次；测试环境可降到 4 加速。
     BCRYPT_ROUNDS: int = 12
@@ -181,8 +196,7 @@ class Settings(BaseSettings):
     # 留空则回退到 `LLM_API_KEY`（同一个百炼账号，通常不必单独填）。
     ASR_API_KEY: str = ""
     ASR_API_BASE: str = (
-        "https://dashscope.aliyuncs.com/api/v1/services/aigc/"
-        "multimodal-generation/generation"
+        "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
     )
     # 采样率，需与小程序录音参数对齐（Qwen 侧音频头自带，这里保留供校验与说明）。
     ASR_RATE: int = 16000
@@ -219,11 +233,13 @@ class Settings(BaseSettings):
     # 会在 import 期就抛异常，**没配 key 的机器上所有测试连 import 都过不去**，
     # 包括根本不用 LLM 的模块。校验点放在**真实调用入口**——用下面的
     # `llm_configured` 判断，缺了立刻报「LLM_API_KEY 未配置」，而不是走到 HTTP 401。
-    LLM_MODEL_NAME: str = ""               # 模型名，如 qwen-plus
-    LLM_API_KEY: str = ""                  # 各人各把，真实值只放 .env，不进仓库
-    LLM_BASE_URL: str = ""                 # OpenAI 兼容端点，不写死服务商
-    LLM_TEMPERATURE: float = 0.0           # 调度决策要可复现，取 0；调高会让同一需求两次给出不同方案
-    LLM_MAX_RETRIES: int = 1               # SDK 内部重试次数。外层已有 AGENT_TIMEOUT 兜底，重试不宜多
+    LLM_MODEL_NAME: str = ""  # 模型名，如 qwen-plus
+    LLM_API_KEY: str = ""  # 各人各把，真实值只放 .env，不进仓库
+    LLM_BASE_URL: str = ""  # OpenAI 兼容端点，不写死服务商
+    # 调度决策要可复现，取 0；调高会让同一需求两次给出不同方案
+    LLM_TEMPERATURE: float = 0.0
+    # SDK 内部重试次数。外层已有 AGENT_TIMEOUT 兜底，重试不宜多
+    LLM_MAX_RETRIES: int = 1
 
     # ---------- Agent 运行参数（模块 4 专用，阶段 5/6） ----------
     # `AGENT_TIMEOUT` 同时用于两处：传给 ChatOpenAI 的单次请求超时，以及
@@ -267,7 +283,7 @@ class Settings(BaseSettings):
     CONFLICT_SCAN_INITIAL_DELAY_SECONDS: int = 20
     CONFLICT_PAST_WINDOW_DAYS: int = 7
     CONFLICT_FUTURE_WINDOW_DAYS: int = 7
-    CONFLICT_MAX_ORDERS_IN_SNAPSHOT: int = 2000    # 保护 2 核 2G 服务器内存
+    CONFLICT_MAX_ORDERS_IN_SNAPSHOT: int = 2000  # 保护 2 核 2G 服务器内存
 
     # ---------- 软冲突阈值 ----------
     # ① 同用户连续活动无休息：相邻两场间隔小于该分钟数即命中

@@ -38,7 +38,17 @@ const ENUM_TAG = {
   ticket: { 1: 'blue', 2: 'orange', 3: 'green' },
 }
 
-/** 文案 → tag 配色。用于 statusText 可读、但整型值不可信的场合 */
+/**
+ * 文案 → tag 配色。用于 statusText 可读、但整型值不可信的场合。
+ *
+ * 「占用」三态（2026-10-06 补，与 Web 端 `Resources.vue` 同口径）：
+ * 它们是后端按**活跃单时段与当前时刻**推导出来的**文案**（不是枚举），
+ * 字段名 `occupancyText`。所以只能走这张文案表，没有整型可兜底。
+ *
+ *   使用中   → orange（场地正被正常使用，不是告警，所以不用红）
+ *   已被预约 → blue（本周内已有人订；注意**下周及以后不算**）
+ *   空闲     → gray（刻意不用 green：本页绿色已经表示「可用」这个台账状态）
+ */
 const TEXT_TAG = {
   待确认: 'purple',
   已确认: 'green',
@@ -56,6 +66,9 @@ const TEXT_TAG = {
   损坏: 'red',
   缺失配件: 'orange',
   灯泡老化: 'red',
+  使用中: 'orange',
+  已被预约: 'blue',
+  空闲: 'gray',
 }
 
 function pick(map, key) {
@@ -114,10 +127,38 @@ export function canCancelOrder(statusValue, statusText) {
   return label === '待确认' || label === '已确认'
 }
 
+/**
+ * 只有「已确认」允许标记完成（状态机 2→4，2026-10-06 补的接口）。
+ *
+ * 为什么不能放宽到「待确认」：占用口径以「已确认」为落实标志，
+ * 允许 1→4 会绕过「确认」这道关口（后端状态迁移表也只允许 2→4，
+ * 前端放宽只会得到 409）。
+ */
+export function canCompleteOrder(statusValue, statusText) {
+  return statusLabel('order', statusValue, statusText) === '已确认'
+}
+
+/**
+ * 只有「待确认」允许确认（状态机 1→2）。
+ *
+ * ⚠️ **2026-10-06 补。** 此前小程序的两个预约页（列表 / 详情）**都没有确认入口** ——
+ * 只有「取消预约」，而 `confirmOrder` 虽然封装好了却没人调用。
+ * 后果：Agent 建的单是 `status=1`，用户**无法把它落实**，只能取消或一直挂着；
+ * 而占用口径以「已确认」为落实标志，场地就一直显示「已被预约」而非「使用中」。
+ *
+ * 与 `canCompleteOrder` 互补且**互斥**：1 只能确认、2 只能完成，
+ * 两者合起来恰好覆盖「活跃」的两个状态，不会出现某个状态一个动作都没有。
+ */
+export function canConfirmOrder(statusValue, statusText) {
+  return statusLabel('order', statusValue, statusText) === '待确认'
+}
+
 export default {
   statusLabel,
   statusTag,
   spaceTypeLabel,
   notifyIcon,
   canCancelOrder,
+  canCompleteOrder,
+  canConfirmOrder,
 }

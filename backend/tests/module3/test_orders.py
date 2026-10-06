@@ -218,6 +218,49 @@ async def test_tc12_terminal_state_rejects_actions(client, action):
     assert r.status_code == 409
 
 
+async def test_complete_confirmed_order_frees_the_slot(client):
+    """已完成（2→4）后该单不再占位，且**该时段/设备立刻可再订**。
+
+    2026-10-06 补 `PUT /orders/{id}/complete` 时的护栏。此前整条链路缺失：
+    `OrderStatus.COMPLETED` 只写在状态机迁移表里，**没有任何接口能走到 4**，
+    于是用完了的单子永远停在「已确认(2)」，而 `ACTIVE_ORDER_STATUSES` 含 2 ——
+    场地被一直算作占用。用户反馈就是「预约已完成，状态不该还是已被预约」。
+    """
+    _, oid = await _create(client, spaceId=1, deviceIds=[1])
+    await client.put(f"/api/v1/orders/{oid}/confirm")
+
+    r = await client.put(f"/api/v1/orders/{oid}/complete")
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["orderStatus"] == 4
+
+    # 终态不再占位：同场地同时段可以再下一单
+    after, _ = await _create(client, spaceId=1, deviceIds=[1])
+    assert after.status_code == 200, "已完成的单必须释放时段"
+
+
+async def test_complete_requires_confirmed_first(client):
+    """待确认（1）不能直接跳到已完成（4）—— 状态机只允许 2→4。
+
+    否则「确认」这道关口会被绕过，而占用口径正是以「已确认」为落实标志。
+    """
+    _, oid = await _create(client)
+
+    r = await client.put(f"/api/v1/orders/{oid}/complete")
+    assert r.status_code == 409
+    assert r.json()["code"] == ErrorCode.ORDER_STATUS_CONFLICT
+
+
+async def test_completed_order_rejects_further_actions(client):
+    """已完成是终态：不能再 confirm / complete / cancel。"""
+    _, oid = await _create(client)
+    await client.put(f"/api/v1/orders/{oid}/confirm")
+    await client.put(f"/api/v1/orders/{oid}/complete")
+
+    for action in ("confirm", "complete", "cancel"):
+        r = await client.put(f"/api/v1/orders/{oid}/{action}")
+        assert r.status_code == 409, f"终态不该允许 {action}"
+
+
 async def test_cancelled_slot_can_be_reused(client):
     """取消后该时段应可再次预约（冲突检测只统计 1/2 状态）。"""
     _, oid = await _create(client)

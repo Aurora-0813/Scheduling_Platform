@@ -93,7 +93,15 @@ export function spaceStatusLabel(value, text) {
 // 实体归一：把「Mock 形状」与「真实形状」都收敛成同一套规范名
 // ===========================================================================
 
-/** 场地 → { spaceId, spaceName, spaceType, spaceTypeText, capacity, location, status, statusText } */
+/**
+ * 场地 → { spaceId, spaceName, spaceType, spaceTypeText, capacity, location,
+ *          status, statusText, occupancyText }
+ *
+ * `status` / `statusText` 是「可用 / 停用」的**台账开关**（管理员维护）；
+ * `occupancyText` 是**推导值**（"空闲" / "已被预约" / "使用中"，按活跃单时段
+ * 与当前时间算）。两者不是一回事 —— 预约只影响后者，绝不改前者。
+ * 旧后端不返回 `occupancyText` 时退回「空闲」，避免页面显示 `undefined`。
+ */
 export function spaceOf(raw) {
   if (!raw) return null
   const spaceType = first(raw.spaceType, raw.type)
@@ -107,12 +115,25 @@ export function spaceOf(raw) {
     location: first(raw.location, ''),
     status: first(raw.status, 1),
     statusText: spaceStatusLabel(raw.status, raw.statusText),
+    occupancyText: first(raw.occupancyText, '空闲'),
   }
 }
 
-/** 设备 → { deviceId, deviceName, deviceType, deviceStatus, deviceStatusText, totalCount, availableCount } */
+/**
+ * 设备 → { deviceId, deviceName, deviceType, deviceStatus, deviceStatusText,
+ *          totalCount, availableCount, remainingCount }
+ *
+ * `availableCount` vs `remainingCount`（**别把两者当同义词**）：
+ *   · `availableCount` = 可借上限，存在 `device_resource.available_count`，
+ *     按已定口径**只读不写** —— 所以别人下单它也不会减少。
+ *   · `remainingCount` = 实时剩余，由后端**用时推导**（上限 − 窗口内峰值占用）。
+ *
+ * 旧后端不返回 `remainingCount` 时退回 `availableCount`：显示成「满额」比
+ * 显示成 `undefined / 4` 要好，且不会让页面上出现 `NaN`。
+ */
 export function deviceOf(raw) {
   if (!raw) return null
+  const availableCount = first(raw.availableCount, 0)
   return {
     ...raw,
     deviceId: first(raw.deviceId, raw.id),
@@ -121,7 +142,8 @@ export function deviceOf(raw) {
     deviceStatus: first(raw.deviceStatus, raw.status, 1),
     deviceStatusText: deviceStatusLabel(raw.deviceStatus ?? raw.status, raw.statusText),
     totalCount: first(raw.totalCount, 0),
-    availableCount: first(raw.availableCount, 0),
+    availableCount,
+    remainingCount: first(raw.remainingCount, availableCount),
   }
 }
 

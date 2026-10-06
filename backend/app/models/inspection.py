@@ -60,6 +60,22 @@ class RepairTicket(Base):
         BigInteger, ForeignKey("sys_user.id"), nullable=True, comment="处理人ID"
     )
 
+    # ---------- 处理结果与 AI 核验（模块 6 追加）----------
+    # 由 `POST /tickets/{ticketId}/handle` 写入，见 alembic/versions/c4d8e1f0a2b7。
+    # 三列全部 nullable：核验不是「处理」的前置条件 ——
+    # 旧的 PUT /status 路径仍可只改状态，那些工单这三列就是 NULL。
+    handle_image_url: Mapped[str | None] = mapped_column(
+        String(512), nullable=True, comment="处理结果照片地址"
+    )
+    # 取值同 deviceStatus 四值（理由见 inspect_service.DEVICE_STATUSES）：
+    # 完好 即核验通过；损坏 / 缺失配件 / 无法识别 即未通过。
+    verify_status: Mapped[str | None] = mapped_column(
+        String(16), nullable=True, comment="AI 核验结论：完好/损坏/缺失配件/无法识别"
+    )
+    verify_report: Mapped[str | None] = mapped_column(
+        String(1000), nullable=True, comment="AI 核验说明"
+    )
+
     create_time: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), comment="创建时间"
     )

@@ -197,10 +197,8 @@ async def test_submit_fault_creates_ticket(api, db_session):
 
 async def test_submit_normal_creates_no_ticket(api, db_session):
     """判定「完好」→ 不建工单。这是**降噪**的关键：没坏的设备不该产生工单。"""
-    from sqlalchemy import func, select
 
     from app.agent.chains.llm import build_fake_llm
-    from app.models.inspection import RepairTicket
 
     api.state.llm = build_fake_llm([NORMAL_REPLY])
 
@@ -210,6 +208,324 @@ async def test_submit_normal_creates_no_ticket(api, db_session):
     assert data["deviceStatus"] == "完好"
     assert data["ticketId"] is None
     assert data["repairSuggestion"] == "", "完好时不该留维修建议"
+
+
+# ===========================================================================
+# 巡检判定 → 回写 device_resource.device_status
+#
+# 用户反馈的原始问题：「AI 智能巡检有设备损坏，在资源与设备里面，
+# 设备的状态还是完好」。根因是巡检只落 inspect_record 与 repair_ticket，
+# **从不碰设备台账**（工单的 device_id 还写死 None，注释说设备名映射不回 id）。
+# 下面这组用例把「回写」这条链路钉住。
+# ===========================================================================
+def _add_device(
+    db_session,
+    *,
+    device_id: int,
+    name: str,
+    status: int = 1,
+    available: int = 1,
+    total: int | None = None,
+):
+    """插一台测试设备。`total` 缺省与 `available` 一致。
+
+    ⚠️ `total_count` 是**回加时的上限**（`_restore_device` 用它夹住 +1）。
+    若只给 `available=2` 而 `total_count` 仍是 1，回加会被上限挡住 ——
+    那是**正确**行为，但会让「报损 −1 / 修好 +1」的用例看起来像坏了。
+    所以两者要一起给。
+    """
+    from app.models.resource import DeviceResource
+
+    db_session.add(
+        DeviceResource(
+            id=device_id,
+            device_name=name,
+            device_type="投影仪",
+            device_status=status,
+            total_count=available if total is None else total,
+            available_count=available,
+        )
+    )
+    return db_session
+
+
+async def test_submit_fault_updates_device_ledger(api, db_session):
+    """判定「损坏」且设备名唯一命中 → 台账状态改「损坏」、工单挂上 device_id。
+
+    这是用户反馈那个不一致的**回归用例**：AI 说损坏，设备台账必须同步。
+    """
+    from sqlalchemy import select
+
+    from app.models.inspection import RepairTicket
+    from app.models.resource import DeviceResource
+
+    _add_device(db_session, device_id=901, name="投影仪01", status=1, available=1)
+    await db_session.commit()
+
+    resp = await _submit(api)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["deviceStatus"] == "损坏"
+
+    device = (
+        (await db_session.execute(select(DeviceResource).where(DeviceResource.id == 901)))
+        .scalars()
+        .one()
+    )
+    # 关键断言：不再显示「完好」
+    assert device.device_status == 2, "AI 判定损坏，设备台账必须同步为损坏(2)"
+    # 报损要**减一台可借数**（2026-10-06 口径变更，取代原先的「静态上限不动」）：
+    # 报损 −1 / 维修核验通过 +1，所以 available_count 的语义是「台账上可用的物理台数」。
+    assert device.available_count == 0, "报损 1 台后，可借数应从 1 减到 0"
+
+    ticket = (await db_session.execute(select(RepairTicket))).scalars().one()
+    assert ticket.device_id == 901, "工单应挂到命中的设备上，而不是恒为 None"
+
+
+async def test_submit_fault_leaves_unmatched_device_untouched(api, db_session):
+    """AI 认出的设备名在台账里不存在 → **不猜**，一台都不改，工单 device_id 仍为空。"""
+    from sqlalchemy import select
+
+    from app.models.inspection import RepairTicket
+    from app.models.resource import DeviceResource
+
+    _add_device(db_session, device_id=902, name="音响01", status=1, available=1)
+    await db_session.commit()
+
+    resp = await _submit(api)  # FAULT_REPLY 的 deviceName 是「投影仪01」
+    assert resp.status_code == 200, resp.text
+
+    device = (
+        (await db_session.execute(select(DeviceResource).where(DeviceResource.id == 902)))
+        .scalars()
+        .one()
+    )
+    assert device.device_status == 1, "名字对不上时绝不能改别的设备"
+    assert device.available_count == 1
+
+    ticket = (await db_session.execute(select(RepairTicket))).scalars().one()
+    assert ticket.device_id is None
+
+
+async def test_submit_fault_ambiguous_name_is_not_guessed(api, db_session):
+    """同名设备有多台（投影仪1..4 这种）→ **宁可不写**，避免把好设备标成损坏。
+
+    设备表里同型号多台是常态。挑错一台不会报错，只会让那台设备再也借不出去 ——
+    属于「看起来正常、实际错了」的问题，所以匹配不唯一时必须放弃。
+    """
+    from sqlalchemy import select
+
+    from app.models.resource import DeviceResource
+
+    _add_device(db_session, device_id=903, name="投影仪01", status=1, available=1)
+    _add_device(db_session, device_id=904, name="投影仪01", status=1, available=1)
+    await db_session.commit()
+
+    resp = await _submit(api)
+    assert resp.status_code == 200, resp.text
+
+    rows = (
+        (await db_session.execute(select(DeviceResource).where(DeviceResource.id.in_((903, 904)))))
+        .scalars()
+        .all()
+    )
+    assert [r.device_status for r in rows] == [1, 1], "名字不唯一时不应改动任何一台"
+
+
+def _fault_reply(device_name: str, device_status: str = "损坏") -> str:
+    """按指定设备名拼一份「异常」回复，用于验匹配策略。"""
+    return json.dumps(
+        {
+            "deviceStatus": device_status,
+            "report": f"{device_name} 存在异常。",
+            "repairSuggestion": "安排维修。",
+            "deviceName": device_name,
+            "deviceType": "设备",
+        },
+        ensure_ascii=False,
+    )
+
+
+async def test_submit_fault_matches_by_unique_substring(api, db_session):
+    """模型报品类、台账写品牌型号 → 靠**唯一子串**命中。
+
+    这条来自真实故障：台账里是 `大疆无人机`，而视觉模型报的是 `无人机` ——
+    它看的是像素，不可能稳定输出我们台账里的精确名字。
+    只做精确相等时永远匹配不上，表现就是「AI 说设备损坏，
+    资源与设备里状态还是完好」。
+    """
+    from sqlalchemy import select
+
+    from app.agent.chains.llm import build_fake_llm
+    from app.models.inspection import RepairTicket
+    from app.models.resource import DeviceResource
+
+    _add_device(db_session, device_id=911, name="大疆无人机", status=1, available=2)
+    await db_session.commit()
+
+    api.state.llm = build_fake_llm([_fault_reply("无人机", "缺失配件")])
+
+    resp = await _submit(api)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["deviceStatus"] == "缺失配件"
+
+    device = (
+        (await db_session.execute(select(DeviceResource).where(DeviceResource.id == 911)))
+        .scalars()
+        .one()
+    )
+    assert device.device_status == 3, "「无人机」应唯一子串命中「大疆无人机」并标为缺失配件(3)"
+
+    ticket = (await db_session.execute(select(RepairTicket))).scalars().one()
+    assert ticket.device_id == 911
+
+
+async def test_submit_fault_substring_ambiguous_is_not_guessed(api, db_session):
+    """子串命中多台 → 依旧放弃（`无人机` 同时命中两台无人机时不猜）。
+
+    这是放宽匹配的代价：歧义时必须退回「不写」，否则会把好设备标成故障。
+    """
+    from sqlalchemy import select
+
+    from app.agent.chains.llm import build_fake_llm
+    from app.models.resource import DeviceResource
+
+    _add_device(db_session, device_id=912, name="大疆无人机", status=1, available=1)
+    _add_device(db_session, device_id=913, name="道通无人机", status=1, available=1)
+    await db_session.commit()
+
+    api.state.llm = build_fake_llm([_fault_reply("无人机")])
+
+    resp = await _submit(api)
+    assert resp.status_code == 200, resp.text
+
+    rows = (
+        (await db_session.execute(select(DeviceResource).where(DeviceResource.id.in_((912, 913)))))
+        .scalars()
+        .all()
+    )
+    assert [r.device_status for r in rows] == [1, 1], "子串有多台命中时不应改动任何一台"
+
+
+async def test_submit_fault_decrements_available_count(api, db_session):
+    """报损 1 台 → 可借数 −1；再修好 → +1。这一对必须对称。
+
+    「报损减、修好加」是 2026-10-06 的口径。此前是「两边都不动」，
+    用户反馈「报损后可借数没减」；更早一版只做了减、没做加，
+    又变成「修好了也借不出去」。所以两个方向要**一起**钉住。
+    """
+    from sqlalchemy import select
+
+    from app.models.resource import DeviceResource
+
+    # 2 台可借，报损 1 台后应剩 1 台
+    _add_device(db_session, device_id=931, name="投影仪01", status=1, available=2)
+    await db_session.commit()
+
+    data = (await _submit(api)).json()["data"]
+    assert data["deviceWarning"] is None, "还有可借台数时不该有提示"
+
+    device = (
+        (await db_session.execute(select(DeviceResource).where(DeviceResource.id == 931)))
+        .scalars()
+        .one()
+    )
+    assert device.available_count == 1, "2 台里报损 1 台，可借数应变 1"
+
+    # 维修完成 → 加回 2
+    await api.client.put(
+        f"/api/v1/tickets/{data['ticketId']}/status", headers=api.headers, json={"status": 3}
+    )
+    await db_session.refresh(device)
+    assert device.available_count == 2, "修好后应加回 2"
+
+
+async def test_submit_fault_at_zero_warns_instead_of_going_negative(api, db_session):
+    """可借数已是 0 时再报损：**不再往下减**，并回传「已有人报修」的提示。
+
+    不允许负库存，也不能静默什么都不做 —— 用户看到「工单建了、可借数没变」
+    会以为是 bug，所以必须把原因带回去。
+    """
+    from sqlalchemy import select
+
+    from app.models.resource import DeviceResource
+
+    _add_device(db_session, device_id=932, name="投影仪01", status=1, available=0)
+    await db_session.commit()
+
+    data = (await _submit(api)).json()["data"]
+    assert data["ticketId"], "仍然要建工单 —— 故障是真实的"
+    assert data["deviceWarning"], "可借数为 0 时必须回传提示"
+    assert "已有人报修" in data["deviceWarning"], data["deviceWarning"]
+
+    device = (
+        (await db_session.execute(select(DeviceResource).where(DeviceResource.id == 932)))
+        .scalars()
+        .one()
+    )
+    assert device.available_count == 0, "不允许负库存"
+    assert device.device_status == 2, "状态照改 —— 它确实报损了"
+
+
+async def test_restore_never_exceeds_total_count(api, db_session):
+    """回加不得超过 `total_count`，否则 2 台的设备能被加成 3 台。
+
+    报损在下限 0 处会**不再减**，所以「减」的次数可能少于「加」的次数；
+    没有上限保护就会凭空多出台数。
+    """
+
+    from app.models.resource import DeviceResource
+
+    # 可借数已是上限，直接走一遍恢复：不应超过 total_count
+    _add_device(db_session, device_id=933, name="投影仪01", status=1, available=2)
+    await db_session.commit()
+
+    from app.models.inspection import RepairTicket
+    from app.services import inspect_service
+
+    device = await db_session.get(DeviceResource, 933)
+    device.device_status = 2
+    device.available_count = 2  # 已被人工加回上限
+    await db_session.commit()
+
+    ticket = RepairTicket(device_id=933, space_id=api.space_id, ticket_status=1)
+    db_session.add(ticket)
+    await db_session.flush()
+
+    await inspect_service._restore_device(db_session, ticket)
+    await db_session.commit()
+    await db_session.refresh(device)
+
+    assert device.available_count == 2, f"不得超过 total_count=2，实际 {device.available_count}"
+
+
+async def test_submit_unrecognized_does_not_touch_device(api, db_session):
+    """判定「无法识别」→ 不建工单、也不改台账。
+
+    照片拍糊了不代表设备坏了。这与 `ABNORMAL_STATUSES` 不含「无法识别」是同一口径。
+    """
+    from sqlalchemy import func, select
+
+    from app.agent.chains.llm import build_fake_llm
+    from app.models.inspection import RepairTicket
+    from app.models.resource import DeviceResource
+
+    _add_device(db_session, device_id=905, name="投影仪01", status=1, available=1)
+    await db_session.commit()
+
+    api.state.llm = build_fake_llm([UNPARSABLE_REPLY])
+
+    resp = await _submit(api)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["ticketId"] is None
+
+    device = (
+        (await db_session.execute(select(DeviceResource).where(DeviceResource.id == 905)))
+        .scalars()
+        .one()
+    )
+    assert device.device_status == 1, "无法识别时不应动设备台账"
+    assert device.available_count == 1
 
     total = (await db_session.execute(select(func.count()).select_from(RepairTicket))).scalar_one()
     assert total == 0
@@ -342,6 +658,142 @@ async def test_ticket_status_flow(api, db_session):
     ticket = await db_session.get(RepairTicket, ticket_id)
     assert ticket.ticket_status == 3
     assert ticket.handler_id == api.inspector_id
+
+
+async def test_ticket_done_restores_device(api, db_session):
+    """人工把工单推成「已完成」→ 设备恢复可借（`device_status` 改回 1）。
+
+    这是「修复完成后可用的设备没有增加」的**回归用例**。
+    上一轮只做了单向同步（完好→损坏），没有反向路径，设备永远借不出去。
+    """
+    from sqlalchemy import select
+
+    from app.models.resource import DeviceResource
+
+    _add_device(db_session, device_id=921, name="投影仪01", status=1, available=1)
+    await db_session.commit()
+
+    # 巡检判定损坏 → 设备被标为 2
+    ticket_id = (await _submit(api)).json()["data"]["ticketId"]
+    device = (
+        (await db_session.execute(select(DeviceResource).where(DeviceResource.id == 921)))
+        .scalars()
+        .one()
+    )
+    assert device.device_status == 2, "前置条件：巡检已把设备标为损坏"
+    assert device.available_count == 0, "前置条件：报损已把可借数减到 0"
+
+    # 处理完成 → 设备应恢复
+    resp = await api.client.put(
+        f"/api/v1/tickets/{ticket_id}/status", headers=api.headers, json={"status": 3}
+    )
+    assert resp.status_code == 200, resp.text
+
+    await db_session.refresh(device)
+    assert device.device_status == 1, "维修完成后设备必须恢复为「完好」，否则永远借不出去"
+    assert device.available_count == 1, "维修完成后可借数必须 +1 回来"
+    # 接口把恢复结果回传，前端才能提示「设备已恢复可借」
+    assert resp.json()["data"]["availableCount"] == 1
+    assert resp.json()["data"]["deviceId"] == 921
+
+
+async def test_ticket_processing_does_not_restore_device(api, db_session):
+    """只推到「处理中」**不**恢复设备 —— 修还没修好，不能提前放行。"""
+    from sqlalchemy import select
+
+    from app.models.resource import DeviceResource
+
+    _add_device(db_session, device_id=922, name="投影仪01", status=1, available=1)
+    await db_session.commit()
+
+    ticket_id = (await _submit(api)).json()["data"]["ticketId"]
+    await api.client.put(
+        f"/api/v1/tickets/{ticket_id}/status", headers=api.headers, json={"status": 2}
+    )
+
+    device = (
+        (await db_session.execute(select(DeviceResource).where(DeviceResource.id == 922)))
+        .scalars()
+        .one()
+    )
+    assert device.device_status == 2, "还没修好就恢复可借，是更严重的错"
+
+
+async def test_handle_verification_failure_does_not_restore_device(api, db_session, application):
+    """核验未通过 → **不**恢复设备；核验通过 → 恢复。
+
+    这条把「恢复」与「AI 核验结论」绑在一起：恢复可借 = 宣称设备能用了，
+    必须有凭据（核验通过的照片），而不是单方面关掉工单。
+
+    ⚠️ `/handle` 走的是 `get_optional_vision_llm` 这个依赖（与 `/inspect/submit`
+    的 `get_vision_llm` **不是同一个**，原因是核验链路允许模型缺席）。
+    所以这里要覆盖的是它；不覆盖的话会打真实 API，用例联网必挂。
+    """
+    from sqlalchemy import select
+
+    from app.agent.chains.llm import build_fake_llm
+    from app.core.llm import get_optional_vision_llm
+    from app.models.resource import DeviceResource
+
+    _add_device(db_session, device_id=923, name="投影仪01", status=1, available=1)
+    await db_session.commit()
+
+    ticket_id = (await _submit(api)).json()["data"]["ticketId"]
+
+    async def _post_handle():
+        return await api.client.post(
+            f"/api/v1/tickets/{ticket_id}/handle",
+            headers=api.headers,
+            files={"file": ("after.png", PNG_1PX, "image/png")},
+        )
+
+    application.dependency_overrides[get_optional_vision_llm] = lambda: api.state.llm
+    try:
+        # 核验仍判定损坏 → 不通过，设备保持损坏
+        api.state.llm = build_fake_llm(
+            [
+                json.dumps(
+                    {
+                        "deviceStatus": "损坏",
+                        "report": "指示灯仍不亮，未修复。",
+                        "deviceName": "投影仪01",
+                    },
+                    ensure_ascii=False,
+                )
+            ]
+        )
+        resp = await _post_handle()
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["data"]["passed"] is False
+
+        device = (
+            (await db_session.execute(select(DeviceResource).where(DeviceResource.id == 923)))
+            .scalars()
+            .one()
+        )
+        assert device.device_status == 2, "核验未通过时不能恢复可借"
+
+        # 核验判定完好 → 通过，设备恢复
+        api.state.llm = build_fake_llm(
+            [
+                json.dumps(
+                    {
+                        "deviceStatus": "完好",
+                        "report": "指示灯已恢复正常，部件齐全。",
+                        "deviceName": "投影仪01",
+                    },
+                    ensure_ascii=False,
+                )
+            ]
+        )
+        resp = await _post_handle()
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["data"]["passed"] is True
+
+        await db_session.refresh(device)
+        assert device.device_status == 1, "核验通过后设备必须恢复可借"
+    finally:
+        application.dependency_overrides.pop(get_optional_vision_llm, None)
 
 
 async def test_ticket_status_rejects_unknown_value(api):

@@ -81,6 +81,17 @@
               >
                 确认
               </button>
+              <!-- 完成（2→4）：用完了的单子要有地方结束，否则它会一直算作占用，
+                   场地页就会一直显示「已被预约」/「使用中」（真实反馈过）。
+                   只对「已确认」显示 —— 待确认的应先确认或取消。 -->
+              <button
+                v-if="order.orderStatus === 2"
+                class="link-btn is-primary"
+                :disabled="actingId === order.orderId"
+                @click="onComplete(order)"
+              >
+                完成
+              </button>
               <button
                 v-if="order.orderStatus === 1 || order.orderStatus === 2"
                 class="link-btn is-danger"
@@ -165,11 +176,18 @@
             <div v-for="step in detailTrace" :key="step.step" class="sp-tstep">
               <div class="sp-tnum" :class="step.action ? '' : 'is-g'">{{ step.step }}</div>
               <div class="sp-tb">
+                <!--
+                  只显示每步的**最终结果**（`result`），与调度台同口径
+                  （见 AgentWorkbench.vue 的说明）。以下两项**不再渲染**：
+                    · `step.thought`     —— 模型推理正文
+                    · `step.action`      —— 内部工具名（英文函数名，对用户无信息量）
+                  纯推理步的「推理」标签保留：它是中文，用来区分「这步有没有动系统」。
+                  数据仍在 `agentTrace` 里，将来要「展开看明细」加折叠层即可。
+                -->
                 <h5>
                   {{ step.result }}
-                  <span v-if="step.action" class="sp-tag is-purple">{{ step.action }}</span>
+                  <span v-if="!step.action" class="sp-tag is-gray">推理</span>
                 </h5>
-                <p v-if="step.thought">{{ step.thought }}</p>
               </div>
             </div>
           </div>
@@ -183,6 +201,15 @@
             @click="onConfirm(detail)"
           >
             确认该预约
+          </button>
+          <!-- 完成（2→4）：与列表里的「完成」同一个动作，抽屉里也要能操作 -->
+          <button
+            v-if="detail.orderStatus === 2"
+            class="sp-btn is-ai is-block"
+            :disabled="actingId === detail.orderId"
+            @click="onComplete(detail)"
+          >
+            标记已完成
           </button>
           <button
             v-if="detail.orderStatus === 1 || detail.orderStatus === 2"
@@ -204,7 +231,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 
 import { ElMessage } from 'element-plus'
 
-import { cancelOrder, confirmOrder, getMyOrders } from '@/api/orders'
+import { cancelOrder, completeOrder, confirmOrder, getMyOrders } from '@/api/orders'
 import { getDevices, getSpaces } from '@/api/resources'
 import { devicesOf, ordersOf, spacesOf } from '@/utils/normalize'
 
@@ -353,6 +380,21 @@ async function onConfirm(order) {
     await load()
     syncDetail(order.orderId)
   } catch {
+    await load()
+  } finally {
+    actingId.value = null
+  }
+}
+
+async function onComplete(order) {
+  actingId.value = order.orderId
+  try {
+    await completeOrder(order.orderId)
+    ElMessage.success('预约 #' + order.orderId + ' 已完成')
+    await load()
+    syncDetail(order.orderId)
+  } catch {
+    // 409（当前状态不允许完成）等由 request.js 弹出真实原因
     await load()
   } finally {
     actingId.value = null

@@ -76,7 +76,26 @@ _ACTION_LABEL = {
     "submit_plan": "提交方案",
 }
 
-#: `result` 的长度上限。前端屏 3 的卡片放不下长文本。
+#: `result` 的长度上限。它是给用户看的一行结论，不是用来装长文的。
+#:
+#: ⚠️ **2026-10-06：一度提到 300，随后又改回 80。**
+#: 经过是：前端改成只显示 `result` 之后（推理正文与工具明细不再渲染，
+#: 见 `frontend/src/views/AgentWorkbench.vue`），最长的 `result` 来自
+#: **submit_plan** —— `builder` 交给它的方案说明有几百字，一截就只剩开头。于是把
+#: 上限放宽到 300 去容纳它。
+#:
+#: 但正确的修法不是放宽上限，而是**这一步根本不该复述方案**：
+#: 方案的完整内容在响应里（`plan` / `backupPlan`）、由各端自行渲染，
+#: 思考链里再抄一遍既占地方又容易与方案不一致。所以 `_summarize` 改为
+#: 只返回「详情请查看方案」，上限也就没必要放宽了。
+#:
+#: 回到 80 之后，唯一还会被截的是**纯推理步**：它的 `result` 用整段 `thought`
+#: 兜底（见 `_summarize` 的 `action is None` 分支），而模型推理正文常有两三百字。
+#: 那是**有意**的截断 —— 推理正文本来就不该整段塞进一行结论，截到 80 字
+#: 反而更符合「一行结论」的定位。真要读全文，数据仍在响应的 `thought` 里。
+#:
+#: 保留这道上限的另一个理由是防御：模型偶尔会把整段分析塞进一个字段，
+#: 没有上限就会让 trace 撑大整个响应体，而部署目标是 2 核 2G（§12.1）。
 _RESULT_MAX_LEN = 80
 
 
@@ -226,7 +245,25 @@ def _summarize(action: str | None, observation: dict[str, Any] | None, thought: 
         return _clip(f"{label}：失败（{observation.get('conflictType') or '未知原因'}）")
 
     if action == "submit_plan":
-        return f"{label}：已提交"
+        # 交付方案这一步，**内容全在响应里**（`plan` / `backupPlan`），
+        # 在思考链里再复述一遍方案要点只会让流程变长、还要往下滚动才对得上时间轴。
+        # 所以这里只给一个「去哪儿看」的指引，不再罗列方案。
+        #
+        # ⚠️ 文案为什么**不写方位、也不写点击**（2026-10-06）：
+        #    同一份 `result` 由 Web 端与小程序端共用，而两端**方案在哪不一样**：
+        #      · Web 端  方案在**右侧常驻面板**（不用点）
+        #      · 小程序  方案在**另一页**（需要点进去）
+        #    写「右侧」只对 Web 准，写「点击」只对小程序准 —— 都会在另一端变成错话。
+        #    所以取中性说法「详情请查看方案」，两端都成立。
+        #
+        # ⚠️ 保留「提交方案」这个中文标签不是随手写的：
+        #    `tests/test_agent_trace.py::test_u04_labels_are_chinese` 断言
+        #    每个工具的中文标签**出现在 result 里**（用的是 `in`，子串匹配）。
+        #    只写「详情请查看方案」会让那条用例红。
+        #    `_ACTION_LABEL` 也不改：其它分支与它对 `label` 的用法都还依赖它。
+        if not observation.get("ok", True):
+            return _clip(f"{label}：失败（{observation.get('reason') or '未提供原因'}）")
+        return f"{label}：详情请查看方案"
 
     if action == "generate_notification":
         if not observation.get("ok", True):

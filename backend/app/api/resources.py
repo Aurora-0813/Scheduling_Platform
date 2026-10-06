@@ -16,19 +16,34 @@ from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.config import settings
 from ..core.database import get_db
 from ..core.exceptions import DeviceNotFoundError, SpaceNotFoundError
 from ..core.response import ok
 from ..core.utils import format_clock, format_time
 from ..models import DeviceResource, ReserveOrder, SpaceResource
 from ..schemas.resource import DeviceUpdate, SpaceCreate
-from ..services import space_service
+from ..services import order_service, space_service
 from .deps import CurrentUser, get_current_user
 
 router = APIRouter(prefix="/resources", tags=["resources"])
 
 
-def _space_out(s: SpaceResource) -> dict:
+def _space_out(s: SpaceResource, *, occupancy: str | None = None) -> dict:
+    """
+    场地 → 传输结构。
+
+    `occupancyText` 是**推导值**（按活跃单的时段与当前时间算），说明见
+    `app/services/space_service.py::space_occupancy`：
+        "使用中"  有一条活跃单正在用
+        "已被预约" 今天还有一条没开始的活跃单
+        "空闲"    两者都不是
+
+    ⚠️ 它与 `status`（1 可用 / 0 停用）**是两回事**：`status` 是「能不能借」
+    的台账开关，由管理员维护，预约绝不改写它；`occupancyText` 只是显示层
+    对「此刻有没有人在用」的推导。混为一谈会让被预约的场地从可用列表里消失。
+    """
+    status = s.status
     return {
         "spaceId": s.id,
         "spaceName": s.space_name,
@@ -38,18 +53,34 @@ def _space_out(s: SpaceResource) -> dict:
         "budget": float(s.budget) if s.budget is not None else 0.0,
         "openStartTime": format_clock(s.open_start_time),
         "openEndTime": format_clock(s.open_end_time),
-        "status": s.status,
+        "status": status,
+        "statusText": "可用" if status == 1 else "停用",
+        "occupancyText": occupancy or "空闲",
     }
 
 
-def _device_out(d: DeviceResource) -> dict:
+def _device_out(d: DeviceResource, *, occupied: int = 0) -> dict:
+    """
+    设备 → 传输结构。
+
+    `availableCount` 是**静态上限**；`remainingCount` 是推导出的实时剩余
+    （上限 − 窗口内峰值占用，下限 0）。两者的分工见 `list_devices` 的 docstring。
+
+    `occupied` 默认为 0：`PUT /devices/{id}` 改完状态后就地返回这一台，
+    不为它单独再跑一次占用统计（那是一次全表范围查询，而单台设备的剩余量
+    在改状态这个动作里不是关键信息）。
+    """
+    cap = d.available_count or 0
     return {
         "deviceId": d.id,
         "deviceName": d.device_name,
         "deviceType": d.device_type or "",
         "deviceStatus": d.device_status,
         "totalCount": d.total_count,
-        "availableCount": d.available_count,
+        "availableCount": cap,
+        # max(0, ...) 是兜底：理论上峰值不会超过上限（下单会拒），
+        # 但活跃单被人工改成上限以上的极端情况下，剩余量不该显示成负数。
+        "remainingCount": max(0, cap - occupied),
     }
 
 
@@ -68,9 +99,17 @@ def _booking_out(o: ReserveOrder) -> dict:
 
 @router.get("/spaces")
 async def list_spaces(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(SpaceResource))
-    spaces = result.scalars().all()
-    return ok([_space_out(s) for s in spaces])
+    """
+    场地台账。每行除「可用 / 停用」外，还带一个**推导出来的占用状态**。
+
+    `status` / `statusText` 是台账开关（管理员维护，预约**不改写**它）；
+    `occupancyText` 是「此刻有没有人在用」的推导（空闲 / 已被预约 / 使用中）。
+    两个字段都有，是因为它们回答的是不同问题 —— 把占用写进 `status`
+    会让被预约的场地从「可用场地」查询里消失（那 5 处查询都依赖它）。
+    """
+    spaces = (await db.execute(select(SpaceResource))).scalars().all()
+    occupancy = await space_service.space_occupancy(db)
+    return ok([_space_out(s, occupancy=occupancy.get(s.id)) for s in spaces])
 
 
 @router.get("/spaces/{spaceId}/booked")
@@ -154,9 +193,22 @@ async def create_space(
 
 @router.get("/devices")
 async def list_devices(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(DeviceResource))
-    devices = result.scalars().all()
-    return ok([_device_out(d) for d in devices])
+    """
+    设备台账。每台设备除静态字段外，还带一个**推导出来的实时剩余量**。
+
+    `availableCount` 是**静态上限**（`device_resource.available_count`，按口径
+    只读不写，见 `docs/available_count口径判据.md`）；`remainingCount` 才是
+    「现在还能借几台」，由 `available_count − 窗口内峰值占用` 算出来。
+
+    为什么两个都给：管理员维护的是上限，使用者关心的是剩余。只给上限会让人
+    以为「建了单却不减」（这是真实反馈过的问题）；只给剩余又会让管理员
+    无法在界面上看到、也无法维护那个上限。
+    """
+    devices = (await db.execute(select(DeviceResource))).scalars().all()
+    occupied = await order_service.peak_device_occupancy(
+        db, horizon_days=settings.DEVICE_REMAINING_HORIZON_DAYS
+    )
+    return ok([_device_out(d, occupied=occupied.get(d.id, 0)) for d in devices])
 
 
 @router.put("/devices/{deviceId}")
@@ -181,4 +233,3 @@ async def update_device(
     await db.commit()
     await db.refresh(device)
     return ok(_device_out(device), "设备状态已更新")
-

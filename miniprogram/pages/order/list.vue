@@ -81,9 +81,32 @@
             <text class="v mono">{{ orderNoOf(o) }}</text>
           </view>
 
-          <!-- 只有待确认 / 已确认可取消，与后端校验保持一致 -->
-          <view v-if="canCancelOrder(orderStatus(o), orderStatusText(o))" class="oa">
+          <!--
+            三个动作与订单状态一一对应：
+              · 确认预约（1→2）：**2026-10-06 补**。此前这里只有「取消」，
+                而 Agent 建的单是 status=1 —— 用户**没有任何办法把它落实**，
+                只能取消。确认后该单才进入「已确认」，场地占用才算真正生效。
+              · 标记完成（2→4）：用完了的单要有地方结束，否则它一直算占用
+                → 场地永远显示「已被预约」/「使用中」
+              · 取消预约：待确认 / 已确认都可取消
+          -->
+          <view class="oa">
             <view
+              v-if="canConfirmOrder(orderStatus(o), orderStatusText(o))"
+              class="btn"
+              hover-class="btn-on"
+              :hover-stay-time="60"
+              @tap.stop="askConfirm(o)"
+            >确认预约</view>
+            <view
+              v-if="canCompleteOrder(orderStatus(o), orderStatusText(o))"
+              class="btn ghost"
+              hover-class="btn-on"
+              :hover-stay-time="60"
+              @tap.stop="askComplete(o)"
+            >标记完成</view>
+            <view
+              v-if="canCancelOrder(orderStatus(o), orderStatusText(o))"
               class="btn ghost"
               hover-class="btn-on"
               :hover-stay-time="60"
@@ -110,8 +133,14 @@
  */
 import { ref, computed } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
-import { myOrders, cancelOrder } from '@/api/orders.js'
-import { statusLabel, statusTag, canCancelOrder } from '@/utils/dict.js'
+import { myOrders, cancelOrder, completeOrder, confirmOrder } from '@/api/orders.js'
+import {
+  statusLabel,
+  statusTag,
+  canCancelOrder,
+  canCompleteOrder,
+  canConfirmOrder,
+} from '@/utils/dict.js'
 import { ensureNameMaps, deviceLabel, spaceLabel, spaceBudget } from '@/utils/nameMap.js'
 import { orderStatus, orderStatusText, orderId } from '@/utils/normalize.js'
 import { formatTimeRange, formatMoney } from '@/utils/format.js'
@@ -207,6 +236,54 @@ async function askCancel(o) {
   }
 }
 
+async function askConfirm(o) {
+  const ok = await confirm({
+    title: '确认预约',
+    content: `确认「${spaceLabel(o.spaceId)}」这场预约吗？确认后该时段正式占用。`,
+    confirmText: '确认预约',
+  })
+  if (!ok) return
+
+  const id = orderId(o)
+  if (id === undefined) {
+    toast('这条预约缺少单号，无法确认')
+    return
+  }
+  try {
+    await confirmOrder(id)
+    toastOk('已确认')
+    load()
+  } catch (e) {
+    // 后端只在「待确认」时允许确认，否则 409；如实提示并刷新
+    toast(e.message || '确认失败')
+    load()
+  }
+}
+
+async function askComplete(o) {
+  const ok = await confirm({
+    title: '标记完成',
+    content: `确认「${spaceLabel(o.spaceId)}」这场预约已经结束了吗？完成后该时段会释放给其他人。`,
+    confirmText: '标记完成',
+  })
+  if (!ok) return
+
+  const id = orderId(o)
+  if (id === undefined) {
+    toast('这条预约缺少单号，无法标记完成')
+    return
+  }
+  try {
+    await completeOrder(id)
+    toastOk('已完成')
+    load()
+  } catch (e) {
+    // 后端只在「已确认」时允许完成，否则 409；如实提示并刷新
+    toast(e.message || '操作失败')
+    load()
+  }
+}
+
 function openDetail(o) {
   const id = orderId(o)
   if (id === undefined) return
@@ -277,6 +354,10 @@ function goVoice() {
 .oa {
   display: flex;
   justify-content: flex-end;
+  /* 状态 1/2 各有两个动作（确认+取消 / 完成+取消），必须有间距；
+     flex-wrap 兜住窄屏 —— 两个按钮加内边距在 320px 宽的机型上会顶满 */
+  flex-wrap: wrap;
+  gap: 16rpx;
   margin-top: 20rpx;
   padding-top: 20rpx;
   border-top: 1px solid #f5f7fa;

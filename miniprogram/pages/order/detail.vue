@@ -87,9 +87,13 @@
             <view v-for="t in trace" :key="t.step" class="mbstep">
               <view class="tnum">{{ t.step }}</view>
               <view class="txt">
-                <text class="ss">{{ t.title }}</text>
-                <text v-if="t.body">{{ t.body }}</text>
-                <view v-if="t.call" class="code wrap">{{ t.call }}</view>
+                <!-- 只显示每步最终结果 + 时间（与 Web 端调度台同口径）；
+                     thought / actionInput / observation 一律不渲染 -->
+                <view class="sline">
+                  <text class="ss">{{ t.title }}</text>
+                  <text v-if="!t.action" class="tag gray">推理</text>
+                </view>
+                <text v-if="t.time" class="stime">{{ t.time }}</text>
               </view>
             </view>
           </template>
@@ -97,7 +101,38 @@
       </template>
     </view>
 
-    <view v-if="canCancel" class="app-cta">
+    <!--
+      底部动作与订单状态一一对应：
+        · 确认预约（1→2）：**2026-10-06 补**。此前这里只有「取消」，
+          而 Agent 建的单是 status=1 —— 用户没有任何办法把它落实。
+        · 标记完成（2→4）：用完了的单要有地方结束，否则一直算占用。
+        · 取消预约：待确认 / 已确认都可取消。
+      用主题里已有的 .app-cta-row（flex + gap）排，不自己加 margin 拼间距。
+      只有一个动作时仍走原来的整块按钮。
+    -->
+    <view v-if="canConfirm" class="app-cta">
+      <view class="app-cta-row">
+        <view class="btn grow" hover-class="btn-on" @tap="askConfirm">确认预约</view>
+        <view
+          v-if="canCancel"
+          class="btn ghost danger"
+          hover-class="btn-on"
+          @tap="askCancel"
+        >取消预约</view>
+      </view>
+    </view>
+    <view v-else-if="canComplete" class="app-cta">
+      <view class="app-cta-row">
+        <view class="btn grow" hover-class="btn-on" @tap="askComplete">标记完成</view>
+        <view
+          v-if="canCancel"
+          class="btn ghost danger"
+          hover-class="btn-on"
+          @tap="askCancel"
+        >取消预约</view>
+      </view>
+    </view>
+    <view v-else-if="canCancel" class="app-cta">
       <view class="btn ghost block danger" hover-class="btn-on" @tap="askCancel">取消预约</view>
     </view>
   </view>
@@ -118,12 +153,18 @@
  */
 import { ref, computed } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { getOrder, cancelOrder } from '@/api/orders.js'
-import { statusLabel, statusTag, canCancelOrder } from '@/utils/dict.js'
+import { getOrder, cancelOrder, completeOrder, confirmOrder } from '@/api/orders.js'
+
+import {
+  statusLabel,
+  statusTag,
+  canCancelOrder,
+  canCompleteOrder,
+  canConfirmOrder,
+} from '@/utils/dict.js'
 import { ensureNameMaps, deviceLabel, spaceLabel, spaceBudget } from '@/utils/nameMap.js'
 import { orderStatus, orderStatusText, orderId } from '@/utils/normalize.js'
 import { formatTimeRange, formatDuration, formatMoney } from '@/utils/format.js'
-import { formatActionInput } from '@/api/agent.js'
 import { confirm, toast, toastOk } from '@/utils/toast.js'
 import { TABS } from '@/utils/tabs.js'
 
@@ -165,15 +206,35 @@ const canCancel = computed(() => {
   return canCancelOrder(orderStatus(order.value), orderStatusText(order.value))
 })
 
-/** 落库的 agent_trace 与 M3 的 trace 同构，复用同一套整理逻辑 */
+/** 只有「已确认」能标记完成（状态机 2→4，后端也只允许 2→4） */
+const canComplete = computed(() => {
+  if (!order.value) return false
+  return canCompleteOrder(orderStatus(order.value), orderStatusText(order.value))
+})
+
+/** 只有「待确认」能确认（状态机 1→2，后端也只允许 1→2） */
+const canConfirm = computed(() => {
+  if (!order.value) return false
+  return canConfirmOrder(orderStatus(order.value), orderStatusText(order.value))
+})
+
+/**
+ * 落库的 agent_trace 与 M3 的 trace 同构，复用同一套整理逻辑。
+ *
+ * ⚠️ 2026-10-06 对准 Web 端：**只保留每步的最终结果**（result + 时间）。
+ *    原先还映射了 `body`(thought) 与 `call`(`${action}(${actionInput})`)，
+ *    两者都在这轮删掉 —— 它们会暴露模型的推理正文与工具入参（snake_case JSON），
+ *    对用户没有信息量，且与调度台「只显示每步最终结果」的口径自相矛盾。
+ *    `action` 保留：模板只用它判断**要不要标「推理」**，不渲染成文字。
+ */
 const trace = computed(() => {
   const raw = order.value && order.value.agentTrace
   if (!Array.isArray(raw)) return []
   return raw.map((t, i) => ({
     step: t.step === undefined || t.step === null ? i + 1 : t.step,
     title: t.result || `步骤 ${i + 1}`,
-    body: t.thought || '',
-    call: t.action ? `${t.action}(${formatActionInput(t.actionInput)})` : '',
+    time: (t.timestamp || '').slice(11),
+    action: t.action || '',
   }))
 })
 
@@ -224,6 +285,42 @@ async function askCancel() {
   }
 }
 
+async function askConfirm() {
+  const ok = await confirm({
+    content: `确认「${spaceLabel(order.value.spaceId)}」这场预约吗？确认后该时段正式占用。`,
+    title: '确认预约',
+    confirmText: '确认预约',
+  })
+  if (!ok) return
+
+  try {
+    await confirmOrder(wantId.value)
+    toastOk('已确认')
+    load()
+  } catch (e) {
+    toast(e.message || '确认失败')
+    load()
+  }
+}
+
+async function askComplete() {
+  const ok = await confirm({
+    content: `确认「${spaceLabel(order.value.spaceId)}」这场预约已经结束了吗？完成后该时段会释放给其他人。`,
+    title: '标记完成',
+    confirmText: '标记完成',
+  })
+  if (!ok) return
+
+  try {
+    await completeOrder(wantId.value)
+    toastOk('已完成')
+    load()
+  } catch (e) {
+    toast(e.message || '操作失败')
+    load()
+  }
+}
+
 function goList() {
   uni.reLaunch({ url: TABS[1].path })
 }
@@ -248,10 +345,24 @@ function goList() {
   word-break: break-all;
 }
 
-.code.wrap {
-  white-space: normal;
-  word-break: break-all;
-  line-height: 1.7;
+/* 思考链每步：结论行 + 时间（与 pages/agent/thinking.vue 同一样式口径）。
+   `.ss` 在主题里是 display:block + 下边距；放进 inline-flex 行内要改成按内容宽度排 */
+.sline {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 12rpx;
+  margin-bottom: 6rpx;
+}
+
+.mbstep .txt .ss {
+  flex: none;
+  margin-bottom: 0;
+}
+
+.stime {
+  display: block;
+  font-size: 21rpx;
+  color: var(--t3);
 }
 
 .btn.danger {

@@ -248,6 +248,31 @@ def test_u03_prompt_carries_the_dictionary() -> None:
         assert str(number) in prompt, f"Prompt 缺少场地类型编号 {number}"
 
 
+def test_u03_prompt_asks_for_a_pointer_not_a_repeat() -> None:
+    """交出方案后的最后一条回复，Prompt 要求只写指路语、不复述方案。
+
+    这条要求与 `app/agent/chains/trace.py::_summarize` 的 `submit_plan` 分支
+    是**一对**：后端已经把「提交方案」那一步的结论固定成指路文案，
+    这里再让模型别在正文里复述方案要素，两侧才一致。
+
+    为什么值得钉住：这条要求只写在自然语言里，**删掉或改软了不会有任何报错**，
+    表现是模型的正文又开始罗列方案 —— 而正文会作为思考链最后一步的结论显示，
+    超过 80 字就被 `_RESULT_MAX_LEN` 截断，重现「结果显示不全」。
+    """
+    from app.agent.prompts.scheduler import build_scheduler_prompt
+
+    prompt = build_scheduler_prompt()
+    assert "详情请查看方案" in prompt, "Prompt 缺少最后一步的指路语"
+    assert "不要再复述方案内容" in prompt, "Prompt 没有明确禁止复述方案"
+    assert "右侧" not in prompt, (
+        "Prompt 不能指定方位：Web 端与小程序端共用这份结论，两端方案位置不同"
+    )
+
+    # 这条是**新增**约束，不能把原有的两条硬要求挤掉
+    assert "唯一正规出口" in prompt, "原有的「submit_plan 是唯一正规出口」被改动了"
+    assert "不要在回复正文里贴 JSON" in prompt, "原有的「禁止正文贴 JSON」被改动了"
+
+
 async def test_u03_hall_maps_to_type_2_end_to_end(seed: dict) -> None:
     """「展厅」对应的 `space_type=2` 真的只返回展厅。
 

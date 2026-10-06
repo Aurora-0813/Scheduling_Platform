@@ -262,6 +262,52 @@ async def confirm_order(
     return ok(_order_out(order), "预约已确认")
 
 
+@router.put("/{orderId}/complete")
+async def complete_order(
+    orderId: int,
+    background_tasks: BackgroundTasks,
+    current: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    完成预约（状态机 2→4）。仅限本人的单。
+
+    ⚠️ **2026-10-06 补的接口。** 在此之前 `OrderStatus.COMPLETED` 在整个后端
+    只出现在 `state_machine.py` 的状态迁移表里 —— **没有任何接口能走到它**：
+    端点只有 `confirm`(1→2) 与 `cancel`(→3)。后果有两处可见：
+
+      1. 前端「已完成」分类页签**永远查不到东西**（那个筛选值是 4）；
+      2. 用户用完场地**没有任何办法把单子结束掉**，于是它长期停在「已确认(2)」，
+         而 `ACTIVE_ORDER_STATUSES` 含 2 —— 场地会被一直算作「已被预约」/「使用中」。
+         真实反馈就是这个：「预约已完成，状态不应该还是已被预约」。
+
+    为什么不需要「释放占用」：占用是用时推导的（见 `cancel_order` 的说明），
+    单子离开 `ACTIVE_ORDER_STATUSES` 即自动不再占位。
+
+    只允许**已确认(2)** → 已完成(4)：待确认的单该先确认或取消，
+    直接跳到完成会绕开「确认」这一道（状态迁移表也是这么定的）。
+    """
+    order = await _get_owned_order(db, orderId, current.id)
+
+    if not can_transition(order.order_status, OrderStatus.COMPLETED):
+        raise OrderStatusConflictError("当前状态不允许标记完成（需先确认）")
+
+    transition(order, OrderStatus.COMPLETED)
+    await db.commit()
+    await db.refresh(order)
+
+    await create_message(
+        db,
+        order.user_id,
+        "预约已完成",
+        f"您的预约 #{order.id} 已完成",
+        notify_type=1,
+        order_id=order.id,
+        background_tasks=background_tasks,
+    )
+    return ok(_order_out(order), "预约已完成")
+
+
 @router.put("/{orderId}/cancel")
 async def cancel_order(
     orderId: int,

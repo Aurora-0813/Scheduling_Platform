@@ -18,6 +18,7 @@
     §9.3  Agent 只能通过 Tool 调用 services/ 层访问业务数据（本模块不含 Tool，直接调用）
     本项目明确不引入向量库 / RAG，模型调用为「单轮多模态推理」，无检索环节。
 """
+
 import logging
 from functools import lru_cache
 
@@ -80,6 +81,28 @@ def get_vision_llm() -> BaseChatModel:
             code=_CODE_MODEL_UNAVAILABLE,
             message="视觉识别依赖缺失，请执行 pip install -r requirements.txt 后重试",
         ) from exc
+
+
+def get_optional_vision_llm() -> BaseChatModel | None:
+    """
+    与 `get_vision_llm` 相同，但**配置缺失时返回 None 而不是抛 41003**。
+
+    用途：`POST /tickets/{ticketId}/handle`（提交处理结果 + AI 核验）。
+    那条链路的主功能是「记录处理结果」，核验只是它的一个增值步骤。
+    若沿用会抛异常的 `get_vision_llm`，没配 `VISION_API_KEY` 的机器上
+    连「传张照片、把工单标成处理过」都做不成 —— 降级责任应该落在 service 层
+    （由它返回 passed=False + 说明原因），而不是让整个接口 41003。
+
+    ⚠️ 只吞「模型未配置 / 依赖缺失」这一类 `BusinessError(41003)`；
+    其它异常照常抛出，避免把真实故障也静默吞掉。
+    """
+    try:
+        return get_vision_llm()
+    except BusinessError as exc:
+        if exc.code != _CODE_MODEL_UNAVAILABLE:
+            raise
+        logger.info("视觉模型未配置（%s），核验链路将以「无法核验」降级", exc.message)
+        return None
 
 
 def reset_vision_llm_cache() -> None:
@@ -154,7 +177,7 @@ def build_llm(*, temperature: float = 0.4, timeout: float | None = None) -> Base
         # 从而落到统一的降级链路，而不是在构造期抛出难懂的异常
         api_key=settings.LLM_API_KEY or "NOT_CONFIGURED",
         base_url=settings.LLM_BASE_URL,
-        timeout=timeout or settings.LLM_TIMEOUT,     # ← C2 并名后的结果
+        timeout=timeout or settings.LLM_TIMEOUT,  # ← C2 并名后的结果
         max_retries=1,
         temperature=temperature,
     )

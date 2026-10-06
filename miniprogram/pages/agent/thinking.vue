@@ -20,12 +20,23 @@
         <view v-for="s in visibleSteps" :key="s.step" class="mbstep">
           <view class="tnum" :class="toneOf(s)">{{ s.step }}</view>
           <view class="txt">
-            <text class="ss">{{ s.title }}</text>
-            <text :user-select="true">{{ s.body }}</text>
+            <view class="sline">
+              <text class="ss">{{ s.title }}</text>
+              <!-- 纯推理步标「推理」：用来区分「这步有没有动系统」。
+                   有 Action 的步不标，避免挂一个英文工具名当噪音。 -->
+              <text v-if="!s.action" class="tag gray">推理</text>
+            </view>
+            <text v-if="s.time" class="stime">{{ s.time }}</text>
 
-            <!-- 工具调用回显。actionInput 的键是 snake_case（后端 Tool 签名原样回显），
-                 这里不做字段解析，整串展示 -->
-            <view v-if="s.call" class="code wrap">{{ s.call }}</view>
+            <!--
+              ⚠️ 2026-10-06 对准 Web 端：**每步只显示最终结果**（result + 时间）。
+              以下内容按产品决定**一律不渲染**（数据仍在接口响应里，契约没变）：
+                · thought      —— 模型的逐步推理正文（几百字）
+                · actionInput  —— 工具入参（snake_case 的 JSON）
+                · observation  —— 工具返回
+              原来这三样都渲染，7 步会被撑成好几屏，与 Web 端看到的不是一回事。
+              将来若要「展开看明细」，加一个折叠层即可恢复，无需改后端。
+            -->
           </view>
         </view>
 
@@ -57,12 +68,11 @@
  *
  * 说明：/agent/schedule 是**一次性返回**完整 trace 的（后端不流式），
  * 所以这里的「逐步显现」是按真实 trace 逐条播出，不是伪造进度。
- * 每一步的文案都来自后端的 step / result / thought / action / actionInput。
+ * 每一步的文案只取后端的 step / result / timestamp 与 action（action 仅用于判断是否标「推理」）。
  */
 import { ref, computed, onUnmounted } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { agentStore, runSchedule } from '@/store/agent.js'
-import { formatActionInput } from '@/api/agent.js'
 
 const error = ref('')
 const steps = ref([])
@@ -88,18 +98,20 @@ const visibleSteps = computed(() => steps.value.slice(0, visibleCount.value))
 /**
  * 把后端的 trace 项整理成渲染用的形状。
  *
- * 标题取 result（后端给的可读结论，如「查询场地：命中 2 个候选场地」），
- * 正文取 thought（模型的推理过程）。两者都缺就退回占位，不硬编。
+ * ⚠️ 2026-10-06 对准 Web 端：**只保留每步的最终结果**。
+ *    `title` 取 `result`（后端给的可读中文结论，如「查询场地：命中 2 个候选场地」），
+ *    `time` 取 `timestamp`（只留 `HH:mm:ss`）。
+ *    原先还映射了 `body`(thought) 与 `call`(actionInput)，现已删掉 ——
+ *    Web 端同样不渲染它们（见 `frontend/src/views/AgentWorkbench.vue` 的说明）。
+ *    `action` 仍保留：模板只用它判断**要不要标「推理」**，不渲染成文字。
+ *    两者都缺时退回占位，不硬编。
  */
 function normalizeTrace(trace) {
   return (trace || []).map((t, i) => ({
     step: t.step === undefined || t.step === null ? i + 1 : t.step,
     title: t.result || `步骤 ${i + 1}`,
-    body: t.thought || '',
-    call: t.action
-      ? `${t.action}(${formatActionInput(t.actionInput)})`
-      : '',
-    raw: t,
+    time: (t.timestamp || '').slice(11),
+    action: t.action || '',
   }))
 }
 
@@ -202,15 +214,27 @@ function goPlan() {
   line-height: 1.7;
 }
 
-/* 工具调用串较长，这一步不省略，允许折行 */
-.code.wrap {
-  white-space: normal;
-  word-break: break-all;
-  line-height: 1.7;
+/* 结论行：结论文字 + 「推理」标签并排。
+   用 inline-flex（不是 flex）让这组只占自身宽度，
+   标签紧跟在结论后面 —— Web 端就是这样，不是把标签推到行尾。 */
+.sline {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 12rpx;
+  margin-bottom: 6rpx;
 }
 
+/* 主题里 .mbstep .txt .ss 是 display:block + 下边距；这里在 inline-flex 行内
+   要它按内容宽度排，所以只覆盖宽度行为，字号/字重仍用主题的 */
 .mbstep .txt .ss {
-  line-height: 1.6;
+  flex: none;
+  margin-bottom: 0;
+}
+
+.stime {
+  display: block;
+  font-size: 21rpx;
+  color: var(--t3);
 }
 
 .waiting {

@@ -9,6 +9,18 @@
     GET  /api/v1/tickets/list                工单列表
     PUT  /api/v1/tickets/{ticketId}/status   处理工单
 
+第四条是本轮追加的（前端「处理」按钮改为先传处理结果照片、由 AI 核验）：
+    POST /api/v1/tickets/{ticketId}/handle   提交处理结果照片 + AI 核验
+
+为什么核验是**独立一条**而不是给 /status 加个可选图片字段
+------------------------------------------------------
+`PUT /status` 是**人工决定**（到场发现是误报，直接标记完成），
+`POST /handle` 是**机器判定**（照片经 AI 核验通过才置完成）。
+把两者塞进一个接口，就会在同一个 handler 里出现「这次要不要调模型」的分支，
+还会让「传了图但模型没配」这种组合语义不清。拆开后各有各的失败口径：
+/status 永远成功（只要状态合法），/handle 可能因图片或模型失败。
+两条都保留，人工通道不被机器判定堵死。
+
 为什么没有统一的 router 前缀
 --------------------------
 本模块的路径跨两个前缀（`/inspect` 与 `/tickets`）。
@@ -27,15 +39,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_current_user
 from app.core.database import get_db
-from app.core.llm import get_vision_llm
+from app.core.llm import get_optional_vision_llm, get_vision_llm
 from app.core.response import ApiResponse, success
 from app.schemas.inspect import (
     InspectSubmitData,
+    TicketHandleData,
     TicketListData,
     TicketStatusUpdate,
     TicketUpdatedData,
 )
-from app.services.inspect_service import list_tickets, submit_inspection, update_ticket_status
+from app.services.inspect_service import (
+    handle_ticket,
+    list_tickets,
+    submit_inspection,
+    update_ticket_status,
+)
 
 router = APIRouter(tags=["AI 智能巡检与维修工单（模块 6）"])
 
@@ -115,3 +133,45 @@ async def ticket_status(
     )
     return success(data, message="工单已更新")
 
+
+@router.post(
+    "/tickets/{ticketId}/handle",
+    response_model=ApiResponse[TicketHandleData],
+    summary="提交处理结果并核验",
+    response_description="AI 核验结论；核验通过才会把工单置为已完成",
+)
+async def ticket_handle(
+    ticketId: int,
+    file: UploadFile = File(..., description="维修后的照片，JPG/PNG/WEBP，≤5MB"),
+    db: AsyncSession = Depends(get_db),
+    # 处理人只从 JWT 取（§5.1）
+    current_user: CurrentUser = Depends(get_current_user),
+    # ⚠️ 与 /inspect/submit 的差别：这里**不注入 get_vision_llm**。
+    #    那个依赖在模型没配时直接抛 41003，会把「没配 key 的机器」上的
+    #    整个处理流程变成 500/41003 —— 而提交处理照片这件事本身不依赖模型，
+    #    核验只是它的一个增值步骤。所以这里手工取一个「可能为 None」的模型，
+    #    由 service 决定降级（passed=False + 说明原因），接口仍返回 200。
+    llm: BaseChatModel | None = Depends(get_optional_vision_llm),
+):
+    """
+    上传维修后的照片，AI 核验是否已修好。
+
+    响应：`{id, status, statusText, passed, verifyStatus, verifyReport, handleImageUrl, …}`
+
+    `passed=true` ⇔ 核验结论为「完好」，此时工单已置为 3 已完成；
+    `passed=false` 时工单状态**保持不变**，`verifyReport` 说明原因。
+    """
+    data = await handle_ticket(
+        db,
+        ticket_id=ticketId,
+        file=file,
+        handler_id=current_user.id,
+        llm=llm,
+    )
+    if data.passed:
+        message = "AI 核验通过，工单已完成"
+    elif data.verifyStatus:
+        message = f"AI 核验未通过（判定：{data.verifyStatus}），工单状态未变更"
+    else:
+        message = "AI 核验未能完成，工单状态未变更"
+    return success(data, message=message)
