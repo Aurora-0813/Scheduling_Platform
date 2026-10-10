@@ -1,7 +1,8 @@
 import axios from 'axios'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { tokenStorage } from './auth'
+import { stashDurableOperationAsPending } from './pendingAction'
 
 // 《开发流程》8.8：true 时业务接口走 /api/v1/mock/*，false 走真实接口 /api/v1/*
 //
@@ -74,10 +75,67 @@ function isAuthUrl(url = '') {
   return url.includes('/auth/login') || url.includes('/auth/refresh') || url.includes('/auth/info')
 }
 
-async function redirectToLogin() {
+// 登录失效的一次性提示。并发 401 可能同时进来，必须去重，否则弹一叠框。
+let sessionNoticeShown = false
+
+/**
+ * 取当前路径（用于登录后回跳）。
+ *
+ * 路由是 `createWebHistory`（非 hash 模式），所以 `pathname + search` 就是路由地址。
+ * 登录页自己不进回跳（否则会 `redirect=/login` 死循环）。
+ */
+function currentPathForRedirect() {
+  const path = `${window.location.pathname}${window.location.search}`
+  if (path.startsWith('/login')) return ''
+  return path
+}
+
+/**
+ * 会话失效时的统一处置：**先告知用户，再清会话回登录页并记住来路**。
+ *
+ * ⚠️ 2026-10-09 改。原来是静默的：
+ *     `tokenStorage.clear()` + `router.push('/login')`
+ *   两个问题：
+ *     1. **静默被踢**。用户只看到页面突然变成登录页，不知道发生了什么。
+ *        更糟的是：如果被踢时正有一个**长任务刚成功**（比如 25 秒的
+ *        `/agent/schedule` 已把订单落库），用户完全不知道自己到底成功没有。
+ *     2. **不回跳**。登录后一律落到 `/agent`（`router` 的默认 redirect），
+ *        之前在看哪个页面就丢了。
+ *   现在：告知 + 记住来路；登录页已支持 `?redirect=`，回来后即恢复原页。
+ *
+ * 返回 Promise：调用方 `await` 它，保证跳转在用户确认之后发生。
+ */
+async function redirectToLogin(reason) {
   tokenStorage.clear()
+
+  // 先把「被打断的动作」记下来，再跳转。
+  // 顺序很重要：跳转之后内存里的在途标记可能已被清掉，
+  // 而恢复卡需要的是**持久化后的**那条记录。
+  stashDurableOperationAsPending(reason)
+
+  if (!sessionNoticeShown) {
+    sessionNoticeShown = true
+    try {
+      await ElMessageBox.alert(reason || '登录状态已失效，需要重新登录。', '会话已过期', {
+        confirmButtonText: '重新登录',
+        type: 'warning',
+        // 不可点遮罩关闭：这是一次必须处理的跳转，避免用户以为"关掉就没事了"
+        closeOnClickModal: false,
+        showClose: false,
+      })
+    } catch {
+      // 用户按 ESC 等导致 reject —— 仍然继续跳转，绝不把人留在失效页面上
+    }
+  }
+
   const routerModule = await import('@/router')
-  await routerModule.default.push('/login')
+  const back = currentPathForRedirect()
+  await routerModule.default.push({
+    path: '/login',
+    query: back ? { redirect: back } : {},
+  })
+  // 跳转完成后再放开去重标记：下次会话失效（新一轮登录之后）仍要提示
+  sessionNoticeShown = false
 }
 
 function doRefresh() {
@@ -93,6 +151,87 @@ function doRefresh() {
       })
   }
   return refreshPromise
+}
+
+// ------------------------------------------------------------------
+// 主动预刷新：让长任务不再撞上「令牌中途过期」
+// ------------------------------------------------------------------
+
+/**
+ * 解出 JWT 的 `exp`（秒级时间戳）。解不出返回 null，**绝不抛异常**。
+ *
+ * 为什么自己解而不是问后端：accessToken 本来就是 JWT（`tokenStorage` 里存着），
+ * `exp` 是标准声明，**本地就能读**——不需要新增接口、不需要改后端、也不占一次网络往返。
+ *
+ * ⚠️ 只用于「提前续期」这一件事，**不做任何安全判断**：
+ * 真正是否有效一律以服务端返回为准（签名校验在服务端）。
+ * 前端解出来的 exp 仅是个提示值。
+ */
+export function decodeJwtExp(token) {
+  if (!token || typeof token !== 'string') return null
+  const parts = token.split('.')
+  if (parts.length !== 3) return null
+  try {
+    // JWT 用的是 base64url，`atob` 只认标准 base64，先补回 +/ 与 padding
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4)
+    const json = decodeURIComponent(
+      atob(padded)
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join(''),
+    )
+    const exp = JSON.parse(json).exp
+    return typeof exp === 'number' ? exp : null
+  } catch {
+    return null
+  }
+}
+
+/** 当前 accessToken 还剩多少秒；解不出或没令牌返回 null（=未知，不干预） */
+export function accessTokenRemainingSeconds() {
+  const exp = decodeJwtExp(tokenStorage.getAccessToken())
+  if (exp === null) return null
+  return exp - Math.floor(Date.now() / 1000)
+}
+
+/**
+ * 长任务之前的**主动续期**。
+ *
+ * ⚠️ 背景（真实故障，2026-10-09 实测）：`POST /agent/schedule` 跑 **25 秒**
+ *    （慢模型可到 105 秒），而 accessToken 只有 30 分钟。令牌若在这期间过期：
+ *      1. 调度**成功**返回，订单已按「待确认」落库（后端行为正确）
+ *      2. 紧接着的前端调用 401 → 续期也失败 → 用户被踢到登录页
+ *      3. 用户重新登录后**上下文全丢**，不知道自己刚才到底成功没有
+ *    根因是「长任务与令牌寿命赛跑」，所以修法是**开跑前先把令牌续上**。
+ *
+ * 判定阈值取 **120 秒**：后端 `AGENT_TIMEOUT=180`，剩余时间必须**大于任务时长**
+ * 才有意义。120 秒是「够跑完常规调度（实测 25 秒）、又不至于每次都刷新」的折中。
+ *
+ * ⚠️ 失败时**只返回 false，不跳登录页**：本函数是「尽力而为的优化」，
+ *    不该自己劫持用户会话。真正的 401 仍由 `handleBizError` 按原逻辑处理
+ *    （那时才弹提示、才跳登录），口径不重复。
+ *
+ * @param {number} [minSeconds] 剩余多少秒以内就刷新，默认 120
+ * @returns {Promise<boolean>} 是否已处于「足够新鲜」的状态
+ */
+export async function ensureFreshToken(minSeconds = 120) {
+  const remain = accessTokenRemainingSeconds()
+  if (remain === null) {
+    // 解不出 exp（非 JWT / 无令牌）→ 不干预，让正常流程去处理
+    return true
+  }
+  if (remain > minSeconds) return true
+
+  console.info(
+    `[request] accessToken 仅剩 ${remain}s（阈值 ${minSeconds}s），长任务前主动续期`,
+  )
+  try {
+    await doRefresh()
+    return true
+  } catch {
+    return false
+  }
 }
 
 function createInstance(baseURL) {
@@ -194,8 +333,15 @@ async function handleBizError(body, response, instance) {
       return await instance(config)
     } catch {
       if (!isAuthUrl(config.url)) {
-        ElMessage.error('登录已过期，请重新登录')
-        await redirectToLogin()
+        // 续期都失败了，只能重登。提示语特意点明「长任务可能已成功」——
+        // 见 redirectToLogin 的说明：调度类请求跑几十秒，被踢时用户最需要知道的
+        // 就是「我刚才那件事到底成没成」。
+        await redirectToLogin(
+          '登录状态已过期，且自动续期失败，需要重新登录。\n' +
+            '如果你刚提交过耗时的操作（例如 AI 调度，最长可能跑 1~3 分钟），' +
+            '它可能已经成功完成 —— 登录后请先查看结果，避免重复提交。\n' +
+            '登录后会回到你刚才所在的页面。',
+        )
       }
       return Promise.reject(body)
     }
@@ -204,8 +350,7 @@ async function handleBizError(body, response, instance) {
   // 其他认证类错误：登录/刷新接口自己处理，其余清会话回登录页
   if (AUTH_ERROR_CODES.includes(code)) {
     if (!isAuthUrl(config.url)) {
-      ElMessage.error(message || '认证失败，请重新登录')
-      await redirectToLogin()
+      await redirectToLogin(message || '登录状态已失效，需要重新登录。\n登录后会回到你刚才所在的页面。')
     }
     return Promise.reject(body)
   }

@@ -8,7 +8,7 @@
         </button>
       </div>
     </div>
-    <p class="sp-page-sub">当前登录账号、角色与权限清单（数据来源：GET /auth/info）</p>
+    <p class="sp-page-sub">当前登录账号、角色与权限清单</p>
 
     <el-row :gutter="16">
       <el-col :xs="24" :md="9">

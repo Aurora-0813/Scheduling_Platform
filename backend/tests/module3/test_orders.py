@@ -167,15 +167,48 @@ async def test_tc08_confirm_pending_order(client):
     assert any(m["title"] == "预约已确认" and m["orderId"] == oid for m in msgs)
 
 
-async def test_tc09_duplicate_confirm_rejected(client):
-    """TC-09 重复确认 → 409。"""
+async def test_tc09_duplicate_confirm_is_idempotent(client):
+    """TC-09 重复确认 → **200 幂等**（原为 409，2026-10-09 改）。
+
+    ⚠️ 契约变更说明：`PUT` 按 HTTP 语义本就该幂等 ——「目标状态已达成」返回成功，
+    而不是报错。改的原因是真实故障链：令牌在 25~105 秒的 Agent 调度期间过期时，
+    前端的续期重放可能把同一个「确认」意图投递多次，第二次拿到 409
+    对用户是纯噪音（他想要的终态已经达成），还会被前端当失败再触发一轮跳登录。
+
+    这条用例同时钉住**不重复发通知** —— 重放不该让用户收到第二条「预约已确认」。
+    """
     _, oid = await _create(client)
     await client.put(f"/api/v1/orders/{oid}/confirm")
 
+    before = (await client.get("/api/v1/messages")).json()["data"]
+    n_before = sum(1 for m in before if m["title"] == "预约已确认" and m["orderId"] == oid)
+
     r = await client.put(f"/api/v1/orders/{oid}/confirm")
-    assert r.status_code == 409
+    assert r.status_code == 200, "已确认的单重复确认应幂等返回 200"
+    assert r.json()["data"]["orderStatus"] == 2
+
+    after = (await client.get("/api/v1/messages")).json()["data"]
+    n_after = sum(1 for m in after if m["title"] == "预约已确认" and m["orderId"] == oid)
+    assert n_after == n_before, "重复确认不该重复发「预约已确认」通知"
+
+
+@pytest.mark.parametrize("terminal", [3, 4])
+async def test_confirm_is_not_idempotent_for_cancelled_or_completed(client, terminal):
+    """取消(3) / 已完成(4) 的单确认**仍然 409** —— 幂等只对「已确认」。
+
+    理由：这两种状态下用户的意图**没有达成**。静默返回 200 会让他以为
+    「我这张已取消的单被确认了」，比直接报错更糟。
+    """
+    _, oid = await _create(client)
+    if terminal == 3:
+        await client.put(f"/api/v1/orders/{oid}/cancel")
+    else:
+        await client.put(f"/api/v1/orders/{oid}/confirm")
+        await client.put(f"/api/v1/orders/{oid}/complete")
+
+    r = await client.put(f"/api/v1/orders/{oid}/confirm")
+    assert r.status_code == 409, f"状态 {terminal} 不该被幂等放行"
     assert r.json()["code"] == ErrorCode.ORDER_STATUS_CONFLICT
-    assert r.json()["message"] == "当前状态不允许确认"
 
 
 async def test_tc10_cancel_pending_order(client):

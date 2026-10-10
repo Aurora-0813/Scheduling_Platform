@@ -66,6 +66,7 @@ __all__ = [
     "ABNORMAL_STATUSES",
     "VERIFIED_OK",
     "TICKET_STATUS_TEXT",
+    "ALL_IN_REPAIR",
     "submit_inspection",
     "list_tickets",
     "update_ticket_status",
@@ -143,16 +144,93 @@ def _status_text(status: int) -> str:
 _DEVICE_STATUS_CODE: dict[str, int] = {"完好": 1, "损坏": 2, "缺失配件": 3}
 
 
+#: `_match_device` 在「命中的设备**全部**已在维修处理中」时回的标记。
+#:
+#: ⚠️ 为什么不能只靠「device 为 None」判断：那混淆了两种完全不同的情况 ——
+#:   ① **没认出台账里的设备**（模型报了个台账里没有的名字）→ 用户无需知道，
+#:      记日志即可（前台只看到「巡检已记录」，不该被技术细节打扰）；
+#:   ② **设备已全在维修中**（命中了，只是每台都已在处理）→ 这**必须告诉用户**，
+#:      否则他重复提交同一台设备的故障、每次都被静默忽略，只会认为是 bug。
+#: 两者都用 None 表示「没改成」，所以必须另带一个可判别的标记。
+#: 用常量而不是让调用方 `in` 匹配中文文案 —— 文案是要给用户看的、随时可能改。
+ALL_IN_REPAIR = "__all_in_repair__"
+
+
+#: `_sync_device_status` 的**原因码**（给代码判断，不是给用户看的文案）。
+#:
+#: 为什么单给原因码而不是让调用方去匹配 warning 的中文：warning 是给用户看的、
+#: 随时可能改；一旦改了文案，「命中全部已在维修中 → 跳过建单」这个**业务判断**
+#: 就会静默失效 —— 属于「看起来正常、实际错了」的问题。
+REASON_NOT_FOUND = "not_found"
+REASON_ALL_IN_REPAIR = "all_in_repair"
+
+
+async def _has_open_ticket(db: AsyncSession, device_id: int) -> bool:
+    """该设备是否已有**未完成**的维修工单（待处理 1 / 处理中 2）。
+
+    ⚠️ 为什么查工单而不是只看 `device_status`
+    ----------------------------------------
+    「已损坏」与「已在维修流程中」是两件事：一台设备可能已被人工改成损坏，
+    但还没建过工单；也可能工单正在处理中。判断「要不要再报一次」时，
+    两者都算「已经在处理了」，任一命中就不该重复建单 —— 否则同一台设备
+    会被反复报修，工单列表越堆越长（用户反馈过「很多一样的」）。
+    """
+    row = (
+        await db.execute(
+            select(RepairTicket.id)
+            .where(
+                RepairTicket.device_id == device_id,
+                RepairTicket.ticket_status != _STATUS_DONE,
+            )
+            .limit(1)
+        )
+    ).first()
+    return row is not None
+
+
+def _pick_device_candidate(candidates: list[DeviceResource]) -> DeviceResource:
+    """
+    从多个候选里挑一台**最该被报损**的。
+
+    优先级（2026-10-10 起，按业务方要求「自动分配设备名称」）：
+        ① `device_status == 1`（完好）优先 —— 报损一台好设备才有意义；
+        ② 同为完好时取 **id 最小**的，保证同一输入每次挑到同一台（可预期、可复现）。
+
+    ⚠️ 为什么要「自动分配」而不是像原先那样放弃
+    ------------------------------------------
+    原设计是「子串命中多台就放弃」（理由：怕把好设备误标成损坏）。但实测代价更大：
+    台账里是 `投影仪01..04`，模型报 `投影仪` —— 永远命中 4 台、永远放弃，
+    于是**AI 说损坏、设备台账却永远是完好**，这正是用户反复反馈的问题。
+
+    业务方明确要求改为自动分配。挑选规则取「完好 + 最小 id」，把风险压到最低：
+    只动本来就完好的设备，且选择是确定的（不是随机的）。
+    """
+    healthy = [d for d in candidates if d.device_status == 1]
+    pool = healthy or candidates
+    return sorted(pool, key=lambda d: d.id)[0]
+
+
 async def _match_device(db: AsyncSession, name: str) -> tuple[DeviceResource | None, str]:
     """
-    把模型报的设备名匹配到台账里**唯一**的一台设备。
+    把模型报的设备名匹配到台账里的**一台**设备，必要时自动分配。
 
-    返回 `(设备行或 None, 说明)`。说明会进日志，用于回答「为什么这次没同步」
+    返回 `(设备行或 None, 说明)`。说明会进日志，用于回答「为什么这次没同步/没建单」
     —— 没有说明的话，用户看到的只是「什么都没发生」，无从排查。
 
-    两级匹配，每级都要求唯一（理由见 `_sync_device_status` 的 docstring）：
-        ① 精确相等
+    匹配顺序：
+        ① 精确相等（走 SQL 主路径）
         ② 唯一子串包含（模型报品类、台账写品牌型号时靠它命中）
+        ③ **多台子串命中 → 自动分配一台**（2026-10-10 起；原先放弃，见下）
+        ④ 命中的设备**全都已损坏 / 已在未完成工单里** → 返回 None + 明确说明,
+           调用方据此提示「该设备已在维修工单列表中」，**不重复建单**
+
+    ⚠️ 第 ③ 步推翻了原先「宁可不写也不猜」的设计
+    --------------------------------------------
+    原注释写着「挑错一台就会把一台好设备标成损坏…少改一次台账，比把错误的设备
+    标成故障要轻得多」。实测证明那个取舍**代价更大**：台账是 `投影仪01..04`、
+    模型报 `投影仪` → 永远命中 4 台 → 永远放弃 → 用户眼中的现象就是
+    「AI 说有设备损坏，但设备列表里状态没变」。业务方要求改为自动分配，
+    挑选规则见 `_pick_device_candidate`（只动完好设备、确定性地取最小 id）。
 
     第二级为什么在 Python 里做而不是 `LIKE`
     --------------------------------------
@@ -168,37 +246,70 @@ async def _match_device(db: AsyncSession, name: str) -> tuple[DeviceResource | N
         .all()
     )
     if len(rows) == 1:
-        return rows[0], "精确匹配"
-    if len(rows) > 1:
-        return None, f"精确匹配到 {len(rows)} 台（名字不唯一）"
+        candidates = list(rows)
+        matched_by = "精确匹配"
+    elif len(rows) > 1:
+        # 名字不唯一（台账里重名）：同样是「多候选」，交给同一套挑选逻辑
+        candidates = list(rows)
+        matched_by = f"精确匹配到 {len(rows)} 台（重名，自动分配）"
+    else:
+        # ---- ② 唯一子串包含 ----
+        all_devices = (
+            (await db.execute(select(DeviceResource).order_by(DeviceResource.id))).scalars().all()
+        )
+        hits = [d for d in all_devices if name in d.device_name]
+        if not hits:
+            return None, "没有找到（精确与子串都没命中）"
+        candidates = hits
+        matched_by = (
+            f"唯一子串命中「{hits[0].device_name}」"
+            if len(hits) == 1
+            else f"子串命中 {len(hits)} 台，自动分配"
+        )
 
-    # ---- ② 唯一子串包含 ----
-    all_devices = (
-        (await db.execute(select(DeviceResource).order_by(DeviceResource.id))).scalars().all()
-    )
-    hits = [d for d in all_devices if name in d.device_name]
-    if len(hits) == 1:
-        return hits[0], f"唯一子串命中「{hits[0].device_name}」"
-    if len(hits) > 1:
-        return None, f"子串命中 {len(hits)} 台（{', '.join(d.device_name for d in hits)}）"
+    # ---- ④ 全部已在处理中 → 不重复报损 ----
+    # 「已在处理中」= 损坏/缺失配件（台账状态）或 已有未完成工单。
+    # 两者都查（业务方确认），任一命中即认为这台不必再报。
+    #
+    # ⚠️ 只对**全部候选都如此**时才放弃：只要还有一台是完好的，就该报那一台 ——
+    # 否则「4 台投影仪坏了 2 台」这种情况会漏报，而那正是最需要建单的场景。
+    async def _in_progress(d: DeviceResource) -> bool:
+        if d.device_status != 1:
+            return True
+        return await _has_open_ticket(db, d.id)
 
-    return None, "没有找到（精确与子串都没命中）"
+    pending = [d for d in candidates if await _in_progress(d)]
+    if len(pending) == len(candidates):
+        names = "、".join(d.device_name for d in candidates)
+        # 回 ALL_IN_REPAIR 标记而不是普通说明：调用方据此给**用户**提示
+        # （详见该常量的注释：这与「没认出来」必须区别对待）
+        return None, f"{ALL_IN_REPAIR}命中 {len(candidates)} 台且全部已在维修处理中（{names}）"
+
+    # ---- ③ 自动分配 ----
+    chosen = _pick_device_candidate(candidates)
+    return chosen, f"{matched_by} → 选中「{chosen.device_name}」"
 
 
 async def _sync_device_status(
     db: AsyncSession, *, device_name: str | None, status: str
-) -> tuple[int | None, str | None]:
+) -> tuple[int | None, str | None, str]:
     """
     按 AI 认出的设备名，把判定结果回写到设备台账：
     `device_status` 改为损坏/缺失配件，并把 `available_count` **减 1**。
 
-    返回 `(device_id 或 None, warning 或 None)`。
+    返回 `(device_id, warning, reason)`：
 
-    · `device_id` 为 None 表示没命中（或名字不唯一），此时不改任何东西。
-    · `warning` 非 None 表示**改到了下限**：可借数已经是 0，本次没有再减。
-      调用方应把它转达给用户，文案见函数体（「该设备已有人报修」）。
-      这种「部分成功」必须回传，否则用户看到工单建了、可借数却没变，
-      会以为是 bug（真实反馈过同类问题）。
+    · `device_id` 为 None 表示没改到设备台账。
+    · `warning` 非 None 是一句**给用户看**的提示（已可借数为 0、或已在维修中）。
+    · `reason` 是**给代码判断**的原因码（本次新增）：
+      `""`           正常改到了台账
+      `REASON_NOT_FOUND`  名字在台账里找不到（模型报了个台账没有的名字）
+      `REASON_ALL_IN_REPAIR` 命中了，但每台都已在维修处理中
+
+      ⚠️ 为什么单给 reason 而不是让调用方去 `in` 匹配 warning 的中文：
+        文案是给用户看的、随时可能改（改文案是常事），一旦改了，
+        「跳过建单」这个**业务判断**就会静默失效 —— 属于「看起来正常、实际错了」。
+        能用常量判的绝不比字符串。
 
     为什么需要这一步
     ----------------
@@ -207,27 +318,27 @@ async def _sync_device_status(
     映射不回 device_resource.id」。后果是用户明确反馈的那个不一致 ——
     AI 判定「损坏」、工单也建了，可「资源与设备」页里那台设备**还显示完好**。
 
-    ⚠️ 只认**唯一精确匹配**（`device_name == AI 认出的名字`）
-    ------------------------------------------------------
-    ⚠️ 两级匹配（2026-10-06 补第二级）
-    ---------------------------------
+    ⚠️ 匹配口径（2026-10-10 改）
+    ---------------------------
     只做**精确相等**是不够的，实测就撞上了：设备台账里叫 `大疆无人机`，
     而视觉模型报的是 `无人机` —— 模型给的是**品类**，台账里存的是**带品牌的型号**，
     两者永不相等，于是「AI 说损坏、设备还是完好」这个用户反馈的问题依然存在。
     （模型不可能稳定地输出台账里的精确名字：它看的是像素，不是我们的字典。）
 
-    所以改为两级，**每一级都要求唯一**：
-        1. 精确相等（`无人机` == `无人机`）
-        2. 唯一子串包含（`无人机` ⊂ `大疆无人机`）
-    第二级能处理品牌前缀/后缀这类差异；若子串命中多台（如 `无人机` 同时命中
-    `大疆无人机` 与 `道通无人机`），**依旧放弃并记日志** —— 见下方「为什么宁可不写」。
+    所以改为：**精确相等 → 唯一子串 → 多台时自动分配**。
+    第二级能处理品牌前缀/后缀这类差异（`无人机` ⊂ `大疆无人机`）。
 
-    为什么宁可不写也不猜
-    -------------------
-    设备表里同型号多台是常态（`投影仪1..4`）。挑错一台就会把**一台好设备
-    标成损坏**，而错误的状态不会报错，只会让那台设备再也借不出去 ——
-    属于「看起来正常、实际错了」的问题（本仓库最忌讳的一种）。
-    少改一次台账，比把错误的设备标成故障要轻得多。
+    ⚠️ 「多台时自动分配」取代了原先的「多台就放弃」
+    ---------------------------------------------
+    原设计是「子串命中多台就放弃」，理由是怕把好设备误标成损坏。但实测代价更大：
+    台账是 `投影仪01..04`、模型报 `投影仪` → 永远命中 4 台 → 永远放弃 →
+    用户看到的现象就是「AI 说有设备损坏，但设备台账里状态没变」，
+    这正是他反复反馈的问题。业务方明确要求改为自动分配，
+    挑选规则见 `_pick_device_candidate`（只动完好设备、确定性地取最小 id）。
+    见 `_match_device` 的完整说明。
+
+    ⚠️ 命中的设备**全部已在维修处理中**时 → 返回 `REASON_ALL_IN_REPAIR`，
+       调用方据此**跳过建单**并给用户提示（否则同一台设备每提交一次就多一条工单）。
 
     为什么不改回「完好」
     ------------------
@@ -238,21 +349,32 @@ async def _sync_device_status(
     """
     code = _DEVICE_STATUS_CODE.get(status)
     if code is None or not device_name:
-        return None, None
+        return None, None, ""
 
     name = device_name.strip()
     if not name:
-        return None, None
+        return None, None, ""
 
     device, how = await _match_device(db, name)
     if device is None:
+        # 命中了、但每台都已在处理 → 给用户一句可读提示，别让他重复提交
+        if how.startswith(ALL_IN_REPAIR):
+            logger.info("巡检判定「%s」，%s", status, how[len(ALL_IN_REPAIR) :])
+            return (
+                None,
+                (
+                    f"该设备（{name}）已在维修工单列表中，处理完成后状态会恢复正常。"
+                    "本次仅记录巡检结果，未重复建单。"
+                ),
+                REASON_ALL_IN_REPAIR,
+            )
         logger.info(
             "巡检判定「%s」，但设备名「%s」在台账里%s，未回写状态（宁可不写，也不猜是哪一台）",
             status,
             name,
             how,
         )
-        return None, None
+        return None, None, REASON_NOT_FOUND
 
     if device.device_status != code:
         logger.info(
@@ -310,7 +432,7 @@ async def _sync_device_status(
             status,
         )
 
-    return int(device.id), warning
+    return int(device.id), warning, ""
 
 
 async def _restore_device(db: AsyncSession, ticket: RepairTicket) -> tuple[int | None, int | None]:
@@ -539,19 +661,30 @@ async def submit_inspection(
         # 先按 AI 认出的设备名回写设备台账（状态 + 可借数 −1），拿到 device_id
         # 再建工单 —— 这样 `repair_ticket.device_id` 不再恒为 NULL，
         # 「资源与设备」页里那台设备的状态与可借数会真的跟着变。
-        device_id, device_warning = await _sync_device_status(
+        device_id, device_warning, sync_reason = await _sync_device_status(
             db, device_name=device_name, status=status
         )
 
-        ticket = RepairTicket(
-            inspect_id=record.id,
-            device_id=device_id,
-            space_id=space_id,
-            ticket_status=1,  # 待处理
-            handler_id=None,  # 处理时才由 PUT 接口写入
-        )
-        db.add(ticket)
-        await db.flush()
+        # ⚠️ 命中的设备**全部已在维修处理中**时**不重复建单**（2026-10-10 加）。
+        #
+        # 为什么必须跳过：原实现无条件建工单，于是同一台设备每提交一次巡检就多一条
+        # 工单 —— 用户看到的正是「维修工单列表里很多一样的」。
+        # 「该设备已在维修工单列表」这句话要成立，前提就是这里不再往里塞新单。
+        #
+        # 判断用**原因码**而不是 warning 的中文（理由见 REASON_* 的注释）。
+        #
+        # 注意**只跳这一种**：名字完全没命中的情况仍照原样建单（`device_id=None`），
+        # 那是既有行为、另有用例钉住（`ticket.device_id is None`），不在本次改动范围。
+        if sync_reason != REASON_ALL_IN_REPAIR:
+            ticket = RepairTicket(
+                inspect_id=record.id,
+                device_id=device_id,
+                space_id=space_id,
+                ticket_status=1,  # 待处理
+                handler_id=None,  # 处理时才由 PUT 接口写入
+            )
+            db.add(ticket)
+            await db.flush()
 
     # ---- ⑧ 提交 ----
     await db.commit()

@@ -33,3 +33,32 @@ class ConflictItem(CamelModel):
     rule_code: str = Field(
         description="规则内部编码，如 continuous_activity / space_idle",
     )
+
+    # ---- 以下为 2026-10-10 追加：让每条冲突**可被区分** ----
+    #
+    # ⚠️ 为什么必须加（真实反馈：「软冲突有那么多一样的」）：
+    #   规则是「**一个闲置场地一条**」——8 个场地里 7 个闲置就产 7 条。
+    #   但原先响应只有 conflictType / orderIds / suggestion / ruleCode 四个字段，
+    #   而闲置冲突的 orderIds 恒为空数组、suggestion 又是**按 ruleCode 查表的
+    #   固定模板**（`suggest_for` 不看具体是哪条 hit）——
+    #   于是 7 条在响应里**逐字段完全相同**，前端只能显示 7 条无差别条目。
+    #   数据本来就存在 `RuleHit` 里（`space_id` / `reason` / `rule_label` /
+    #   `severity`），只是组装响应时没往外传。
+    #
+    # ⚠️ 改动是**纯追加**：不改任何既有字段名与语义，老消费方不受影响。
+    rule_label: str = Field(
+        default="",
+        description="规则中文名，如「长期闲置」；前端可直接当分组标题",
+    )
+    space_id: int | None = Field(
+        default=None,
+        description="涉及的场地ID；长期闲置类冲突靠它区分（无关联订单时用）",
+    )
+    reason: str = Field(
+        default="",
+        description="事实陈述（含场地名等上下文），与 suggestion 的建议分开",
+    )
+    severity: str = Field(
+        default="medium",
+        description="严重程度：low / medium / high",
+    )

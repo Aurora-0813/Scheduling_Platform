@@ -22,6 +22,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # backend/ 目录（.env 所在位置）
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
+#: 配置文件的**读取顺序**（后者覆盖前者）。分工理由见 `Settings.model_config` 的注释：
+#:   `.env` 提交进仓库（共享的非敏感配置）、`.env.local` 不提交（各人自己的密钥）。
+_ENV_FILES: tuple[str, ...] = (str(BASE_DIR / ".env"), str(BASE_DIR / ".env.local"))
+
 logger = logging.getLogger(__name__)
 
 # 非 dev 环境下 JWT 密钥的最小长度
@@ -277,6 +281,22 @@ class Settings(BaseSettings):
     # True 时切换为假 LLM 夹具：答辩现场 API 欠费时的应急预案，同时供离线测试使用
     AI_USE_FAKE_LLM: bool = False
 
+    # ---------- 订单自动结单（2026-10-10）----------
+    # 「时段已过 → 自动结单」，规则与理由见 `services/order_lifecycle.py`：
+    #   已确认(2) + end_time 已过 → 已完成(4)
+    #   待确认(1) + end_time 已过 → 已过期(5)
+    #
+    # 为什么与冲突扫描**分成两个开关**：两者的**演示诉求相反**。
+    #   冲突扫描常因"不想现场刷消息"被关掉（见 CONFLICT_SCAN_ENABLED）；
+    #   而订单状态随时间推进是**基本正确性**，关掉会让列表显示与实际不符。
+    #   合成一个开关会逼着用户在两者间二选一。
+    ORDER_AUTO_CLOSE_ENABLED: bool = True
+    # 扫描间隔。取 300 秒与冲突扫描同一个节拍 —— 不为这一个任务另立第二套节拍。
+    # 代价是「时段刚过」到「状态变已完成」之间最多有 5 分钟延迟；
+    # 对「释放名额」这个目的足够了（名额释放本身是**用时推导**的，
+    # 见 `docs/available_count口径判据.md`，不依赖这次落库）。
+    ORDER_AUTO_CLOSE_INTERVAL_SECONDS: int = 300
+
     # ---------- 软冲突扫描 ----------
     CONFLICT_SCAN_ENABLED: bool = True
     CONFLICT_SCAN_INTERVAL_SECONDS: int = 300
@@ -304,12 +324,54 @@ class Settings(BaseSettings):
     # ---------- 通知去重 ----------
     # auto=优先 Redis，不可用时自动降级为数据库查询
     CONFLICT_DEDUP_BACKEND: str = "auto"
-    CONFLICT_DEDUP_TTL_SECONDS: int = 86400
+
+    # 同一冲突多久之内只提醒一次（秒）。
+    #
+    # ⚠️ 2026-10-10 由 24 小时（86400）上调为 **7 天**。
+    #    起因是真实反馈「软冲突有那么多一样的」。
+    #
+    #    先说清这个值**不是**那个问题的根因：一场地一条 × 两角色
+    #    （资源管理员 `待关注` + 系统管理员 `汇总`）是**设计如此**，
+    #    由本项改成 7 天并不会减少那 16 条。本项真正影响的是**重复频率**：
+    #    `space_idle` 这类「长期闲置」是**持续状态**（不该用着才消失），
+    #    24 小时的窗口意味着同样的闲置场地**每天都重新推一遍**，
+    #    日积月累就是「一屏长得一样的通知」。7 天把频率降到每周一次。
+    #
+    # 取值权衡：
+    #   · 太短（原 24h）→ 持续状态被反复推送，通知列表失去信息量；
+    #   · 太长（如 30 天）→ 冲突**先消失、后又复发**时，第二次不再提醒，
+    #     把「刷屏」换成「漏报」——`dedup.py` 的 docstring 专门警告过这个反向风险。
+    #   7 天与 `CONFLICT_IDLE_DAYS=14`（闲置判定窗口）同量级，是该状态
+    #   自然变化的尺度：一周内没变化就不值得再打扰一次。
+    #
+    # 注意：本项同时被 `MemoryDedup` / `RedisDedup` / `DbDedup` **三个后端**
+    # 读取（`dedup.py` 的三处 `else` 分支），改一处即三处同时生效。
+    CONFLICT_DEDUP_TTL_SECONDS: int = 604800
 
     # 指定 .env 文件位置和编码
+    #
+    # ⚠️ 2026-10-10：由**单文件**改为「模板 + 本地覆盖」两级
+    # ------------------------------------------------------
+    # `.env` 从「本机私有、被 gitignore」改为**提交进仓库**（team 口径统一），
+    # 于是它里面的密钥一律写成占位符。但占位符不能直接跑（见
+    # `_reject_unfilled_placeholders`），而每个人的真实密钥又**不能进仓库**。
+    #
+    # 所以分成两级，后者覆盖前者：
+    #     ① `.env`        —— **提交**。仓库内共享的非敏感配置（库地址、模型名、
+    #                        阈值、开关）。密钥位留 `<...>` 占位符。
+    #     ② `.env.local`  —— **不提交**（被 `.gitignore` 的 `.env.*` 规则忽略）。
+    #                        只放自己那几项真实密钥，通常是 4 行。
+    #
+    # 为什么用「文件列表」而不是让各人改 `.env`：后者会让 `.env` 一直处于
+    # 「已修改」状态，git 每次都要你处理它；而且一旦手滑提交，密钥就进仓库了。
+    # 分开之后，`.env` 可以安心被跟踪、`.env.local` 安心被忽略。
+    #
+    # `.env.local` **不存在时 pydantic-settings 会跳过**（不报错），
+    # 所以「拉下来还没配」的场景不会因为缺文件而崩 —— 只会在校验阶段明确
+    # 告诉你哪几项还是占位符。
     model_config = SettingsConfigDict(
         # 绝对路径：相对路径会跟着进程工作目录跑（详见模块 docstring）
-        env_file=str(BASE_DIR / ".env"),
+        env_file=_ENV_FILES,
         env_file_encoding="utf-8",
         # .env 中存在未定义的键时忽略，避免队友本地多写的变量导致启动失败
         extra="ignore",
@@ -459,6 +521,8 @@ class Settings(BaseSettings):
         if self.BCRYPT_ROUNDS < 4:
             raise ValueError("BCRYPT_ROUNDS 不得小于 4。")
 
+        self._reject_unfilled_placeholders()
+
         # AUTH_BYPASS 是模块 1/2 联调用的「跳过 Token 校验」开关。
         # 它会让所有请求以管理员身份放行，因此**只允许在 dev 环境使用** ——
         # 非 dev 环境直接拒绝启动，避免演示/部署时误带着它上线。
@@ -480,6 +544,63 @@ class Settings(BaseSettings):
         return self
 
     # ---------- 配置解析辅助 ----------
+
+    def _reject_unfilled_placeholders(self) -> None:
+        """
+        拒绝「模板里还没填的占位符」原样上线。
+
+        背景（2026-10-10）
+        ------------------
+        `.env` 从「本机私有、被 gitignore」改为**提交进仓库**后，里面的密钥一律
+        写成占位符。但占位符留着不填会以**两种很难懂**的方式炸掉：
+
+          ① `DB_PASSWORD=<数据库密码>` —— 尖括号里的**中文**会让 asyncmy 在建连接时
+             抛 `UnicodeEncodeError: 'latin-1' codec can't encode ...`。
+             报错完全看不出「是密码没填」，会让人往编码/驱动方向排查很久。
+          ② `JWT_SECRET_KEY=<至少32字符的随机密钥>` 长度不足 32，非 dev 环境下
+             `JWT_SECRET_KEY` 的强度校验会拒绝启动，提示语也没说「这只是占位符」。
+          ③ `DB_HOST=<your-db-host>` —— 会表现为 DNS 解析失败
+             （`getaddrinfo failed` / `Unknown host`），同样看不出是「没填」。
+             这个尤其容易误判成「云库挂了 / 网络不通」。
+
+        所以在这里统一拦一道：**只要值与占位符同名，就直说是没填**，并给出该填什么。
+        比让用户去猜一个 latin-1 编码错误友好得多。
+
+        判据：值形如 `<...>`（首尾尖括号），与 `.env` / `.env.example` 的占位符风格一致。
+        真实密码不会长成这样 —— 若真有人的密码是 `<abc>`，这里会误报，
+        但那属于该改密码的情况，提示语说明了怎么绕开。
+        """
+        placeholders = {
+            "DB_HOST": self.DB_HOST,
+            "DB_PASSWORD": self.DB_PASSWORD,
+            "JWT_SECRET_KEY": self.JWT_SECRET_KEY,
+            "REDIS_PASSWORD": self.REDIS_PASSWORD,
+            "VISION_API_KEY": self.VISION_API_KEY,
+            "LLM_API_KEY": self.LLM_API_KEY,
+            "ASR_API_KEY": self.ASR_API_KEY,
+        }
+        unfilled = [
+            key
+            for key, value in placeholders.items()
+            # REDIS_PASSWORD / ASR_API_KEY 允许留空（本来就可能没有），
+            # 只有「写了但写的是占位符」才算没填。
+            if value and value.startswith("<") and value.endswith(">")
+        ]
+        if not unfilled:
+            return
+
+        raise ValueError(
+            "以下配置还是 .env 模板里的占位符，没有填真实值："
+            + "、".join(unfilled)
+            + "。\n"
+            "  · 这些字段在仓库里**故意留白**（.env 已提交，不能放真实密钥/唯一数据源的地址）。\n"
+            "  · 正确做法：把这几行抄进 `backend/.env.local`（该文件不提交）再填真实值，\n"
+            "    它会覆盖 `.env` 的同名项（两级加载见 Settings.model_config）。\n"
+            "  · 数据库各项口径见 backend/开发流程.md 的「6.1 数据库统一连接规范」。\n"
+            "  · JWT_SECRET_KEY 生成方式："
+            'python -c "import secrets; print(secrets.token_urlsafe(48))"\n'
+            "  · 模型 API Key 填你自己的百炼 Key（VISION / LLM 可复用同一个账号）。"
+        )
 
     @staticmethod
     def _split_csv(raw: str) -> tuple[str, ...]:

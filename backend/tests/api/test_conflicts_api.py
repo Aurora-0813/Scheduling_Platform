@@ -62,11 +62,28 @@ def test_scan_returns_the_four_contract_fields(
     assert len(body["data"]) == 1
 
     item = body["data"][0]
-    assert set(item) == {"conflictType", "orderIds", "suggestion", "ruleCode"}
+    # ⚠️ 2026-10-10：由「恰好这四个」改为「这四个必须在」+「追加字段也在」。
+    #
+    # 原断言 `set(item) == {四个}` 的**意图**是防字段名漂移（多一个少一个都会破坏
+    # 前端），这个意图保留：下面逐个断言四个冻结字段仍在、值正确。
+    # 但「恰好」这一条**挡不住真正该挡的东西** —— 它会把**追加式**变更也判红，
+    # 而追加正是本仓库明确允许的扩展方式（见 ConflictItem 的注释）。
+    #
+    # 本次追加的起因是「软冲突有那么多一样的」：规则按场地产 hit，而响应里
+    # 没有 spaceId / reason，导致同规则的多条在列表上完全无法区分。
+    assert {"conflictType", "orderIds", "suggestion", "ruleCode"} <= set(item), (
+        "四个契约字段一个都不能少"
+    )
     assert item["conflictType"] == "软冲突"
     assert item["orderIds"] == [1, 2]
     assert item["ruleCode"] == "continuous_activity"
     assert item["suggestion"]
+
+    # 追加字段：值必须来自 RuleHit，而不是编造
+    assert item["ruleLabel"] == "连续活动无休息"
+    assert item["spaceId"] == 2
+    assert item["reason"] == "两场活动之间仅有 8 分钟间隔。"
+    assert item["severity"]  # 默认 medium
 
 
 def test_scan_never_leaks_snake_case_keys(

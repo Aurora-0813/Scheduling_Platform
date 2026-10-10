@@ -12,6 +12,8 @@
   等于任何人拿到别人的 orderId 就能读、能确认、能取消。越权一律 404，不泄露存在性。
 """
 
+from datetime import datetime
+
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,6 +55,11 @@ def _order_out(o: ReserveOrder) -> dict:
         "startTime": format_time(o.start_time),
         "endTime": format_time(o.end_time),
         "orderStatus": o.order_status,
+        # 结单时刻（2026-10-10 加）。可空 —— 活跃单两项都是 None。
+        # 语义：自动完成取 end_time、人工完成取操作时刻；取消与过期共用 cancelled_time，
+        # 靠 orderStatus（3 已取消 / 5 已过期）区分是哪种。
+        "completedTime": format_time(o.completed_at),
+        "cancelledTime": format_time(o.cancelled_at),
         "agentRequest": o.agent_request or "",
         "agentTrace": o.agent_trace or [],
         "createTime": format_time(o.create_time),
@@ -241,8 +248,37 @@ async def confirm_order(
     current: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """确认预约（扩展，状态机 1→2）。仅限本人的单；触发「预约已确认」通知。"""
+    """
+    确认预约（扩展，状态机 1→2）。仅限本人的单；触发「预约已确认」通知。
+
+    ⚠️ **2026-10-09 改成幂等：对「已确认」的单重复调用返回 200，而不是 409。**
+    ----------------------------------------------------------------
+    起因是一个真实故障链（前端 `utils/request.js` 的续期重放）：
+
+      1. `POST /agent/schedule` 要跑 25~105 秒，令牌在此期间过期
+      2. 调度**成功**、订单已落库，但紧接着的调用 401
+      3. 前端 `handleBizError` 对 40103 会 `doRefresh()` 后**重放原请求**
+      4. 若用户已重新登录、会话已变，重放可能再次失败 → 跳登录页 → 用户再登录
+      5. 而 `config._retried` 只挡**同一份 config**，**跨页面/跨登录的重放挡不住**
+
+    于是同一个「确认」意图可能被投递多次。原先第二次会拿到 **409
+    「当前状态不允许确认」** —— 对用户是纯噪音（他想要的终态已经达成），
+    而前端把它当失败处理，可能再触发一轮跳登录，形成来回踢的循环。
+
+    按 HTTP 语义，`PUT` 本就应当是幂等的：**目标状态已达成 → 返回成功**。
+    所以这里对「已是已确认」直接返回当前订单，且**不重复发通知**
+    （第 4 步的 409 会让用户收到第二条「预约已确认」，也是噪音）。
+
+    ⚠️ 只对**已确认(2)** 幂等。其余状态（3 已取消 / 4 已完成）**仍然 409** ——
+    那两种情况下用户的意图是**没有达成**的，静默返回 200 会让他误以为
+    「我这张已取消的单被确认了」，比报错更糟。
+    """
     order = await _get_owned_order(db, orderId, current.id)
+
+    # 幂等分支：目标状态已达成，直接返回，不重复写库、不重复发通知
+    if order.order_status == OrderStatus.CONFIRMED:
+        return ok(_order_out(order), "预约已确认")
+
     if not can_transition(order.order_status, OrderStatus.CONFIRMED):
         raise OrderStatusConflictError("当前状态不允许确认")
 
@@ -293,6 +329,10 @@ async def complete_order(
         raise OrderStatusConflictError("当前状态不允许标记完成（需先确认）")
 
     transition(order, OrderStatus.COMPLETED)
+    # ⚠️ 人工完成取**操作时刻**，自动完成取 `end_time`（见 services/order_lifecycle.py）。
+    #    两者口径不同是**有意**的：人工点是「我确认这场已经用完了」的真实时刻；
+    #    自动则是「时段到点了」，业务时刻就是 end_time。
+    order.completed_at = datetime.now()
     await db.commit()
     await db.refresh(order)
 
@@ -328,6 +368,9 @@ async def cancel_order(
         raise OrderStatusConflictError("当前状态不允许取消")
 
     transition(order, OrderStatus.CANCELLED)
+    # 与自动过期（状态 5）共用 `cancelled_at` 字段，靠 `order_status` 区分是
+    # 「用户自己取消」还是「超时未确认」。人工取消取操作时刻。
+    order.cancelled_at = datetime.now()
     await db.commit()
     await db.refresh(order)
 

@@ -2,7 +2,7 @@
   <div v-loading="loading">
     <div class="sp-page-head">
       <h1 class="sp-page-title">资源与设备管理</h1>
-      <p class="sp-page-sub">维护场地与可调度设备台账（数据来源：/resources/*）</p>
+      <p class="sp-page-sub">维护场地与可调度设备台账</p>
     </div>
 
     <div class="sp-pagebar">
@@ -89,6 +89,10 @@
                    （改了会让被预约的场地从所有可用场地查询里消失）。 -->
               <th class="c w-status">占用</th>
               <th class="c w-status">状态</th>
+              <!-- 「详情」列（2026-10-10 加）：点开看该场地**已被哪些时段占用**。
+                   只有被预约/使用中的场地可点 —— 空闲场地没有占用明细可看，
+                   按钮置灰而不是隐藏：整列对齐，也让人知道这个功能存在。 -->
+              <th class="c w-act">详情</th>
             </tr>
           </thead>
           <tbody>
@@ -107,6 +111,17 @@
                 <span class="sp-tag" :class="row.status === 1 ? 'is-green' : 'is-gray'">
                   {{ row.statusText }}
                 </span>
+              </td>
+              <td class="c">
+                <button
+                  class="sp-link"
+                  type="button"
+                  :disabled="!isSpaceBooked(row)"
+                  :title="isSpaceBooked(row) ? '查看预约时段' : '该场地本周内没有预约，无可查看的占用'"
+                  @click="openSpaceBookings(row)"
+                >
+                  详情
+                </button>
               </td>
             </tr>
           </tbody>
@@ -147,6 +162,15 @@
                    存储的那一列按口径只读不写，所以它不会因为有人下单就减少 ——
                    会减少的是这里的「剩余」。 -->
               <th class="c w-inv">剩余 / 可借 / 总数</th>
+              <!--
+                「借出时间 / 归还时间」（2026-10-10 加）——取自**借了这台设备的订单**的
+                起止时段，不是 device_resource 的列：设备一行代表一种设备、可能多台，
+                同一台在不同时段被不同订单借用，所以没有「该设备的借出时间」，
+                只有「当前这笔 / 下一笔」。取值口径见
+                backend/app/services/order_service.py::device_loan_windows。
+              -->
+              <th class="c w-loan">借出时间</th>
+              <th class="c w-loan">归还时间</th>
               <th class="c w-status">状态</th>
               <th class="c w-act">操作</th>
             </tr>
@@ -157,6 +181,22 @@
               <td class="strong">{{ row.deviceName }}</td>
               <td>{{ row.deviceType || '—' }}</td>
               <td class="c">{{ row.remainingCount }} / {{ row.availableCount }} / {{ row.totalCount }}</td>
+              <!-- 借用时段。没有在借/待借的单时后端给空串，这里显示「—」。
+                   加 loanState 标签是因为「借用中」与「已排期」对使用者是两件事：
+                   前者现在借不到，后者现在能借但要按时还。 -->
+              <td class="c">
+                <span v-if="!row.borrowedAt" class="sp-muted">—</span>
+                <template v-else>
+                  {{ row.borrowedAt }}
+                  <span
+                    class="sp-tag"
+                    :class="row.loanState === 'in_use' ? 'is-orange' : 'is-blue'"
+                  >
+                    {{ row.loanState === 'in_use' ? '借用中' : '已排期' }}
+                  </span>
+                </template>
+              </td>
+              <td class="c">{{ row.dueAt || '—' }}</td>
               <td class="c">
                 <span class="sp-tag" :class="deviceTagClass(row.deviceStatus)">
                   {{ row.deviceStatusText }}
@@ -223,6 +263,55 @@
         <el-button type="primary" @click="submitDevice">确定</el-button>
       </template>
     </el-dialog>
+
+    <!--
+      场地「详情」：该场地未来 N 天已被占用的时段。
+      数据来自 GET /resources/spaces/{spaceId}/booked —— 与下单判重**同源**
+      （状态 1 待确认 / 2 已确认），所以这里列出的时段与「下单会不会被判冲突」
+      不会互相矛盾。
+    -->
+    <el-dialog v-model="bookingDialog.visible" title="场地预约详情" width="620px">
+      <div v-loading="bookingDialog.loading">
+        <p class="bk-head">
+          <b>{{ bookingDialog.spaceName }}</b>
+          <span class="sp-muted">
+            未来 {{ bookingDialog.days }} 天共 {{ bookingDialog.list.length }} 个占用时段
+          </span>
+        </p>
+
+        <el-empty
+          v-if="!bookingDialog.loading && !bookingDialog.list.length"
+          description="未来这段时间没有占用，随时可约"
+          :image-size="70"
+        />
+
+        <el-table v-else :data="bookingDialog.list" size="small" border>
+          <el-table-column prop="orderId" label="订单号" width="90">
+            <template #default="{ row }">#{{ row.orderId }}</template>
+          </el-table-column>
+          <el-table-column label="预约时段" min-width="240">
+            <template #default="{ row }">
+              {{ row.startTime }} ~ {{ row.endTime }}
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="90">
+            <template #default="{ row }">
+              <span class="sp-tag" :class="bookingStatusClass(row.orderStatus)">
+                {{ bookingStatusText(row.orderStatus) }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="设备" width="90">
+            <template #default="{ row }">
+              {{ row.deviceIds && row.deviceIds.length ? row.deviceIds.length + ' 台' : '—' }}
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <template #footer>
+        <el-button @click="bookingDialog.visible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -234,6 +323,7 @@ import { ElMessage } from 'element-plus'
 import {
   createSpace,
   getDevices,
+  getSpaceBookings,
   getSpaces,
   updateDevice,
 } from '@/api/resources'
@@ -246,6 +336,21 @@ const deviceKeyword = ref('')
 
 const spaces = ref([])
 const devices = ref([])
+
+/**
+ * 场地「详情」弹窗（2026-10-10 加）。
+ *
+ * `list` 直接放后端 `bookings[]`，字段名不二次加工 —— `_booking_out` 已经是
+ * camelCase 契约（orderId / startTime / endTime / orderStatus / deviceIds）。
+ */
+const bookingDialog = reactive({
+  visible: false,
+  loading: false,
+  spaceId: null,
+  spaceName: '',
+  days: 30,
+  list: [],
+})
 
 const spaceMap = computed(() => {
   const map = {}
@@ -345,6 +450,74 @@ function occupancyTagClass(text) {
   return OCCUPANCY_CLASS[text] || 'is-gray'
 }
 
+/* ------------------------------------------------------------------ *
+ * 场地「详情」：已被占用的时段
+ * ------------------------------------------------------------------ */
+
+/**
+ * 该场地是否可点「详情」。
+ *
+ * ⚠️ 2026-10-10 收窄：**只有「已被预约」可点**，「使用中」与「空闲」都置灰。
+ *    原判据是 `occupancyText !== '空闲'`（使用中也可点），按业务方要求改为只认
+ *    「已被预约」。理由：这一列回答的是「**接下来还有哪些时段被订走了**」——
+ *    那是使用者要规划时最需要的信息；「使用中」的场地此刻已被人占着，
+ *    看占用明细的紧迫性低，业务方选择把它归入不可点。
+ *
+ * 判据取后端推导好的 `occupancyText`，**不前端自己按订单算**：口径只有一处
+ * （`space_service.space_occupancy`），前端再算一遍会多一个要同步的地方。
+ */
+function isSpaceBooked(row) {
+  return !!row && row.occupancyText === '已被预约'
+}
+
+/** 打开详情：拉该场地未来 N 天的占用时段 */
+async function openSpaceBookings(row) {
+  if (!isSpaceBooked(row)) return
+  bookingDialog.visible = true
+  bookingDialog.loading = true
+  bookingDialog.spaceId = row.spaceId
+  bookingDialog.spaceName = row.spaceName
+  bookingDialog.list = []
+  try {
+    const data = await getSpaceBookings(row.spaceId, bookingDialog.days)
+    // 接口返回的是对象（不是裸数组），bookings 才是列表
+    bookingDialog.list = (data && data.bookings) || []
+  } catch {
+    // request.js 已弹出后端真实 message；这里保持弹窗开着并显示空列表
+    bookingDialog.list = []
+  } finally {
+    bookingDialog.loading = false
+  }
+}
+
+/** 订单状态文案。与 utils/normalize 的字典同口径（1 待确认 / 2 已确认 / 3 已取消 / 4 已完成 / 5 已过期） */
+const BOOKING_STATUS_LABEL = {
+  1: '待确认',
+  2: '已确认',
+  3: '已取消',
+  4: '已完成',
+  5: '已过期',
+}
+
+function bookingStatusText(status) {
+  return BOOKING_STATUS_LABEL[Number(status)] || '未知'
+}
+
+function bookingStatusClass(status) {
+  switch (Number(status)) {
+    case 2:
+      return 'is-green'
+    case 3:
+      return 'is-gray'
+    case 4:
+      return 'is-blue'
+    case 5:
+      return 'is-red'
+    default:
+      return 'is-orange'
+  }
+}
+
 /** 拉取两张表。抽成函数是因为「新增场地 / 改设备状态」提交后要重新拉一次 ——
  *  原先的提示语写着「mock 数据为常量，列表不实时变化」，那是 Mock 时代的说法；
  *  现在是真实接口，提交后会真的落库，必须刷新才看得到。 */
@@ -365,6 +538,15 @@ onMounted(refresh)
 </script>
 
 <style scoped>
+/* 场地详情弹窗的头部一行：场地名 + 条数，两端对齐 */
+.bk-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+}
+
 /*
  * 「占用」口径提示条。`.sp-ai-bar` 默认 `align-items: center`，
  * 那是为**单行**提示设计的；这条说明有两三行，图标会被垂直居中到中间，
@@ -398,6 +580,12 @@ onMounted(refresh)
 
 .sp-table .w-status {
   width: 110px;
+}
+
+/* 借出/归还时间两列：要放下 "2026-10-10 09:00:00" 这样的完整时刻，
+   比其它列宽（110px 会折行）。设备表因此变宽，横向滚动由 .sp-table 容器负责。 */
+.sp-table .w-loan {
+  width: 168px;
 }
 
 .sp-table .w-act {

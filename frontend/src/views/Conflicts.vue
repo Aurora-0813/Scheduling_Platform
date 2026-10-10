@@ -2,7 +2,7 @@
   <div v-loading="loading">
     <div class="sp-page-head">
       <h1 class="sp-page-title">AI 冲突预警与智能通知</h1>
-      <p class="sp-page-sub">AI 扫描资源冲突并一键生成改约/致歉通知文案（数据来源：/conflicts、/notify）</p>
+      <p class="sp-page-sub">AI 扫描资源冲突并一键生成改约/致歉通知文案</p>
     </div>
 
     <div class="sp-pagebar">
@@ -21,8 +21,6 @@
       <div class="sp-card">
         <div class="sp-card-head">
           <b>🚨 AI 软冲突雷达</b>
-          <span class="sp-grow"></span>
-          <span>数据来源 /conflicts/scan</span>
         </div>
 
         <!-- 雷达动效只在扫出冲突时出现：没有数据时不做无意义的动效 -->
@@ -50,6 +48,9 @@
           @click="selectedIndex = index"
         >
           <b>{{ ruleTitle(item) }}</b>
+          <!-- 冲突对象：长期闲置类没有关联订单，靠这段说明是**哪个场地**，
+               否则同一规则的多条会显示成一模一样（见 conflictSubject 的说明）。 -->
+          <p v-if="conflictSubject(item)" class="cf-subject">{{ conflictSubject(item) }}</p>
           <p>{{ item.suggestion }}</p>
           <span v-if="item.orderIds && item.orderIds.length" class="sp-tag is-blue">
             涉及订单 #{{ item.orderIds.join('、#') }}
@@ -119,11 +120,12 @@ const notify = ref(null)
 
 const selectedConflict = computed(() => conflicts.value[selectedIndex.value] || null)
 
-/** 展示层新增：/conflicts/scan 每条冲突带 ruleCode，但接口不返回规则中文名，
- *  只给固定的 conflictType「软冲突」，列表里全是同一句话、分不出是哪条规则。
- *  映射表照 docs/api.md §5.2 的规则编码表写；取不到就退回后端给的 conflictType，
- *  绝不编造文案。仅用于展示，不参与 /notify 的载荷（载荷里的 ruleLabel 仍是 conflictType）。 */
-const RULE_LABEL = {
+/** 兜底用的规则中文名映射（照 docs/api.md §5.2 的规则编码表写）。
+ *
+ *  ⚠️ 2026-10-10 改为**只当兜底**：后端 `/conflicts/scan` 现在直接返回 `ruleLabel`
+ *  （见 app/schemas/conflict.py 的追加字段），这个本地表往后只是「后端没给时的退路」。
+ *  优先用后端值，避免两处口径漂移。 */
+const RULE_LABEL_FALLBACK = {
   continuous_activity: '同团队连续活动无休息',
   capacity_overflow: '容量远超实际需求',
   high_value_device_low_priority: '高价值设备被低优先级占用',
@@ -133,7 +135,34 @@ const RULE_LABEL = {
 
 function ruleTitle(item) {
   if (!item) return ''
-  return RULE_LABEL[item.ruleCode] || item.conflictType || '软冲突'
+  return (
+    item.ruleLabel ||
+    RULE_LABEL_FALLBACK[item.ruleCode] ||
+    item.conflictType ||
+    '软冲突'
+  )
+}
+
+/**
+ * 这条冲突的「对象」——让每条可区分。
+ *
+ * ⚠️ 这是「软冲突有那么多一样的」的直接修法。规则按**场地**产 hit
+ * （长期闲置一场地一条），原先响应里没有 `spaceId`、也没有 `reason`，
+ * 于是 7 条闲置冲突在列表上逐字段相同、只能显示成 7 条一模一样的东西。
+ *
+ * 现在优先用 `reason`：它由后端按事实生成、已含场地名与人数
+ * （「场地 中心广场（可容纳 100 人）在最近 14 天内…」），比前端再拼一次可靠。
+ * 取不到 reason 时退化为只有 `spaceId` 可用的情况。
+ *
+ * 刻意**不**去拉一次 `/resources/spaces` 做 id→名字映射：本页是只读预警页，
+ * 为一条提示多打一次接口不划算，而 reason 已经把名字带上了。
+ */
+function conflictSubject(item) {
+  if (!item) return ''
+  const reason = String(item.reason || '').trim()
+  if (reason) return reason
+  if (item.spaceId !== null && item.spaceId !== undefined) return `场地 #${item.spaceId}`
+  return ''
 }
 
 async function loadConflicts() {
@@ -215,6 +244,16 @@ onMounted(loadConflicts)
 
 .sp-witem.is-on {
   box-shadow: inset 0 0 0 1px var(--sp-accent);
+}
+
+/* 冲突对象（哪个场地 / 哪张单）。与下面的 suggestion 区分开：
+   这一段是**事实**、suggestion 是**建议**，两者在后端也是分开的字段
+   （ConflictItem.reason vs .suggestion），混在一起会让用户分不清哪个是结论。 */
+.cf-subject {
+  margin: 4px 0 6px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--sp-t2);
 }
 
 .cf-notify {

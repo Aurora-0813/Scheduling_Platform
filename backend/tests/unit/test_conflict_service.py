@@ -72,12 +72,51 @@ def test_suggestion_never_mentions_the_ai():
 
 def test_conflict_item_keys_match_the_contract_exactly():
     """
-    契约锁定字段名，CamelModel 负责蛇形转驼峰。
-    多一个或少一个字段都会破坏前端，故这里断言**恰好**这四个。
+    契约四个字段名由 CamelModel 锁定（蛇形 → 驼峰），**一个都不能少**。
+
+    ⚠️ 2026-10-10：由「断言恰好这四个」改为「这四个必须在 + 追加字段也在」。
+      原断言的**意图**（防字段名漂移）保留，但「恰好」会把**追加式**变更也判红 ——
+      而追加是本仓库明确允许的扩展方式（见 `ConflictItem` 的注释）。
+
+      本次追加 `ruleLabel` / `spaceId` / `reason` / `severity`，起因是真实反馈
+      「软冲突有那么多一样的」：规则按**场地**产 hit（长期闲置一场地一条），
+      而响应里没有 `spaceId`、`suggestion` 又是按 `ruleCode` 查表的固定模板，
+      于是同规则的多条在列表上**逐字段完全相同**，前端无从区分。
     """
     items = build_conflict_items([_hit(order_ids=(1, 2))])
     payload = items[0].model_dump(by_alias=True)
-    assert set(payload) == {"conflictType", "orderIds", "suggestion", "ruleCode"}
+    assert {"conflictType", "orderIds", "suggestion", "ruleCode"} <= set(payload)
+    # 追加字段也要在（少一个前端就少一处可区分的信息）
+    assert {"ruleLabel", "spaceId", "reason", "severity"} <= set(payload)
+
+
+def test_conflict_item_additive_fields_carry_the_hit_identity():
+    """追加字段的值必须**来自 RuleHit**，不能是编造或常量 —— 否则等于没加。"""
+    hit = _hit(order_ids=(), space_id=7, rule_label="长期闲置", reason="场地 X 闲置 14 天")
+    payload = build_conflict_items([hit])[0].model_dump(by_alias=True)
+    assert payload["spaceId"] == 7
+    assert payload["ruleLabel"] == "长期闲置"
+    assert payload["reason"] == "场地 X 闲置 14 天"
+    assert payload["severity"] == hit.severity
+
+
+def test_two_idle_hits_are_distinguishable():
+    """**核心护栏**：同一规则的两条闲置冲突，响应里必须能区分开。
+
+    这条直接钉住「软冲突有那么多一样的」的修法 —— 若哪天有人把
+    `spaceId`/`reason` 从响应里去掉，7 个闲置场地又会退化成 7 条无差别条目。
+    """
+    a = _hit(order_ids=(), space_id=1, rule_label="长期闲置", reason="场地 A 闲置")
+    b = _hit(order_ids=(), space_id=2, rule_label="长期闲置", reason="场地 B 闲置")
+    items = [i.model_dump(by_alias=True) for i in build_conflict_items([a, b])]
+
+    assert items[0]["conflictType"] == items[1]["conflictType"] == "软冲突"
+    assert items[0]["ruleCode"] == items[1]["ruleCode"] == "space_idle"
+    assert items[0]["suggestion"] == items[1]["suggestion"], "建议是按规则查表的固定模板"
+
+    # 三个字段**必须不同**，否则前端无从区分
+    assert items[0]["spaceId"] != items[1]["spaceId"]
+    assert items[0]["reason"] != items[1]["reason"]
 
 
 def test_conflict_item_values():

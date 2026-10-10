@@ -4,6 +4,13 @@ import { agentSchedule } from '@/api/monitor'
 import { cancelOrder, confirmOrder, getOrder } from '@/api/orders'
 import { getDevices } from '@/api/resources'
 import { devicesOf, orderStatusLabel } from '@/utils/normalize'
+import { ensureFreshToken } from '@/utils/request'
+import {
+  attachOrderIdToDurableOperation,
+  beginDurableOperation,
+  clearPendingAction,
+  getPendingAction,
+} from '@/utils/pendingAction'
 
 /**
  * 核心调度 Agent 的状态（Agent 调度台 `/agent`）。
@@ -110,12 +117,47 @@ export const useAgentWorkbenchStore = defineStore('agentWorkbench', {
     /** deviceId -> deviceName。Agent 只返回设备 ID，名字得自己查真库补上 */
     deviceMap: new Map(),
 
+    /**
+     * 「上次被打断的动作」。有值就在调度台上显示一张恢复卡。
+     *
+     * 与上面 `PERSISTED_FIELDS` 的快照**不是一回事**：
+     *   · `trace`/`plan`/`orderId` 是「调度结果」，可能是很久以前、早已处理完的；
+     *   · 这个 `pendingAction` 是「**中断事件**」，只在会话失效那一瞬间写入，
+     *     用户处理掉（`dismissPending`）后就该消失。
+     * 分开放，恢复卡才不会因为「历史上有过一次调度」而天天弹。
+     */
+    pendingAction: getPendingAction(),
+
     // 上次结果从 sessionStorage 恢复回来（没有就是空对象）。
     // 放在 state 里是为了让 actions 能读到，同时不污染上面的字段声明。
     ...loadPersisted(),
   }),
 
   getters: {
+    /**
+     * 是否有「被打断的动作」需要用户处理。
+     *
+     * 只认 `pendingAction`，**不看 `orderId`** —— 后者是历史快照，
+     * 用它来驱动恢复卡会让早已处理完的单子每次都弹一次。
+     */
+    hasPendingAction: (state) => !!state.pendingAction,
+
+    /**
+     * 恢复卡文案：把「哪个动作、动到哪个 id」说清楚。
+     *
+     * 后端已建单时**必须报出单号** —— 用户最需要知道的就是「它到底成没成」，
+     * 含糊的「你可能成功过」等于没帮上忙。
+     */
+    pendingActionText: (state) => {
+      const p = state.pendingAction
+      if (!p) return ''
+      const what = p.label || p.kind || '操作'
+      if (p.orderId != null) {
+        return `你在登录过期前跑过一次${what}，订单 #${p.orderId} 已经创建（待确认）。`
+      }
+      return `你在登录过期前跑过一次${what}，但没能拿到结果。建议先确认是否已经产生预约，再决定要不要重跑。`
+    },
+
     /**
      * Tool 调用统计：`[{ name, count }]`。
      * **完全由真实思考链推导** —— 没有真实的 action 就不显示，不编造。
@@ -199,6 +241,17 @@ export const useAgentWorkbenchStore = defineStore('agentWorkbench', {
       }
     },
 
+    /**
+     * 用户处理完恢复卡（看了一眼 / 确认了 / 决定忽略）后调用。
+     *
+     * **只清「中断事件」，不动调度结果**：用户可能还想继续看上次的思考链与方案，
+     * 所以这里不调 `onReset()`，否则会把 `trace`/`plan` 一起抹掉。
+     */
+    dismissPending() {
+      this.pendingAction = null
+      clearPendingAction()
+    },
+
     onReset() {
       this.trace = []
       this.plan = null
@@ -224,10 +277,28 @@ export const useAgentWorkbenchStore = defineStore('agentWorkbench', {
 
       this.running = true
       this.startTimer()
+      // 标记「这次调度有副作用」：若中途会话失效，请求层会据此写一条「未完成动作」，
+      // 供登录后的恢复卡使用。finally 里必须清理，否则标记会一直挂着。
+      const endDurable = beginDurableOperation({
+        kind: 'agent.schedule',
+        label: 'AI 调度',
+      })
       try {
+        // ⚠️ 调度前先把令牌续上（2026-10-09 加）。
+        // 这次调度要跑 25~105 秒，而 accessToken 只有 30 分钟 ——
+        // 若令牌在中途过期，调度会**成功**（订单已落库）但紧接着的调用 401，
+        // 用户被踢到登录页且上下文全丢。详见 utils/request.js::ensureFreshToken。
+        // 失败不阻断：那只是优化，真正的 401 仍由请求层按原逻辑处理。
+        await ensureFreshToken()
+
         const res = await agentSchedule({ text: value })
         const data = (res && res.data) || {}
         const message = (res && res.message) || ''
+
+        // 后端已建单 → 把单号补进在途标记。
+        // 这样即便紧接着有别的请求 401 把用户踢出去，恢复卡也能直接报出单号，
+        // 而不是含糊地说「你可能成功过」。
+        attachOrderIdToDurableOperation(data.orderId)
 
         this.trace = Array.isArray(data.trace) ? data.trace : []
         this.plan = data.plan || null
@@ -247,6 +318,9 @@ export const useAgentWorkbenchStore = defineStore('agentWorkbench', {
         // request.js 已经弹过后端的真实 message，这里不重复打扰
         return { ok: false, reason: 'request' }
       } finally {
+        // 无论成功/失败/被踢，都要清掉在途标记 —— 留着的话，之后任何一个
+        // 无关的 401 都会把它误记成「未完成动作」，恢复卡就会乱弹。
+        endDurable()
         this.running = false
         this.stopTimer()
       }

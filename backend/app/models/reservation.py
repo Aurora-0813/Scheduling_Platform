@@ -25,14 +25,14 @@ from app.state_machine import OrderStatus
 #: 「创建时允许传入的 `order_status`」，创建即完成/取消属于非法输入。一旦占用口径
 #: 变化两者立刻分叉，不要合并。
 #:
-#: 3已取消 / 4已完成 是终态，不占资源。
+#: 3已取消 / 4已完成 / 5已过期 是终态，不占资源。
 ACTIVE_ORDER_STATUSES: tuple[int, ...] = (
     OrderStatus.PENDING.value,
     OrderStatus.CONFIRMED.value,
 )
 
 #: `reserve_order.order_status` 中「占位」的状态（主文档 6.3 表 6）。
-#: 1待确认、2已确认；3已取消与4已完成都不占位。
+#: 1待确认、2已确认；3已取消、4已完成与5已过期都不占位。
 #:
 #: ⚠️ 这里取 (1, 2) **比主文档 5.5 第 3 步更严**——5.5 原文写的是
 #: 「该场地在目标时段是否存在**已确认**订单」，字面只覆盖 status=2。
@@ -104,7 +104,31 @@ class ReserveOrder(Base):
     start_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, comment="开始时间")
     end_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, comment="结束时间")
     order_status: Mapped[int] = mapped_column(
-        Integer, default=1, nullable=False, comment="订单状态：1待确认，2已确认，3已取消，4已完成"
+        Integer,
+        default=1,
+        nullable=False,
+        comment="订单状态：1待确认，2已确认，3已取消，4已完成，5已过期",
+    )
+
+    # 「什么时候结束的」——由定时任务（`services/order_lifecycle.py`）写入。
+    #
+    # ⚠️ 为什么不能只看 `update_time`（2026-10-10 加这两个字段的理由）：
+    #    `update_time` 是「这一行最后一次被改动的时刻」，等于**任务跑的时刻**。
+    #    定时扫描每 300 秒一轮，订单 22:00 结束、22:04 才被扫到，
+    #    用户会看到「已完成于 22:04」——那是扫描时间，不是完成时间，会误导。
+    #    而且 `update_time` 会被任何无关改动刷新，不适合当业务时刻。
+    #    所以单独立两个可空字段，只在**终态落定时**写一次。
+    #
+    # 取值口径：
+    #   · `completed_at`：自动完成时取**订单的 `end_time`**（时段结束就是业务上的完成时刻，
+    #     不是扫描时刻）；人工「标记完成」时取操作时刻（见 `api/orders.py`）。
+    #   · `cancelled_at`：用户取消 与 超时自动过期 都会写；靠 `order_status`
+    #     区分是 3 已取消 还是 5 已过期。
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, comment="完成时刻（自动完成取 end_time，人工完成取操作时刻）"
+    )
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, comment="取消/过期时刻（状态 3 或 5）"
     )
 
     # AI 相关字段

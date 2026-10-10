@@ -307,29 +307,147 @@ async def test_submit_fault_leaves_unmatched_device_untouched(api, db_session):
     assert ticket.device_id is None
 
 
-async def test_submit_fault_ambiguous_name_is_not_guessed(api, db_session):
-    """同名设备有多台（投影仪1..4 这种）→ **宁可不写**，避免把好设备标成损坏。
+async def test_submit_fault_ambiguous_name_auto_assigns_lowest_healthy(api, db_session):
+    """同名设备有多台（投影仪01、投影仪01）→ **自动分配一台**（2026-10-10 改）。
 
-    设备表里同型号多台是常态。挑错一台不会报错，只会让那台设备再也借不出去 ——
-    属于「看起来正常、实际错了」的问题，所以匹配不唯一时必须放弃。
+    ⚠️ 这条用例**推翻了**原先的 `test_submit_fault_ambiguous_name_is_not_guessed`。
+    旧策略是「多台命中就放弃，宁可不写也不猜」，但实测代价更大：台账里是
+    `投影仪01..04`、模型报 `投影仪` → 永远命中 4 台 → 永远放弃 → 用户看到的就是
+    「AI 说有设备损坏，但设备列表里状态没变」。业务方要求改为自动分配。
+
+    挑选规则（`_pick_device_candidate`）：**完好的优先，同为完好取 id 最小** ——
+    只动本来就完好的设备，且同一输入每次挑到同一台（确定、可复现）。
     """
     from sqlalchemy import select
 
     from app.models.resource import DeviceResource
 
-    _add_device(db_session, device_id=903, name="投影仪01", status=1, available=1)
-    _add_device(db_session, device_id=904, name="投影仪01", status=1, available=1)
+    _add_device(db_session, device_id=903, name="投影仪01", status=1, available=2)
+    _add_device(db_session, device_id=904, name="投影仪01", status=1, available=2)
     await db_session.commit()
 
     resp = await _submit(api)
     assert resp.status_code == 200, resp.text
 
     rows = (
-        (await db_session.execute(select(DeviceResource).where(DeviceResource.id.in_((903, 904)))))
+        (
+            await db_session.execute(
+                select(DeviceResource)
+                .where(DeviceResource.id.in_((903, 904)))
+                .order_by(DeviceResource.id)
+            )
+        )
         .scalars()
         .all()
     )
-    assert [r.device_status for r in rows] == [1, 1], "名字不唯一时不应改动任何一台"
+    # 自动分配命中 id 最小的那台（903），另一台不该被动
+    assert rows[0].device_status == 2, "应自动分配并标损坏 id 最小的一台"
+    assert rows[1].device_status == 1, "其余同名设备不该被动"
+
+    # 工单必须真的关联到被分配的那台（否则用户看不到是哪一台）
+    from app.models.inspection import RepairTicket
+
+    ticket = (await db_session.execute(select(RepairTicket))).scalars().one()
+    assert ticket.device_id == 903
+
+
+async def test_submit_fault_all_same_type_damaged_is_not_reported_again(api, db_session):
+    """同类型设备**全部已损坏** → 不再改动、提示「已在维修工单列表」。
+
+    这是业务方要求的第 2 条后半段：全部损坏时不能静默忽略，必须给用户一句可读提示，
+    否则他重复提交同一台设备的故障、每次都没反应，只会认为是 bug。
+    """
+    from sqlalchemy import select
+
+    from app.models.resource import DeviceResource
+
+    # 两台同名设备都已是「损坏(2)」
+    _add_device(db_session, device_id=905, name="投影仪01", status=2, available=0)
+    _add_device(db_session, device_id=906, name="投影仪01", status=2, available=0)
+    await db_session.commit()
+
+    resp = await _submit(api)
+    assert resp.status_code == 200, resp.text
+    warning = resp.json()["data"]["deviceWarning"]
+    assert warning, "全部已在维修处理中时必须回传提示"
+    assert "已在维修工单列表" in warning, warning
+
+    # 状态不该被重复改动
+    rows = (
+        (
+            await db_session.execute(
+                select(DeviceResource)
+                .where(DeviceResource.id.in_((905, 906)))
+                .order_by(DeviceResource.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [r.device_status for r in rows] == [2, 2]
+
+
+async def test_submit_fault_open_ticket_blocks_duplicate(api, db_session):
+    """设备台账仍是「完好」、但**已有未完成工单** → 同样不重复报损。
+
+    业务方确认「两者都查」：只看 `device_status` 会漏掉这种情况 ——
+    工单刚建、人工还没把台账改成损坏时，再提交一次就会重复建单。
+    """
+    from sqlalchemy import select
+
+    from app.models.inspection import RepairTicket
+    from app.models.resource import DeviceResource
+
+    _add_device(db_session, device_id=907, name="投影仪01", status=1, available=1)
+    db_session.add(
+        RepairTicket(
+            inspect_id=None,
+            device_id=907,
+            space_id=None,
+            ticket_status=2,  # 处理中 = 未完成
+            handler_id=None,
+        )
+    )
+    await db_session.commit()
+
+    resp = await _submit(api)
+    assert resp.status_code == 200, resp.text
+    warning = resp.json()["data"]["deviceWarning"]
+    assert warning and "已在维修工单列表" in warning, warning
+
+    device = (
+        (await db_session.execute(select(DeviceResource).where(DeviceResource.id == 907)))
+        .scalars()
+        .one()
+    )
+    assert device.device_status == 1, "已有未完成工单时不该再改台账"
+
+
+async def test_submit_fault_partial_damage_still_reports_the_healthy_one(api, db_session):
+    """同类型「坏了 2 台、还有 1 台好的」→ **必须报那台好的**。
+
+    边界：只有**全部**候选都已在处理中才放弃。若因为「多数已坏」就整体放弃，
+    「4 台坏了 2 台」这种最需要建单的场景反而会漏报。
+    """
+    from sqlalchemy import select
+
+    from app.models.resource import DeviceResource
+
+    _add_device(db_session, device_id=908, name="投影仪01", status=2, available=0)
+    _add_device(db_session, device_id=909, name="投影仪01", status=2, available=0)
+    _add_device(db_session, device_id=910, name="投影仪01", status=1, available=1)
+    await db_session.commit()
+
+    resp = await _submit(api)
+    assert resp.status_code == 200, resp.text
+
+    # 应挑中唯一完好的那台（910），而不是放弃
+    device = (
+        (await db_session.execute(select(DeviceResource).where(DeviceResource.id == 910)))
+        .scalars()
+        .one()
+    )
+    assert device.device_status == 2, "还有完好设备时必须报损它，不能整体放弃"
 
 
 def _fault_reply(device_name: str, device_status: str = "损坏") -> str:
@@ -381,9 +499,15 @@ async def test_submit_fault_matches_by_unique_substring(api, db_session):
 
 
 async def test_submit_fault_substring_ambiguous_is_not_guessed(api, db_session):
-    """子串命中多台 → 依旧放弃（`无人机` 同时命中两台无人机时不猜）。
+    """子串命中多台 → **自动分配一台**（2026-10-10 改）。
 
-    这是放宽匹配的代价：歧义时必须退回「不写」，否则会把好设备标成故障。
+    ⚠️ 这条用例**推翻了**原先的 `test_submit_fault_substring_ambiguous_is_not_guessed`。
+    旧策略是「子串命中多台就放弃」（`无人机` 同时命中两台无人机时不猜）。
+    业务方明确要求改为自动分配 —— 因为「不猜」的实际后果是：
+    台账里 `投影仪01..04`、模型报品类名，就永远匹配不上、设备状态永远不变，
+    而那正是用户反复反馈的问题。
+
+    现在按 `_pick_device_candidate` 挑：**完好的优先，同为完好取 id 最小**。
     """
     from sqlalchemy import select
 
@@ -400,11 +524,18 @@ async def test_submit_fault_substring_ambiguous_is_not_guessed(api, db_session):
     assert resp.status_code == 200, resp.text
 
     rows = (
-        (await db_session.execute(select(DeviceResource).where(DeviceResource.id.in_((912, 913)))))
+        (
+            await db_session.execute(
+                select(DeviceResource)
+                .where(DeviceResource.id.in_((912, 913)))
+                .order_by(DeviceResource.id)
+            )
+        )
         .scalars()
         .all()
     )
-    assert [r.device_status for r in rows] == [1, 1], "子串有多台命中时不应改动任何一台"
+    # 两台都完好 → 取 id 最小的 912，913 不该被动
+    assert [r.device_status for r in rows] == [2, 1], "子串命中多台时应自动分配一台（取 id 最小）"
 
 
 async def test_submit_fault_decrements_available_count(api, db_session):

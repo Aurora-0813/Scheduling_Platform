@@ -12,6 +12,8 @@
 前端同步改成规范名 —— 理由见 `app/schemas/resource.py` 的文件头。
 """
 
+from datetime import datetime
+
 from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,7 +61,12 @@ def _space_out(s: SpaceResource, *, occupancy: str | None = None) -> dict:
     }
 
 
-def _device_out(d: DeviceResource, *, occupied: int = 0) -> dict:
+def _device_out(
+    d: DeviceResource,
+    *,
+    occupied: int = 0,
+    loan: tuple | None = None,
+) -> dict:
     """
     设备 → 传输结构。
 
@@ -69,8 +76,19 @@ def _device_out(d: DeviceResource, *, occupied: int = 0) -> dict:
     `occupied` 默认为 0：`PUT /devices/{id}` 改完状态后就地返回这一台，
     不为它单独再跑一次占用统计（那是一次全表范围查询，而单台设备的剩余量
     在改状态这个动作里不是关键信息）。
+
+    `loan` 是 `(借出时间, 归还时间)` 或 None，来自 `device_loan_windows`：
+    当前借出优先、否则最近一笔未来。同样默认为 None（上面的写接口不跑它），
+    两个时间字段因而为空串，前端显示「—」。
     """
     cap = d.available_count or 0
+    # 借用时段：`loan` 为 (借出, 归还) 或 None（没有在借/待借的单）。
+    #
+    # ⚠️ 这两个**不是 `device_resource` 的列**，而是「哪张订单借了它」的推导 ——
+    # 设备一行代表一种设备、可能多台，同一台在不同时段被不同订单借用，
+    # 所以没有「该设备的借出时间」这一说，只有「当前这笔 / 下一笔」。
+    # 取值口径见 `order_service.device_loan_windows`。
+    loan_start, loan_end = loan if loan else (None, None)
     return {
         "deviceId": d.id,
         "deviceName": d.device_name,
@@ -81,6 +99,16 @@ def _device_out(d: DeviceResource, *, occupied: int = 0) -> dict:
         # max(0, ...) 是兜底：理论上峰值不会超过上限（下单会拒），
         # 但活跃单被人工改成上限以上的极端情况下，剩余量不该显示成负数。
         "remainingCount": max(0, cap - occupied),
+        # 空串而不是 null：前端表格直接渲染，`—` 由前端按空值处理
+        "borrowedAt": format_time(loan_start) if loan_start else "",
+        "dueAt": format_time(loan_end) if loan_end else "",
+        # 这一笔是「正在借出」还是「未来待借」—— 前端据此决定文案与配色
+        # （「借用中」与「已排期」对使用者是两件事）
+        "loanState": (
+            "in_use"
+            if (loan_start and loan_start <= datetime.now() < loan_end)
+            else ("scheduled" if loan_start else "")
+        ),
     }
 
 
@@ -208,7 +236,16 @@ async def list_devices(db: AsyncSession = Depends(get_db)):
     occupied = await order_service.peak_device_occupancy(
         db, horizon_days=settings.DEVICE_REMAINING_HORIZON_DAYS
     )
-    return ok([_device_out(d, occupied=occupied.get(d.id, 0)) for d in devices])
+    # 借用时段（当前借出优先，否则最近一笔未来）。同一条 SELECT 的数据，
+    # 与上面的峰值占用**分两次算**是有意的：两者口径不同（峰值 = 窗口内最大并发；
+    # 借用时段 = 单笔的起止），合成一次查询会让代码难读而省不下什么。
+    loans = await order_service.device_loan_windows(db)
+    return ok(
+        [
+            _device_out(d, occupied=occupied.get(d.id, 0), loan=loans.get(d.id))
+            for d in devices
+        ]
+    )
 
 
 @router.put("/devices/{deviceId}")

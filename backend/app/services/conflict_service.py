@@ -310,8 +310,14 @@ def build_conflict_items(hits: list[RuleHit]) -> list[ConflictItem]:
     """
     把规则命中转成契约响应项。
 
-    字段恰好是 conflictType / orderIds / suggestion / ruleCode ——
-    CamelModel 负责蛇形到驼峰的转换，改动字段名会破坏前端契约。
+    既有四字段（conflictType / orderIds / suggestion / ruleCode）**语义不变**，
+    CamelModel 负责蛇形到驼峰；它们是冻结契约，改名会破坏前端。
+
+    ⚠️ 2026-10-10 追加 `rule_label` / `space_id` / `reason` / `severity`：
+    起因是「软冲突有那么多一样的」——规则按**场地**产 hit（长期闲置一场地一条），
+    而原先这四条在响应里逐字段相同（`orderIds` 空数组、`suggestion` 又是按
+    `ruleCode` 查表的固定模板），前端无从区分。这几个字段本就在 `RuleHit` 里，
+    只是没往外传。**纯追加**，老消费方不受影响。
     """
     return [
         ConflictItem(
@@ -319,6 +325,11 @@ def build_conflict_items(hits: list[RuleHit]) -> list[ConflictItem]:
             order_ids=list(hit.order_ids),
             suggestion=suggest_for(hit),
             rule_code=hit.rule_code,
+            # 追加字段：把这条 hit 与别的 hit 区分开
+            rule_label=hit.rule_label,
+            space_id=hit.space_id,
+            reason=hit.reason,
+            severity=hit.severity,
         )
         for hit in hits
     ]

@@ -86,6 +86,40 @@
 
       <!-- ==================== 中：真实思考链 ==================== -->
       <div class="agcol is-main">
+        <!--
+          ⚠️ 恢复卡（2026-10-09 加）：只在「上次动作被会话过期打断」时出现。
+          用 `hasPendingAction` 而不是 `orderId` 判断 —— 后者是历史快照，
+          拿它驱动会让早已处理完的单子每次进来都弹一次。
+          这里**不自动做任何事**：确认/查看/忽略都由用户点。
+        -->
+        <div v-if="hasPendingAction" class="sp-card pending-card">
+          <div class="sp-card-head">
+            <b>⚠️ 上次操作被打断</b>
+          </div>
+          <div class="sp-witem is-orange">
+            <p>{{ pendingActionText }}</p>
+            <p v-if="pendingAction && pendingAction.reason" class="pending-why">
+              （{{ pendingAction.reason }}）
+            </p>
+          </div>
+          <div class="pending-acts">
+            <button
+              v-if="orderId"
+              class="sp-btn is-ai is-sm"
+              :disabled="acting || orderStatus === 2"
+              @click="onConfirm"
+            >
+              {{ orderStatus === 2 ? '✓ 已确认' : '确认这张预约' }}
+            </button>
+            <button class="sp-btn is-ghost is-sm" @click="onGoOrders">
+              去预约单列表核对
+            </button>
+            <button class="sp-btn is-ghost is-sm" @click="onDismissPending">
+              忽略
+            </button>
+          </div>
+        </div>
+
         <div class="sp-card trace-card">
           <div class="sp-card-head">
             <b>🧠 Agent 思考链</b>
@@ -276,6 +310,7 @@ import { onMounted, ref } from 'vue'
 
 import { ElMessage } from 'element-plus'
 import { storeToRefs } from 'pinia'
+import { useRouter } from 'vue-router'
 
 import { useAgentWorkbenchStore } from '@/store/agentWorkbench'
 
@@ -287,6 +322,7 @@ import { useAgentWorkbenchStore } from '@/store/agentWorkbench'
  * 放进 store 后，切页回来仍能看到完整的思考链与方案。
  */
 const store = useAgentWorkbenchStore()
+const router = useRouter()
 
 const {
   running,
@@ -306,6 +342,9 @@ const {
   planFields,
   planFilled,
   planScore,
+  hasPendingAction,
+  pendingActionText,
+  pendingAction,
 } = storeToRefs(store)
 
 /** 输入框里的草稿。切页丢掉可接受，每次调度都要重新输入需求。 */
@@ -385,6 +424,23 @@ async function onCancel() {
 
 function onReset() {
   store.onReset()
+}
+
+/**
+ * 恢复卡：去预约单列表核对。
+ *
+ * 为什么要有这个出口：恢复卡只能告诉用户「可能成了」，**真正确认得看列表**。
+ * 用户亲自看一眼比前端替他判断可靠，所以这里直接把人送到能核对的地方。
+ * 一并清掉恢复卡 —— 已经去看过了，再弹就是噪音。
+ */
+function onGoOrders() {
+  store.dismissPending()
+  router.push('/orders')
+}
+
+/** 恢复卡：忽略。只清「中断事件」，保留上次的思考链与方案供继续查看 */
+function onDismissPending() {
+  store.dismissPending()
 }
 
 onMounted(() => {
@@ -483,6 +539,32 @@ onMounted(() => {
   font-size: 12px;
   color: var(--sp-accent);
   text-decoration: none;
+}
+
+/* ---------------- 恢复卡（上次操作被会话过期打断） ---------------- */
+.pending-card {
+  /* 与思考链卡片拉开距离，让它在最上面独立成一块，不被当成思考链的一部分 */
+  margin-bottom: 14px;
+  border-left: 3px solid var(--sp-warn, #e6a23c);
+}
+
+.pending-card .sp-witem p {
+  margin: 0;
+  line-height: 1.7;
+}
+
+/* 「为什么会中断」——次要信息，字号收小、颜色压暗，不跟主文案抢注意力 */
+.pending-why {
+  margin-top: 5px !important;
+  font-size: 12px;
+  color: var(--sp-t3);
+}
+
+.pending-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 /* ---------------- 思考链 ---------------- */

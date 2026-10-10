@@ -1,11 +1,20 @@
 """预约状态机（核心亮点）。
 
 业务写入必须经状态机，防止非法流转。状态为 INT 编码（§6.3）：
-1待确认 / 2已确认 / 3已取消 / 4已完成。
+1待确认 / 2已确认 / 3已取消 / 4已完成 / 5已过期。
 
     1待确认 ──确认──▶ 2已确认 ──完成──▶ 4已完成
         │                │
-        └──取消──▶ 3已取消 ◀──取消──┘
+        │                └──取消──▶ 3已取消
+        ├──取消──▶ 3已取消
+        └──超时未确认──▶ 5已过期
+
+⚠️ `5 已过期` 是 2026-10-10 新增的，**不是`3 已取消`的别名**。
+   背景：待确认的单过了 `end_time` 就没法再使用了（时段已经过去），
+   必须自动结单、把时段释放出来。但如果把它记成 `3 已取消`，
+   用户分不清「我自己取消的」还是「我忘了确认、系统替我取消了」——
+   两者的责任归属完全不同，混成一个状态会让列表无法自证。
+   所以**单独给一个终态**，前端显示「已过期」。
 """
 
 from enum import IntEnum
@@ -18,14 +27,16 @@ class OrderStatus(IntEnum):
     CONFIRMED = 2  # 已确认
     CANCELLED = 3  # 已取消
     COMPLETED = 4  # 已完成
+    EXPIRED = 5  # 已过期（待确认超时未确认，由定时任务结单）
 
 
 # 合法流转表：from -> {to ...}
 TRANSITIONS: dict[int, set[int]] = {
-    OrderStatus.PENDING: {OrderStatus.CONFIRMED, OrderStatus.CANCELLED},
+    OrderStatus.PENDING: {OrderStatus.CONFIRMED, OrderStatus.CANCELLED, OrderStatus.EXPIRED},
     OrderStatus.CONFIRMED: {OrderStatus.COMPLETED, OrderStatus.CANCELLED},
     OrderStatus.COMPLETED: set(),  # 终态
     OrderStatus.CANCELLED: set(),  # 终态
+    OrderStatus.EXPIRED: set(),  # 终态
 }
 
 

@@ -54,7 +54,10 @@
           class="sp-witem"
           :class="conflictClass(item)"
         >
-          <b>{{ item.conflictType || '冲突' }} · 预约 {{ orderRefs(item) }}</b>
+          <b>{{ conflictTitle(item) }}</b>
+          <!-- 冲突对象说明：闲置类没有订单，靠这段说明是**哪个场地**。
+               不加这段的话，同规则的多条会显示成一模一样（见 conflictTitle 的说明）。 -->
+          <p v-if="conflictSubject(item)" class="cf-subject">{{ conflictSubject(item) }}</p>
           <p>{{ item.suggestion }}</p>
           <span v-if="item.ruleCode" class="sp-tag is-gray">{{ item.ruleCode }}</span>
         </div>
@@ -281,9 +284,33 @@ function conflictClass(item) {
   return type.includes('硬') ? 'is-red' : 'is-blue'
 }
 
-function orderRefs(item) {
-  const ids = Array.isArray(item && item.orderIds) ? item.orderIds : []
-  return ids.length ? '#' + ids.join(' / #') : '—'
+/**
+ * 冲突标题：说清「哪条规则 + 哪个对象」。
+ *
+ * ⚠️ 2026-10-10 修（真实反馈：「预约日历还是有很多软冲突，而且全是预约一，
+ *    内容全部一样」）。
+ *
+ * 原先是 `<b>{{ item.conflictType }} · 预约 {{ orderRefs(item) }}</b>`，
+ * 而闲置类冲突的 `orderIds` **恒为空数组**，`orderRefs` 于是返回 `'—'` ——
+ * 7 条闲置冲突全部渲染成「**软冲突 · 预约 —**」，且 `suggestion` 又是按
+ * `ruleCode` 查表的固定模板，整块内容逐字相同。
+ *
+ * 修法与「冲突预警页」一致（同一个 `/conflicts/scan`、两个页面必须同步改）：
+ * 有订单就报订单号；没有订单就报**规则名 + 场地**（`ruleLabel` / `reason`
+ * 是后端追加的字段，`reason` 已含场地名与人数）。
+ */
+function conflictTitle(item) {
+  if (!item) return '冲突'
+  const rule = String(item.ruleLabel || item.ruleCode || item.conflictType || '冲突')
+  const ids = Array.isArray(item.orderIds) ? item.orderIds : []
+  if (ids.length) return `${rule} · 预约 #${ids.join(' / #')}`
+  if (item.spaceId !== null && item.spaceId !== undefined) return `${rule} · 场地 #${item.spaceId}`
+  return rule
+}
+
+/** 冲突对象说明（`reason` 是后端按事实生成的，已含场地名与人数） */
+function conflictSubject(item) {
+  return String((item && item.reason) || '').trim()
 }
 
 async function onConfirm() {
@@ -339,6 +366,16 @@ onMounted(loadData)
 .radar-empty {
   text-align: center;
   padding: 12px 0 18px;
+}
+
+/* 冲突对象（哪个场地 / 哪张单）。与下面的 suggestion 区分开：
+   这一段是**事实**、suggestion 是**建议**，后端也是分开的字段
+   （ConflictItem.reason vs .suggestion）。混在一起会让用户分不清哪个是结论。 */
+.cf-subject {
+  margin: 4px 0 6px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--sp-t2);
 }
 
 .cal-tip {

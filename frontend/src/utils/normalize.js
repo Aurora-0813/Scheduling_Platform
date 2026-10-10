@@ -65,12 +65,15 @@ export function totalOf(data) {
 // 依据 docs/api.md 与 docs/database.md：
 //   space_type    1 会议室 / 2 展厅 / 3 多功能厅 / 4 户外场地
 //   device_status 1 完好   / 2 损坏 / 3 缺失配件
-//   order_status  1 待确认 / 2 已确认 / 3 已取消 / 4 已完成
+//   order_status  1 待确认 / 2 已确认 / 3 已取消 / 4 已完成 / 5 已过期
 // 真实接口给的是**整数**；Mock 给的是现成字符串（`type:"会议室"`）。
 // 取值优先级一律是「后端给了文案就用文案，否则整数查表」—— 两边都能显示。
 const SPACE_TYPE_LABEL = { 1: '会议室', 2: '展厅', 3: '多功能厅', 4: '户外场地' }
 const DEVICE_STATUS_LABEL = { 1: '完好', 2: '损坏', 3: '缺失配件' }
-const ORDER_STATUS_LABEL = { 1: '待确认', 2: '已确认', 3: '已取消', 4: '已完成' }
+// ⚠️ 5 已过期（2026-10-10 加）：待确认超时未确认，由定时任务结单。
+//    它**不等于** 3 已取消 —— 责任归属不同（自己取消 vs 忘了确认），
+//    所以单列一个状态、单给一句文案。见 backend/app/state_machine.py 的说明。
+const ORDER_STATUS_LABEL = { 1: '待确认', 2: '已确认', 3: '已取消', 4: '已完成', 5: '已过期' }
 const SPACE_STATUS_LABEL = { 1: '可用', 0: '停用' }
 
 export function spaceTypeLabel(value, text) {

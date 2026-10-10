@@ -108,6 +108,8 @@ from ..state_machine import OrderStatus
 __all__ = [
     "create_order",
     "update_agent_trace",
+    "peak_device_occupancy",
+    "device_loan_windows",
     "CONFLICT_TIME",
     "CONFLICT_DEVICE_MISSING",
     "CONFLICT_DEVICE_UNAVAILABLE",
@@ -368,6 +370,76 @@ async def peak_device_occupancy(db, *, horizon_days: int, now: Any = None) -> di
             windows.setdefault(device_id, []).append((clipped_start, clipped_end))
 
     return {device_id: _peak_occupancy(ws) for device_id, ws in windows.items()}
+
+
+async def device_loan_windows(db, *, now: Any = None) -> dict[int, tuple[Any, Any]]:
+    """
+    `{device_id: (借出时间, 归还时间)}` —— 供设备列表显示「当前是谁在用、什么时候还」。
+
+    ⚠️ **只读、不落库。** 与 `peak_device_occupancy` 同一条设计原则
+    （见 `docs/available_count口径判据.md`）：设备的借用时段**不是设备自己的属性**，
+    而是「哪张订单借了它」的函数。设备一行代表一种设备、可能 `total_count > 1` 台，
+    同一台设备在不同时段被不同订单借用 —— 所以没有「该设备的借出时间」这一说，
+    只有「当前这笔 / 下一笔」。
+    （因此本函数**不加列、不加迁移**；`device_resource` 保持原样。）
+
+    取值口径（产品确认）：
+        ① **当前借出优先**：存在活跃单使 `start_time <= now < end_time` → 取它；
+        ② 否则取**最近一笔未来**：`start_time > now` 中 `start_time` 最小的那笔；
+        ③ 两者都没有 → 该设备**不进结果**（调用方显示「—」）。
+
+    为什么「当前」优先于「未来」：列表要回答的是「这台设备现在能不能借、
+    什么时候回来」。若同时有「正在借」和「已排了下一场」，先说正在借的那笔
+    才对得上用户当下的处境。（与 `space_occupancy` 里「使用中优先于已被预约」同一取舍。）
+
+    取**单数**一笔而不汇总多笔：列表每行只有一个时间格，给区间才有意义。
+    若某设备同时被多笔活跃单占用（`total_count > 1` 时正常），取**最早开始**的那笔 ——
+    它决定了「这台设备什么时候开始不可用」，是用户最先受影响的那一笔。
+
+    占用口径与下单严格同源：`ACTIVE_ORDER_STATUSES`（1 待确认 / 2 已确认）。
+    """
+    anchor = now or datetime.now()
+
+    rows = (
+        await db.execute(
+            select(
+                ReserveOrder.id,
+                ReserveOrder.device_ids,
+                ReserveOrder.start_time,
+                ReserveOrder.end_time,
+            ).where(
+                ReserveOrder.order_status.in_(ACTIVE_ORDER_STATUSES),
+                # 只要「还没结束」的单：已结束的历史单不该出现在列表上
+                ReserveOrder.end_time > anchor,
+            )
+        )
+    ).all()
+
+    #: device_id -> 选中的 (借出, 归还)。用「优先级 + 开始时间」比较替换，
+    #: 避免先收集再排序：一次遍历即可定下最优的一笔。
+    picked: dict[int, tuple[Any, Any]] = {}
+    for _oid, device_ids, win_start, win_end in rows:
+        # 「正在借出」优先级高于「未来」；同档取开始更早的
+        in_use = win_start <= anchor < win_end
+        for raw_id in device_ids or []:
+            try:
+                device_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+
+            best = picked.get(device_id)
+            if best is None:
+                picked[device_id] = (win_start, win_end)
+                continue
+
+            best_in_use = best[0] <= anchor < best[1]
+            # ① 当前借出胜过未来；② 同为当前（不可能，区间互斥）或同为未来时，取开始更早的
+            if in_use and not best_in_use:
+                picked[device_id] = (win_start, win_end)
+            elif in_use == best_in_use and win_start < best[0]:
+                picked[device_id] = (win_start, win_end)
+
+    return picked
 
 
 async def _device_conflicts(

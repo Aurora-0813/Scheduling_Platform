@@ -73,6 +73,7 @@ from app.core.security import TokenType, decode_token
 from app.middlewares import AgentMetricsMiddleware, RequestContextMiddleware
 from app.services.conflict_service import scan_and_notify_job
 from app.services.notify_events import subscribe_notify_events
+from app.services.order_lifecycle import close_expired_orders
 from app.websocket import manager
 
 __all__ = ["app", "create_app", "lifespan"]
@@ -218,6 +219,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 挂到 app.state 上，便于运维与测试观察后台任务状态
     app.state.conflict_scanner = scanner
 
+    # ---- 订单生命周期：把时段已过的活跃单自动结单 ----
+    # 规则见 services/order_lifecycle.py：已确认→已完成(4)、待确认→已过期(5)。
+    # 与冲突扫描分开成两个扫描器：两者的开关与节拍互不牵连
+    # （演示时可能只想关掉冲突推送，但订单状态仍要随时间推进）。
+    lifecycle_scanner: PeriodicScanner | None = None
+    if settings.ORDER_AUTO_CLOSE_ENABLED:
+        lifecycle_scanner = PeriodicScanner(
+            # 直接用服务函数：它自建会话、自提交，签名与 PeriodicScanner 要求的
+            # 无参 async 可调用一致。`run_once` 已经吞异常并记日志，
+            # 这里不必再加一层包装（多一层只会多一处要维护的转发）。
+            close_expired_orders,
+            interval_seconds=settings.ORDER_AUTO_CLOSE_INTERVAL_SECONDS,
+            # 首次延迟取与冲突扫描同一量级：让应用完全起来再动库
+            initial_delay_seconds=settings.CONFLICT_SCAN_INITIAL_DELAY_SECONDS,
+            name="order-auto-close",
+        )
+        lifecycle_scanner.start()
+    else:
+        logger.info("订单自动结单已关闭（ORDER_AUTO_CLOSE_ENABLED=False）")
+    app.state.order_lifecycle_scanner = lifecycle_scanner
+
     try:
         yield
     finally:
@@ -226,12 +248,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # ⚠️ 顺序有讲究：先停扫描器（它可能正拿着连接写库），再收敛事件总线，
         #    最后才释放连接池（在 _shutdown 里）。反过来会让仍在跑的扫描任务
         #    抛 MissingGreenlet，污染关闭日志。
-        if scanner is not None:
+        for scr in (scanner, lifecycle_scanner):
+            if scr is None:
+                continue
             try:
-                await scanner.stop()
+                await scr.stop()
             except Exception as exc:  # noqa: BLE001 - 关闭路径不能抛
                 logger.warning("停止周期扫描器出错: %s: %s", type(exc).__name__, exc)
         app.state.conflict_scanner = None
+        app.state.order_lifecycle_scanner = None
         try:
             await bus.aclose()
         except Exception as exc:  # noqa: BLE001 - 关闭路径不能抛

@@ -19,7 +19,10 @@
  *   真实接口落地后应复核此处，届时可只留整型映射。
  */
 
-const ORDER_LABEL = { 1: '待确认', 2: '已确认', 3: '已取消', 4: '已完成' }
+// ⚠️ 5 已过期（2026-10-10 加）：待确认超时未确认，由后端定时任务结单。
+//    它**不等于** 3 已取消 —— 责任归属不同（自己取消 vs 忘了确认），
+//    所以单列一个状态、单给一句文案。
+const ORDER_LABEL = { 1: '待确认', 2: '已确认', 3: '已取消', 4: '已完成', 5: '已过期' }
 const DEVICE_LABEL = { 1: '设备完好', 2: '设备损坏', 3: '缺失配件' }
 const TICKET_LABEL = { 1: '待处理', 2: '处理中', 3: '已完成' }
 const SPACE_TYPE_LABEL = { 1: '会议室', 2: '展厅', 3: '多功能厅', 4: '户外场地' }
@@ -33,7 +36,8 @@ const LABELS = {
 
 /** 整型枚举 → tag 配色（对应 styles/theme.css 的 .tag 变体） */
 const ENUM_TAG = {
-  order: { 1: 'purple', 2: 'green', 3: 'gray', 4: 'blue' },
+  // 5 已过期用 red 与「已取消」的 gray 区分：它不是用户主动的决定
+  order: { 1: 'purple', 2: 'green', 3: 'gray', 4: 'blue', 5: 'red' },
   device: { 1: 'green', 2: 'red', 3: 'orange' },
   ticket: { 1: 'blue', 2: 'orange', 3: 'green' },
 }

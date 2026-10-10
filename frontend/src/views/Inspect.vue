@@ -4,7 +4,7 @@
       <div class="page-titles">
         <h3>AI 智能巡检 · 维修工单</h3>
         <p class="sp-page-sub">
-          上传巡检照片，AI 自动判定故障并生成维修建议与工单（数据来源：/inspect、/tickets）
+          上传巡检照片，AI 自动判定故障并生成维修建议与工单
         </p>
       </div>
       <div class="sp-acts">
@@ -144,8 +144,12 @@
                 </td>
                 <td>{{ row.createTime || '—' }}</td>
                 <td>
+                  <button class="sp-btn is-ghost is-sm" type="button" @click="openTicketDetail(row)">
+                    详情
+                  </button>
                   <button
                     class="sp-btn is-ghost is-sm"
+                    type="button"
                     :disabled="row.status === 3"
                     @click="handleTicket(row)"
                   >
@@ -167,6 +171,80 @@
         </div>
       </div>
     </div>
+
+    <!--
+      工单详情（2026-10-10 加）：让用户看清「到底哪台设备、坏成什么样」。
+      列表里的「AI 结论」是一列标签 + 一行截断的 report，撑不下完整故障信息；
+      详情弹窗把整条巡检结论、关联设备/场地、以及**处理与核验记录**一并摊开。
+    -->
+    <el-dialog v-model="ticketDetail.visible" title="维修工单详情" width="640px">
+      <template v-if="ticketDetail.row">
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="工单号">#{{ ticketDetail.row.id }}</el-descriptions-item>
+          <el-descriptions-item label="状态">
+            <span class="sp-tag" :class="ticketTagClass(ticketDetail.row)">
+              {{ ticketDetail.row.statusText || '—' }}
+            </span>
+          </el-descriptions-item>
+          <el-descriptions-item label="场地">
+            {{
+              spaceMap[ticketDetail.row.spaceId] ||
+              (ticketDetail.row.spaceId ? `场地ID ${ticketDetail.row.spaceId}` : '—')
+            }}
+          </el-descriptions-item>
+          <el-descriptions-item label="设备">
+            {{
+              ticketDetail.row.deviceName ||
+              (ticketDetail.row.deviceId ? `设备ID ${ticketDetail.row.deviceId}` : '未关联设备')
+            }}
+          </el-descriptions-item>
+          <el-descriptions-item label="AI 判定">
+            <span
+              v-if="ticketDetail.row.deviceStatus"
+              class="sp-tag"
+              :class="judgeTagClass(ticketDetail.row.deviceStatus)"
+            >
+              {{ ticketDetail.row.deviceStatus }}
+            </span>
+            <span v-else class="sp-muted">—</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="创建时间">
+            {{ ticketDetail.row.createTime || '—' }}
+          </el-descriptions-item>
+        </el-descriptions>
+
+        <div class="td-sec">
+          <h4>AI 巡检结论</h4>
+          <p v-if="ticketDetail.row.report" class="td-text">{{ ticketDetail.row.report }}</p>
+          <p v-else class="sp-muted">该工单没有关联的巡检结论。</p>
+        </div>
+
+        <!--
+          AI 核验记录：仅在走过「上传维修照片 + 核验」这条路径后才有。
+          ⚠️ 这里**没有**「维修建议」一节 —— `TicketItem` schema 里没有
+             repairSuggestion 字段（那是 `submit_inspection` 的**响应**字段，
+             工单列表不返回）。前端不去拼一个不存在的东西。
+        -->
+        <div v-if="ticketDetail.row.verifyReport || ticketDetail.row.handleImageUrl" class="td-sec">
+          <h4>维修核验</h4>
+          <p class="sp-muted">
+            核验状态：{{ ticketDetail.row.verifyStatus || '—' }}
+          </p>
+          <p v-if="ticketDetail.row.verifyReport" class="td-text">
+            {{ ticketDetail.row.verifyReport }}
+          </p>
+          <img
+            v-if="ticketDetail.row.handleImageUrl"
+            class="td-photo"
+            :src="ticketDetail.row.handleImageUrl"
+            alt="处理后照片"
+          />
+        </div>
+      </template>
+      <template #footer>
+        <el-button @click="ticketDetail.visible = false">关闭</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 提交巡检弹窗 -->
     <el-dialog v-model="inspectDialog.visible" title="提交 AI 巡检" width="480px">
@@ -365,6 +443,15 @@ const handleFile = ref(null)
 const verifyDialog = reactive({ visible: false })
 const verifyResult = ref(null)
 
+/**
+ * 工单详情弹窗（2026-10-10 加）。
+ *
+ * `row` 直接放列表里的那一行对象 —— `/tickets/list` 的 `TicketItem` 已经带全
+ * 详情所需的字段（report / handleImageUrl / verifyStatus / verifyReport），
+ * **不需要再打一次接口**。列表里那行只是被 CSS 截断显示，数据本身是完整的。
+ */
+const ticketDetail = reactive({ visible: false, row: null })
+
 // 两个 <el-upload> 的组件实例。
 // ⚠️ **必须用 ref 才能清空它们的文件列表**：`uploadFile` / `handleFile`
 //    只保存了我自己需要的 File 对象，上传框里那张缩略图是 el-upload 的**内部状态**
@@ -459,19 +546,42 @@ const resultRows = computed(() => {
     if (device) rows.push({ k: '设备', v: device })
   }
   rows.push({ k: '维修建议', v: aiResult.repairSuggestion || '无需维修' })
-  rows.push(
-    aiResult.ticketId
-      ? { k: '生成工单', v: `#${aiResult.ticketId}`, cls: 'is-blue' }
-      : { k: '生成工单', v: `未生成 —— 判定为「${aiResult.deviceStatus}」，无需维修` },
-  )
-  // 设备台账**部分成功**时的提示（目前只有一种：可借数已是 0、已有人报修，
-  // 本次只记录故障、未再减可借数）。不回显的话，用户看到「工单建了、可借数没变」
-  // 会以为是 bug —— 这正是上一轮被反馈的问题。
+  rows.push({ k: '生成工单', ...ticketRow() })
+  // 设备台账**部分成功**时的提示。目前两种来源：
+  //   ① 可借数已是 0、已有人报修 —— 本次只记录故障、未再减可借数；
+  //   ② 命中的设备全部已在维修处理中 —— 本次未重复建单。
+  // 不回显的话，用户看到「工单没建 / 可借数没变」会以为是 bug。
   if (aiResult.deviceWarning) {
     rows.push({ k: '设备台账', v: aiResult.deviceWarning, cls: 'is-orange' })
   }
   return rows
 })
+
+/**
+ * 「生成工单」那一行的内容。
+ *
+ * ⚠️ 原实现在没有 ticketId 时**一律**写「未生成 —— 判定为「X」，无需维修」。
+ *    这在 2026-10-10 之后会**说谎**：新增了「命中的设备全部已在维修处理中 →
+ *    不重复建单」这条路径，那种情况是**有损坏、也已有人管**，不是「无需维修」。
+ *    文案必须分开，否则用户会以为设备没事。
+ *
+ * 三种情况：
+ *   ① 建了单        → 显示工单号
+ *   ② 未建单 + 已在维修中 → 说明已在工单列表中（不改台账，也不重复建单）
+ *   ③ 未建单 + 其它   → 名字没匹配上台账里的设备（既有行为，保持原文案）
+ */
+function ticketRow() {
+  if (aiResult.ticketId) {
+    return { v: `#${aiResult.ticketId}`, cls: 'is-blue' }
+  }
+  // 与后端 `_sync_device_status` 的 warning 同源；这里只做**展示**分支，
+  // 不参与任何业务判断（业务判断在后端用原因码做，见 REASON_ALL_IN_REPAIR）。
+  const warn = String(aiResult.deviceWarning || '')
+  if (warn.includes('已在维修工单列表')) {
+    return { v: '未重复建单 —— 该设备已在维修工单列表中处理', cls: 'is-orange' }
+  }
+  return { v: `未生成 —— 判定为「${aiResult.deviceStatus}」，无需维修` }
+}
 
 // 工单计数按真实状态统计，标题右侧的标签为 0 时不渲染
 const waitingCount = computed(() => tickets.value.filter((item) => item.status === 1).length)
@@ -557,6 +667,16 @@ async function submitInspection() {
  */
 function handleTicket(row) {
   openHandleDialog(row)
+}
+
+/**
+ * 打开「工单详情」弹窗。
+ *
+ * 只读：不做任何请求、不改任何状态 —— 列表行本身就是完整的 `TicketItem`。
+ */
+function openTicketDetail(row) {
+  ticketDetail.row = row
+  ticketDetail.visible = true
 }
 
 /**
@@ -762,6 +882,40 @@ onMounted(async () => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ---- 工单详情弹窗（2026-10-10 加）---- */
+
+/* 一节一块：标题 + 正文。用块级分隔而不是 <el-descriptions> 是因为
+   报告是长文本，按描述项那套「标签: 值」的窄格子排版会挤成一条竖线。 */
+.td-sec {
+  margin-top: 16px;
+}
+
+.td-sec h4 {
+  margin: 0 0 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--sp-t1);
+}
+
+/* 长报告要换行并保留原样里的换行（AI 常按条列写） */
+.td-text {
+  margin: 0;
+  line-height: 1.75;
+  font-size: 13px;
+  color: var(--sp-t2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.td-photo {
+  display: block;
+  margin-top: 8px;
+  max-width: 100%;
+  max-height: 260px;
+  border-radius: 6px;
+  border: 1px solid var(--sp-border-l);
 }
 
 .empty-cell {

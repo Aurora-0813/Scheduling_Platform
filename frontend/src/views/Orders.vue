@@ -19,8 +19,7 @@
     <div class="sp-ai-bar">
       <div class="sp-ic">📋</div>
       <span>
-        数据来源 <b>GET /orders/my</b>（只返回<b>当前登录用户本人</b>的单，身份取自 JWT）。
-        后端这个接口返回的是<b>裸数组</b>且<b>不支持分页</b>，所以下面的分页在前端切片完成。
+        这里只显示<b>你本人</b>的预约单。列表<b>不分页</b>，一次展示全部。
       </span>
     </div>
 
@@ -100,7 +99,10 @@
               >
                 取消
               </button>
-              <span v-if="order.orderStatus === 3 || order.orderStatus === 4" class="sp-muted">
+              <span
+                v-if="[3, 4, 5].includes(order.orderStatus)"
+                class="sp-muted"
+              >
                 终态
               </span>
             </td>
@@ -262,6 +264,9 @@ const tabs = [
   { label: '已确认', value: 2 },
   { label: '已取消', value: 3 },
   { label: '已完成', value: 4 },
+  // 5 已过期：待确认超时未确认，由定时任务结单。单列页签而不并入「已取消」，
+  // 否则用户分不清「自己取消的」与「忘了确认被系统结掉的」。
+  { label: '已过期', value: 5 },
 ]
 
 const counts = computed(() => {
@@ -312,6 +317,10 @@ function statusTagClass(status) {
       return 'is-gray'
     case 4:
       return 'is-blue'
+    // 5 已过期：用红色与「已取消」区分开 —— 它不是用户主动做的决定，
+    // 而是「忘了确认、系统替你结单」，值得更醒目。
+    case 5:
+      return 'is-red'
     default:
       return 'is-orange'
   }
