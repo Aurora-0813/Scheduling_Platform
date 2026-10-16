@@ -1,6 +1,22 @@
 <template>
   <view class="app-page">
-    <mp-nav-bar title="预约详情" back />
+    <!--
+      导航区（2026-10-14 修死胡同）。
+
+      背景：from=create 时隐藏返回箭头是对的（页面栈已被 reLaunch 清空，
+      箭头指向的上一页并不存在）。但**当时没有补上别的出口** ——
+      页面注释里写「返回列表才是唯一有意义的出口」，而那个出口只挂在
+      「订单查不到」的 mp-empty 上（action-text="返回列表"）。
+      订单正常查到时就只剩业务动作（确认 / 完成 / 取消），一旦这些动作全都
+      不可用（已完成、已取消），用户**一个能点的按钮都没有**，
+      只能靠微信的下拉关闭或物理返回键离开。
+
+      出口统一放在**底部 CTA**，与「标记完成 / 取消预约」同级别（2026-10-14 调整）。
+      当初放导航栏右侧是担心底部被业务动作占满，但那样它只是导航栏里一行小字，
+      既不像可点的按钮、也和用户对「操作都在底部」的预期不一致。
+      底部三个分支现在都带上了它，覆盖全部状态。
+    -->
+    <mp-nav-bar title="预约详情" :back="!fromCreate" />
 
     <view class="app-body" :class="{ 'has-cta': canCancel }">
       <view v-if="loading" class="mcard">
@@ -70,14 +86,14 @@
 
         <!-- 用户原始需求：Agent 落库的 agent_request -->
         <view v-if="order.agentRequest" class="mcard">
-          <view class="mtitle">🗣 原始需求</view>
+          <view class="mtitle">原始需求</view>
           <text class="mtext">{{ order.agentRequest }}</text>
         </view>
 
         <!-- Agent 思考链：落库的 agent_trace，默认折叠 -->
         <view v-if="trace.length" class="mcard">
           <view class="mtitle">
-            <text>🧠 Agent 决策链</text>
+            <text>Agent 决策链</text>
             <text class="more" @tap="showTrace = !showTrace">
               {{ showTrace ? '收起' : `展开 ${trace.length} 步` }}
             </text>
@@ -107,15 +123,27 @@
           而 Agent 建的单是 status=1 —— 用户没有任何办法把它落实。
         · 标记完成（2→4）：用完了的单要有地方结束，否则一直算占用。
         · 取消预约：待确认 / 已确认都可取消。
+      · 返回列表：**导航出口**（2026-10-14 加）。它不是业务动作，但没有它时
+        终态订单（已完成 / 已取消）会一个可点按钮都没有，页面变成死胡同。
+
       用主题里已有的 .app-cta-row（flex + gap）排，不自己加 margin 拼间距。
-      只有一个动作时仍走原来的整块按钮。
+      宽度靠 .grow（1.8）与 .navbtn（1）按比例分配，这样无论一行两个还是三个
+      按钮都不会换行。
     -->
     <view v-if="canConfirm" class="app-cta">
       <view class="app-cta-row">
         <view class="btn grow" hover-class="btn-on" @tap="askConfirm">确认预约</view>
+        <!--
+          「返回列表」是**导航**，所以用中性 ghost 样式（不抢主色），
+          与旁边两个业务动作拉开语义差。
+          宽度走 .navbtn 的比例分配，不用定宽 ——
+          三个按钮各自还有 56rpx 左右内边距与 12rpx 间距，
+          定宽很容易在 375px 机型上把这一行挤到换行。
+        -->
+        <view class="btn ghost navbtn" hover-class="btn-on" @tap="goList">返回列表</view>
         <view
           v-if="canCancel"
-          class="btn ghost danger"
+          class="btn ghost danger navbtn"
           hover-class="btn-on"
           @tap="askCancel"
         >取消预约</view>
@@ -124,16 +152,34 @@
     <view v-else-if="canComplete" class="app-cta">
       <view class="app-cta-row">
         <view class="btn grow" hover-class="btn-on" @tap="askComplete">标记完成</view>
+        <view class="btn ghost navbtn" hover-class="btn-on" @tap="goList">返回列表</view>
         <view
           v-if="canCancel"
-          class="btn ghost danger"
+          class="btn ghost danger navbtn"
           hover-class="btn-on"
           @tap="askCancel"
         >取消预约</view>
       </view>
     </view>
     <view v-else-if="canCancel" class="app-cta">
-      <view class="btn ghost block danger" hover-class="btn-on" @tap="askCancel">取消预约</view>
+      <!-- 只有「取消预约」一个业务动作时，也让它与返回列表同排，
+           保持「底部动作行」这个形态在三个分支里一致 -->
+      <view class="app-cta-row">
+        <view class="btn ghost danger grow" hover-class="btn-on" @tap="askCancel">取消预约</view>
+        <view class="btn ghost navbtn" hover-class="btn-on" @tap="goList">返回列表</view>
+      </view>
+    </view>
+
+    <!--
+      兜底出口（2026-10-14 补）：上面三个分支都要求订单处于**可操作状态**
+      （待确认 / 已确认）。订单处于「已完成」「已取消」这类**终态**时三者全不成立，
+      若不留这个分支，整页会一个可点按钮都没有。
+
+      只在没有业务动作时出现，所以不会和上面三个分支抢位置。
+    -->
+    <!-- !loading 是必要的：加载中 order 还是 null，不加会先闪一下「返回列表」再变成业务按钮 -->
+    <view v-else-if="order && !loading" class="app-cta">
+      <view class="btn block" hover-class="btn-on" @tap="goList">返回列表</view>
     </view>
   </view>
 </template>
@@ -173,6 +219,13 @@ const loading = ref(true)
 const error = ref('')
 const showTrace = ref(false)
 const wantId = ref('')
+/**
+ * 是否由「刚创建预约」跳转进来（confirm.vue 会带 from=create）。
+ *
+ * 只影响一件事：导航栏要不要渲染返回箭头。页面栈已被 reLaunch 清空，
+ * 返回箭头点下去无处可去，留着只会让人以为能退回上一步。
+ */
+const fromCreate = ref(false)
 
 const rangeText = computed(() => {
   if (!order.value) return ''
@@ -257,6 +310,7 @@ async function load() {
 
 onLoad((options) => {
   ensureNameMaps()
+  fromCreate.value = !!(options && options.from === 'create')
   wantId.value = (options && options.orderId) || ''
   if (!wantId.value) {
     loading.value = false
@@ -271,7 +325,7 @@ async function askCancel() {
     content: `确定取消「${spaceLabel(order.value.spaceId)}」的预约吗？取消后时段将释放给其他人。`,
     title: '取消预约',
     confirmText: '确定取消',
-    confirmColor: '#F56C6C',
+    confirmColor: 'var(--danger)',
   })
   if (!ok) return
 
@@ -327,6 +381,19 @@ function goList() {
 </script>
 
 <style scoped>
+/*
+ * 底部动作行里「返回列表」这类**导航按钮**。
+ *
+ * 为什么不用定宽（如 width: 176rpx）：一行最多摆三个按钮
+ * （确认预约 / 返回列表 / 取消预约），每个 .btn 还有 28rpx×2 的左右内边距
+ * 与 12rpx 间距，定宽在 375px 机型上很容易把这一行挤到换行 ——
+ * 而 .app-cta-row 没设 flex-wrap，换行会直接溢出。
+ * 用比例分配（1 : 1.8 : 1）无论几个按钮都能自动适配。
+ */
+.navbtn {
+  flex: 1;
+}
+
 .head .dd {
   margin-bottom: 6rpx;
 }
@@ -334,7 +401,7 @@ function goList() {
 .tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 12rpx;
+  gap: var(--s2);
   margin-top: 18rpx;
 }
 
@@ -350,7 +417,7 @@ function goList() {
 .sline {
   display: inline-flex;
   align-items: baseline;
-  gap: 12rpx;
+  gap: var(--s2);
   margin-bottom: 6rpx;
 }
 
@@ -367,6 +434,6 @@ function goList() {
 
 .btn.danger {
   color: var(--danger);
-  border-color: #fbc4c4;
+  border-color: var(--danger-bg);
 }
 </style>

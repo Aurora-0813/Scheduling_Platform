@@ -15,13 +15,17 @@
  *  5. 连不上后端时按 FALLBACK_TO_LOCAL 回落到本地内置数据；业务错误不兜底。
  */
 import {
-  BASE_URL,
   API_PREFIX,
   MOCK_PREFIX,
   API_MODE,
   FALLBACK_TO_LOCAL,
   REQUEST_TIMEOUT,
 } from '@/config/index.js'
+// ⚠️ 后端地址**不在模块加载时绑定**（2026-10-14 改）。
+// 原先这里是 `import { BASE_URL } from '@/config/index.js'` —— 一个模块级常量，
+// 登录页再怎么改地址，这里都还指着旧的那个，**且不报错**。
+// 现在每次拼 URL 时现取，见 getBaseUrl() 的说明。
+import { getBaseUrl } from '@/api/endpoint.js'
 import { getAccessToken, getRefreshToken, setTokens, clearTokens } from '@/utils/auth.js'
 import { toast } from '@/utils/toast.js'
 
@@ -46,8 +50,15 @@ const AUTH_FAIL_CODES = [
   40302, // 未分配角色
 ]
 
+/**
+ * 拼出完整请求地址。
+ *
+ * ⚠️ 地址**每次现取**（`getBaseUrl()`），不要在模块顶层缓存成常量：
+ * 登录页可以在运行时改后端地址（内网穿透的公网地址变了就改它），
+ * 缓存住的话改完仍打旧地址，而且不会报错 —— 最难查的一种。
+ */
 function buildUrl(path, useMock) {
-  return BASE_URL + (useMock ? MOCK_PREFIX : API_PREFIX) + path
+  return getBaseUrl() + (useMock ? MOCK_PREFIX : API_PREFIX) + path
 }
 
 function buildHeader(extra, auth) {
@@ -84,7 +95,7 @@ function doRefresh() {
   return new Promise((resolve, reject) => {
     uni.request({
       // refresh 不需要 Authorization 头
-      url: BASE_URL + API_PREFIX + '/auth/refresh',
+      url: getBaseUrl() + API_PREFIX + '/auth/refresh',
       method: 'POST',
       header: { 'Content-Type': 'application/json' },
       data: { refreshToken },
@@ -347,11 +358,16 @@ export function upload(options) {
   })
 }
 
-/** 把后端返回的相对路径（如 /uploads/xxx.jpg）补成可直接给 <image> 用的地址 */
+/**
+ * 把后端返回的相对路径（如 /uploads/xxx.jpg）补成可直接给 <image> 用的地址。
+ *
+ * 同样**现取**地址：换了后端之后，之前存下来的相对路径要指向新后端，
+ * 否则图片会去旧地址上找（内网穿透时那个地址往往已经失效）。
+ */
 export function absoluteUrl(path) {
   if (!path) return ''
   if (/^https?:\/\//.test(path)) return path
-  return BASE_URL + path
+  return getBaseUrl() + path
 }
 
 export default { request, upload, absoluteUrl }

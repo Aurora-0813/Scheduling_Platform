@@ -1,3 +1,15 @@
+<!--
+  ⚠️ 遗留页面，**未注册进 pages.json**，当前不参与编译、也进不去。
+
+  保留它是因为「输入需求 → 提交 → 逐条回放思考」这条交互还有参考价值；
+  线上实际走的是 pages/voice/record（语音/文字）→ pages/agent/thinking（思考链）
+  → pages/reserve/confirm（确认）。
+
+  这里的三处取数调用原先按**已废弃的 API 名字**写（agentSchedule /
+  agentTranscribe / agentRecognize），在 api/agent.js、api/voice.js、
+  api/image.js 里都不存在。虽然不参与编译，但留着是误导，
+  2026-10-14 按现有契约改成了真实可用的调用。
+-->
 <template>
   <view class="page">
     <view class="input-area">
@@ -42,7 +54,9 @@
 
 <script setup>
 import { ref } from 'vue'
-import { agentSchedule, agentTranscribe, agentRecognize } from '@/api/agent'
+import { schedule } from '@/api/agent.js'
+import { asr } from '@/api/voice.js'
+import { analyze } from '@/api/image.js'
 import { createOrder } from '@/api/reserve'
 import { toast, showLoading, hideLoading } from '@/utils/toast.js'
 
@@ -62,7 +76,9 @@ async function submit() {
   trace.value = []
   plan.value = null
   backupPlan.value = null
-  const data = await agentSchedule(requirement.value.trim())
+  // schedule() 读的是 payload.text —— 传裸字符串会得到空需求，
+  // 所以这里必须包一层 { text }
+  const data = await schedule({ text: requirement.value.trim() })
   // 逐步渲染思考过程
   const steps = data.trace || []
   for (let i = 0; i < steps.length; i++) {
@@ -86,8 +102,8 @@ function startRecord() {
     // 统一走 utils/toast.js 的封装（带配对保护），并用 finally 保证一定收掉。
     showLoading('识别中')
     try {
-      const data = await agentTranscribe(res.tempFilePath)
-      requirement.value = data.text
+      const data = await asr(res.tempFilePath)
+      requirement.value = (data && data.text) || ''
       toast('已识别，请确认后提交')
     } catch (e) {
       toast((e && e.message) || '识别失败')
@@ -106,8 +122,14 @@ async function chooseImage() {
   if (!res || !res.tempFilePaths || !res.tempFilePaths.length) return
   showLoading('识别中')
   try {
-    const data = await agentRecognize(res.tempFilePaths[0])
-    requirement.value = data.text
+    // ⚠️ /image/analyze 返回的是 { type, spaceId, spaceName, confidence,
+    //    availableTime[], devices[], needConfirm, question, ... }，**没有 text 字段** ——
+    //    原先写 `data.text` 只会得到 undefined。
+    //    这里把识别出的场地名写成一句可编辑的需求，让用户接着补充时间/人数；
+    //    缺字段时用后端给的 question 追问，而不是把空串塞进输入框。
+    const data = await analyze(res.tempFilePaths[0])
+    const name = data && (data.spaceName || data.name)
+    requirement.value = name ? `预约${name}` : (data && data.question) || ''
   } catch (e) {
     toast((e && e.message) || '识别失败')
   } finally {
@@ -132,15 +154,15 @@ async function confirmPlan(p) {
 
 <style scoped>
 .page { padding: 24rpx; }
-.input-area { background: #fff; border-radius: 16rpx; padding: 24rpx; margin-bottom: 24rpx; }
+.input-area { background: #fff; border-radius: var(--r-md); padding: 24rpx; margin-bottom: 24rpx; }
 .textarea { width: 100%; height: 160rpx; font-size: 28rpx; }
-.btn-row { display: flex; gap: 16rpx; justify-content: flex-end; margin-top: 16rpx; }
+.btn-row { display: flex; gap: var(--s2); justify-content: flex-end; margin-top: 16rpx; }
 .section { margin-bottom: 24rpx; }
-.section-title { font-size: 28rpx; color: #666; margin-bottom: 16rpx; }
-.trace-item { background: #fff; border-radius: 12rpx; padding: 16rpx 20rpx; margin-bottom: 12rpx; font-size: 26rpx; color: #555; }
-.trace-ts { margin-left: 12rpx; font-size: 22rpx; color: #999; }
-.card { background: #fff; border-radius: 16rpx; padding: 24rpx; margin-bottom: 20rpx; }
+.section-title { font-size: 28rpx; color: var(--t2); margin-bottom: 16rpx; }
+.trace-item { background: #fff; border-radius: var(--r-sm); padding: 16rpx 20rpx; margin-bottom: 12rpx; font-size: 26rpx; color: var(--t2); }
+.trace-ts { margin-left: 12rpx; font-size: 22rpx; color: var(--t3); }
+.card { background: #fff; border-radius: var(--r-md); padding: 24rpx; margin-bottom: 20rpx; }
 .title { font-size: 30rpx; font-weight: 600; margin-bottom: 12rpx; }
-.meta { color: #666; font-size: 26rpx; margin-top: 8rpx; }
+.meta { color: var(--t2); font-size: 26rpx; margin-top: 8rpx; }
 .confirm { margin-top: 20rpx; }
 </style>

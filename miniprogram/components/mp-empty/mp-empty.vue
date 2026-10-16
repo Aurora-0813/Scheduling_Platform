@@ -49,7 +49,7 @@ defineEmits(['action'])
 
 .txt {
   font-size: 26rpx;
-  color: var(--t3, #909399);
+  color: var(--t3, var(--t3));
   line-height: 1.7;
   display: block;
   margin-bottom: 28rpx;
@@ -58,11 +58,11 @@ defineEmits(['action'])
 .act {
   display: inline-block;
   padding: 16rpx 44rpx;
-  border-radius: 12rpx;
+  border-radius: var(--r-sm);
   font-size: 25rpx;
-  color: var(--t2, #606266);
+  color: var(--t2, var(--t2));
   background: #fff;
-  border: 1px solid var(--bd, #dcdfe6);
+  border: 1px solid var(--bd, var(--bd));
 }
 
 .act-on {

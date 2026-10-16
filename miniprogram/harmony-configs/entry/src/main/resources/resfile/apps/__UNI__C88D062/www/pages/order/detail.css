@@ -1,0 +1,128 @@
+.nb-fixed[data-v-1de34ced] {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+}
+.nb-inner[data-v-1de34ced] {
+  display: flex;
+  align-items: center;
+  padding-left: 0.8125rem;
+  border-bottom: 1px solid var(--bd-l, #ebeef5);
+  position: relative;
+}
+.nb-back[data-v-1de34ced] {
+  font-size: 1.375rem;
+  line-height: 1;
+  color: #7a8ba0;
+  padding-right: 0.375rem;
+  margin-top: -0.1875rem;
+}
+
+/* 二级页标题：绝对居中，不受左右元素宽度影响 */
+.nb-title[data-v-1de34ced] {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  transform: translateX(-50%);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--t1, #303133);
+  max-width: 50%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 首页大标题 */
+.nb-big[data-v-1de34ced] {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--t1, #303133);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  margin-right: 0.5rem;
+}
+.nb-right[data-v-1de34ced] {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--t3, #909399);
+  flex: none;
+}
+
+
+.empty[data-v-7423a8c1] {
+  padding: 3.75rem 1.25rem;
+  text-align: center;
+}
+.icon[data-v-7423a8c1] {
+  font-size: 2.8125rem;
+  opacity: 0.35;
+  display: block;
+  margin-bottom: 0.75rem;
+}
+.txt[data-v-7423a8c1] {
+  font-size: 0.8125rem;
+  color: var(--t3, #909399);
+  line-height: 1.7;
+  display: block;
+  margin-bottom: 0.875rem;
+}
+.act[data-v-7423a8c1] {
+  display: inline-block;
+  padding: 0.5rem 1.375rem;
+  border-radius: 0.375rem;
+  font-size: 0.78125rem;
+  color: var(--t2, #606266);
+  background: #fff;
+  border: 1px solid var(--bd, #dcdfe6);
+}
+.act-on[data-v-7423a8c1] {
+  opacity: 0.82;
+}
+
+
+.head .dd[data-v-6b23c96c] {
+  margin-bottom: 0.1875rem;
+}
+.tags[data-v-6b23c96c] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin-top: 0.5625rem;
+}
+.mono[data-v-6b23c96c] {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.71875rem;
+  color: var(--t3);
+  word-break: break-all;
+}
+
+/* 思考链每步：结论行 + 时间（与 pages/agent/thinking.vue 同一样式口径）。
+   `.ss` 在主题里是 display:block + 下边距；放进 inline-flex 行内要改成按内容宽度排 */
+.sline[data-v-6b23c96c] {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  margin-bottom: 0.1875rem;
+}
+.mbstep .txt .ss[data-v-6b23c96c] {
+  flex: none;
+  margin-bottom: 0;
+}
+.stime[data-v-6b23c96c] {
+  display: block;
+  font-size: 0.65625rem;
+  color: var(--t3);
+}
+.btn.danger[data-v-6b23c96c] {
+  color: var(--danger);
+  border-color: #fbc4c4;
+}

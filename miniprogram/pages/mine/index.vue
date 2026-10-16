@@ -180,7 +180,7 @@ async function askLogout() {
     content: '退出后需要重新登录才能查看预约与工单。',
     title: '退出登录',
     confirmText: '退出',
-    confirmColor: '#F56C6C',
+    confirmColor: 'var(--danger)',
   })
   if (!ok) return
 
@@ -197,7 +197,7 @@ async function askLogout() {
 .prof {
   display: flex;
   align-items: center;
-  gap: 24rpx;
+  gap: var(--s3);
 }
 
 .avatar {
@@ -209,8 +209,9 @@ async function askLogout() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #eef5ff, #f3efff);
-  border: 1px solid var(--ai-line);
+  /* 原为 135deg 浅蓝→浅紫渐变；改为单一浅蓝底 —— 它只是个头像底座。 */
+  background: var(--primary-bg);
+  border: 1px solid var(--primary-line);
 }
 
 .pinfo {
@@ -240,15 +241,15 @@ async function askLogout() {
 
 .stats {
   display: flex;
-  gap: 20rpx;
+  gap: var(--s3);
   margin-bottom: 22rpx;
 }
 
 .stat {
   flex: 1;
   background: #fff;
-  border: 1px solid #f0f3f8;
-  border-radius: 24rpx;
+  border: 1px solid var(--bd-l);
+  border-radius: var(--r-lg);
   padding: 26rpx 0;
   text-align: center;
 }
@@ -271,12 +272,12 @@ async function askLogout() {
 .mrow {
   display: flex;
   align-items: center;
-  gap: 20rpx;
+  gap: var(--s3);
   padding: 26rpx 0;
 }
 
 .mrow.sep {
-  border-top: 1px solid #f5f7fa;
+  border-top: 1px solid var(--bg-hover);
 }
 
 .mi {
@@ -294,7 +295,7 @@ async function askLogout() {
   min-width: 34rpx;
   height: 34rpx;
   padding: 0 10rpx;
-  border-radius: 17rpx;
+  border-radius: var(--r-md);
   background: var(--danger);
   color: #fff;
   font-size: 20rpx;
@@ -305,7 +306,7 @@ async function askLogout() {
 
 .ma {
   font-size: 34rpx;
-  color: #c6ced9;
+  color: var(--bd);
   flex: none;
 }
 

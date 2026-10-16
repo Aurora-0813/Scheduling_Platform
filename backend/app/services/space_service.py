@@ -37,7 +37,13 @@ from app.models.reservation import OCCUPYING_STATUS, ReserveOrder
 from app.models.resource import SpaceResource
 from app.state_machine import OrderStatus
 
-__all__ = ["query_spaces", "list_space_bookings", "space_occupancy", "TIME_FORMATS"]
+__all__ = [
+    "query_spaces",
+    "list_available_spaces",
+    "list_space_bookings",
+    "space_occupancy",
+    "TIME_FORMATS",
+]
 
 #: 允许的时间格式。**必须与 `app/agent/tools/_common.py` 的 `TIME_FORMATS` 一致**。
 #:
@@ -154,6 +160,26 @@ async def query_spaces(capacity: int, space_type: int, start_time: str, end_time
                 SpaceResource.open_end_time >= end_dt.time(),
             ),
         )
+        .order_by(SpaceResource.capacity)
+    )
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(stmt)).scalars().all()
+    return {"count": len(rows), "spaces": [_to_dict(r) for r in rows]}
+
+
+async def list_available_spaces() -> dict:
+    """列出**全部可用场地**（`status=1`），不做类型/容量/时段过滤。
+
+    用途：单次调用快速模式（`app/agent/chains/fast.py`）需要把「全部候选」
+    一次性交给模型，由模型在候选里做选择题 —— 省掉多轮「模型决定查什么」的往返。
+
+    过滤只保留「能用」的：`status=1`。容量/类型/时段**有意不过滤** ——
+    那正是要交给模型判断的部分；候选规模小时（本项目 9 个场地）无压力，
+    规模上千时应改回 `query_spaces` 预筛。
+    """
+    stmt = (
+        select(SpaceResource)
+        .where(SpaceResource.status == 1)
         .order_by(SpaceResource.capacity)
     )
     async with AsyncSessionLocal() as session:

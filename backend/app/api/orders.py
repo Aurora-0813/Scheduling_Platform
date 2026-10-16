@@ -31,7 +31,7 @@ from ..core.exceptions import (
 )
 from ..core.response import ok
 from ..core.utils import format_time
-from ..models import ReserveOrder
+from ..models import ReserveOrder, SysUser
 from ..schemas.order import OrderCreate
 from ..services import order_service
 from ..services.message_service import create_message
@@ -40,7 +40,8 @@ from ..state_machine import (
     can_transition,
     transition,
 )
-from .deps import CurrentUser, get_current_user
+from ..core.permissions import Permission
+from .deps import CurrentUser, get_current_user, require_permission
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -199,6 +200,42 @@ async def list_my_orders(
     result = await db.execute(q)
     orders = result.scalars().all()
     return ok([_order_out(o) for o in orders])
+
+
+@router.get("/all")
+async def list_all_orders(
+    status: int | None = Query(default=None, description="状态筛选 1/2/3/4"),
+    userId: int | None = Query(default=None, description="只看某个用户的订单（可选）"),
+    current: CurrentUser = Depends(require_permission(Permission.ORDER_APPROVE)),
+    db: AsyncSession = Depends(get_db),
+):
+    """**全部用户**的预约列表（2026-10-13 加，管理视角）。
+
+    与 `/my` 的分工：
+      · `/my`  —— 任何人**只能看自己的**（详情/确认/取消逐条做归属校验，越权一律 404）
+      · `/all` —— **管理视角**：系统管理员与管理员看全库，用于审批 / 改期 / 看全局占用
+
+    权限用 `order:approve`（语义：「能否管理全部预约」）：
+    云库里管理员是 `order:*`（前缀通配命中），普通用户只有 `order:add/list/cancel`
+    （不命中）→ 403。
+
+    回包里额外带 `username`：管理列表要显示「这是谁的预约」，
+    只给 userId 的话管理员还得自己对号入座。`/my` 不带这个字段（自己的单无需回显）。
+    """
+    conds = []
+    if status is not None:
+        conds.append(ReserveOrder.order_status == status)
+    if userId is not None:
+        conds.append(ReserveOrder.user_id == userId)
+    rows = (
+        await db.execute(
+            select(ReserveOrder, SysUser.username)
+            .outerjoin(SysUser, SysUser.id == ReserveOrder.user_id)
+            .where(*conds)
+            .order_by(ReserveOrder.create_time.desc())
+        )
+    ).all()
+    return ok([{**_order_out(o), "username": uname} for o, uname in rows])
 
 
 @router.get("/user/{userId}")

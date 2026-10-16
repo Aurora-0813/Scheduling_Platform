@@ -9,28 +9,60 @@
 
 ## 一、快速运行
 
-1. HBuilderX 4.24 打开本目录（`frontend-app/miniprogram`）。
-2. `manifest.json` → 基础配置 → 填入你自己的**微信小程序 AppID**
-   （仓库里留空，AppID 属于账号信息，不入库）。
+1. HBuilderX 打开本目录（`miniprogram`）。
+2. AppID 已固定为 `wxbe3bfbb2c6c13c97`，在**两处**且必须一致：
+   - `manifest.json` → `mp-weixin.appid`
+   - `project.config.json` → `appid`
 3. 运行 → 运行到小程序模拟器 → 微信开发者工具。
 4. 后端未启动也能跑通全流程（见下方「三、数据通道」）。
+
+> ⚠️ **不要在 `manifest.json` 里放自定义键（例如 `_comment_appid`）来做注释。**
+> uni-app 会把 `mp-weixin` 段的键**原样拷进产物 `app.json`**，而微信对 `app.json`
+> 做严格 schema 校验，遇到未知键直接报「无效的 app.json [\"_comment_appid\"]」并在
+> 控制台刷屏。JSON 本身不支持注释，说明文字写在本 README 里即可。
+>
+> ⚠️ `mp-weixin.appid` 若被改成空串，HBuilderX 重新编译时会用它覆盖产物里的
+> `project.config.json`，开发者工具随即退回「无 AppID 体验模式」，真机预览与
+> 隐私接口都会受限。所以两处的 AppID 要一起维护。
 
 > 微信开发者工具里需勾选「详情 → 本地设置 → 不校验合法域名…」，
 > 否则 `http://127.0.0.1:8000` 会被拦。`manifest.json` 已设 `urlCheck: false`，
 > 但开发者工具的本地设置优先级更高。
 
-### 真机预览
+### 真机预览 / 内网穿透（不必重打包）
 
-把 `config/index.js` 的 `BASE_URL` 改成电脑的局域网 IP（手机与电脑同一 WiFi）：
+⚠️ **2026-10-14 起后端地址可以在运行时改** —— 打开**登录页 →「后端地址」→ 修改**，
+填完点「测试连接」确认通了再「登录」（保存是随手动的，测试通过才说明填对了）。
+地址写进本地存储，重启小程序/APP 后仍然生效。
+
+所以下面这两种情况**都不需要改代码、不需要重新打包**：
+
+| 场景 | 填什么 |
+|---|---|
+| 手机与电脑同一 WiFi | 电脑的局域网 IP，如 `192.168.1.10:8000` |
+| 内网穿透（frp / cpolar / ngrok …） | 隧道给的公网地址，如 `https://a1b2.cpolar.top` |
+
+输入框会**自动容错**：只填 `主机:端口` 会自动补 `http://`；
+从浏览器地址栏整条复制过来的 `.../api/v1` 或 `.../api/v1/health` 会被自动去掉。
+
+若想改**默认值**（新装的人一进来就是它），再改 `config/index.js` 的
+`DEFAULT_BASE_URL`：
 
 ```js
-export const BASE_URL = 'http://192.168.1.10:8000'   // 换成你电脑的实际 IP
+export const DEFAULT_BASE_URL = 'http://192.168.1.10:8000'   // 换成你电脑的实际 IP
 ```
+
+> 存储里**有**覆盖值时优先用它；没有时才回落 `DEFAULT_BASE_URL`，
+> 所以没在登录页配过的人，行为与从前完全一致。
+> 点登录页的「用默认地址」可清掉覆盖值。
 
 ### 正式上线
 
-`BASE_URL` 必须是 **https** 域名，并在小程序后台配置 `request` 与 `uploadFile`
-合法域名。`http://127.0.0.1` 只适用于开发者工具。
+地址必须是 **https** 域名，并在小程序后台配置 `request` 与 `uploadFile`
+合法域名。`http://127.0.0.1` 只适用于开发者工具（正式小程序会拒绝明文 http）。
+
+> 局域网 IP / 内网穿透的 `http://` 地址在**开发者工具**（勾了「不校验合法域名」）
+> 与**打出来的 APK** 上可用 —— 这正是本项目演示时最常用的一条路。
 
 ---
 
@@ -43,7 +75,7 @@ miniprogram/
 ├── manifest.json            # AppID 留空、scope.record 权限、urlCheck:false
 ├── pages.json               # 12 个页面；navigationStyle:custom；**无原生 tabBar**
 ├── styles/theme.css         # 设计变量 + 全部全局工具类
-├── config/index.js          # BASE_URL / API_MODE / FALLBACK_TO_LOCAL / 录音与图片限制
+├── config/index.js          # DEFAULT_BASE_URL / API_MODE / FALLBACK_TO_LOCAL / 录音与图片限制
 ├── utils/
 │   ├── auth.js              # 令牌读写
 │   ├── format.js            # 时间与金额（禁用 toISOString）
@@ -53,6 +85,7 @@ miniprogram/
 │   └── toast.js             # toast / loading / confirm
 ├── api/
 │   ├── request.js           # 网络层核心（见第四节）
+│   ├── endpoint.js          # 后端地址：运行时可改（登录页写、请求层读）
 │   ├── auth.js  voice.js  image.js  agent.js  orders.js
 │   ├── resources.js  inspect.js  messages.js
 │   └── mock/local.js        # 本地兜底数据
@@ -80,10 +113,6 @@ miniprogram/
 | 12 | `pages/order/detail` | 预约详情 | — |
 
 ---
-
-## 三、数据通道（两条开关）
-
-`config/index.js`：
 
 ## 三、数据通道（两条开关）
 

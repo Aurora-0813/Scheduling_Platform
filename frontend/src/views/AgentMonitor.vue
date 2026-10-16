@@ -21,7 +21,7 @@
 
     <!-- AI 提示条：句子里的每个数字都取自 /monitor/agent 的真实聚合值，没有就改说法 -->
     <div class="sp-ai-bar">
-      <div class="sp-ic">🧠</div>
+      <div class="sp-ic">◈</div>
       <span v-if="hasMetrics">
         <b>AI 正在真实运行</b> — 累计 {{ metrics.totalCalls }} 次 Agent 调用，成功率
         {{ metrics.successRate }}%。
@@ -68,7 +68,7 @@
       <!-- 左：调用构成。接口没有逐日数据，所以画的是真实计数构成，不是原型的「近 7 日趋势」 -->
       <div class="sp-card am-main">
         <div class="sp-card-head">
-          <b>📊 调用构成</b>
+          <b>调用构成</b>
           <span class="sp-grow"></span>
           <span class="sp-tag is-blue">接口实时聚合</span>
         </div>
@@ -85,8 +85,7 @@
             </span>
           </div>
           <p class="sp-muted am-note">
-            柱子按 successCalls / errorCalls / degradedCalls 的真实计数换算。降级仍返回 HTTP 200、已计入成功，
-            所以三根柱子不构成相加关系。接口没有逐日明细，因此不画「近 7 日趋势」。
+            柱型图按 successCalls / errorCalls / degradedCalls 的真实计数换算。降级仍返回 HTTP 200、已计入成功。
           </p>
         </template>
         <el-empty v-else description="暂无调用数据，去 Agent 调度台跑一次后这里会出现真实构成" :image-size="70" />
@@ -222,7 +221,7 @@ onMounted(loadMetrics)
 /* 两栏布局：原型用 flex 比例（1.4 : 1），这里沿用，窄屏再堆叠 */
 .am-cols {
   display: flex;
-  gap: 14px;
+  gap: var(--sp-s3);
   align-items: flex-start;
 }
 
@@ -239,17 +238,17 @@ onMounted(loadMetrics)
 /* 失败 / 降级柱：设计系统只有蓝、橙两种柱子语义，红的只有事件类，
    但「失败」用橙色会和「降级」撞色，所以在这里补一个本页独有的红色柱 */
 .sp-bar.is-error i {
-  background: linear-gradient(180deg, #f9a3a3, #f56c6c);
+  background: linear-gradient(180deg, #f0a3a3, var(--sp-danger));
 }
 
 .sp-bar.is-warn i {
-  background: linear-gradient(180deg, #ffcd85, #e6a23c);
+  background: linear-gradient(180deg, #f7cd85, var(--sp-warning));
 }
 
 .am-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--sp-s2);
   margin-top: 12px;
 }
 

@@ -58,4 +58,39 @@ export function updateDevice(deviceId, payload) {
   return request({ path: `/resources/devices/${deviceId}`, method: 'PUT', data: payload })
 }
 
-export default { spaces, devices, spaceBookings, createSpace, updateDevice }
+/**
+ * 某时段**真正订得上**的场地（2026-10-13 新增）。
+ *
+ * 契约：GET /resources/spaces/available?capacity=&spaceType=&startTime=&endTime=
+ *   → { count, spaces: [{spaceId, spaceName, spaceType, capacity, location, budget, ...}] }
+ *
+ * 口径与建单判重**严格同源**（后端直接复用 Agent 的 query_spaces），
+ * 所以这里列出来的场地，点建单不会因为「时段冲突」被拒。
+ * `spaceType` 不传 = 不限类型。
+ */
+export function availableSpaces(params) {
+  return request({ path: '/resources/spaces/available', method: 'GET', data: params })
+}
+
+/**
+ * 某时段**每台设备还剩几台**（2026-10-13 新增）。
+ *
+ * 契约：GET /resources/devices/available?startTime=&endTime=&deviceType=
+ *   → { count, devices: [{deviceId, deviceName, deviceType, availableCount, usedCount, remainingCount}] }
+ *
+ * 只返回 `device_status == 1`（完好）的设备；`remainingCount <= 0` 表示该时段已借满。
+ * 口径同样与建单的设备判重同源，不会出现「这里显示能借、建单却说约满」。
+ */
+export function availableDevices(params) {
+  return request({ path: '/resources/devices/available', method: 'GET', data: params })
+}
+
+export default {
+  spaces,
+  devices,
+  spaceBookings,
+  createSpace,
+  updateDevice,
+  availableSpaces,
+  availableDevices,
+}

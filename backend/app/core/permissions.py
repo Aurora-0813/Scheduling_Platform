@@ -112,7 +112,10 @@ _USER_PERMISSIONS: tuple[str, ...] = (
     Permission.VOICE_ANALYZE,
     Permission.VISION_ANALYZE,
     Permission.NOTIFY_VIEW,
-    Permission.INSPECT_VIEW,
+    # ⚠️ 2026-10-13 口径变更（业务确认）：**普通用户不再拥有巡检权限**。
+    #    巡检是「工作人员」的活：管理员（资源管理员）= 普通用户 + AI 巡检，
+    #    系统管理员 = 全部权限。原先这里列了 INSPECT_VIEW，与目标场景不符。
+    #    （本清单只在云库 permissions 列为空时兜底，但口径必须与业务一致。）
 )
 
 # 资源管理员：普通用户权限 + 资源/巡检/冲突/通知的管理权
@@ -120,6 +123,9 @@ _RESOURCE_ADMIN_PERMISSIONS: tuple[str, ...] = _USER_PERMISSIONS + (
     Permission.RESOURCE_CREATE,
     Permission.RESOURCE_UPDATE,
     Permission.RESOURCE_DELETE,
+    # 巡检：查看 + 提交（原先 INSPECT_VIEW 是从 _USER_PERMISSIONS 继承来的，
+    # 现在普通用户不再有，这里必须显式列出 —— 否则管理员会把「看巡检」也丢掉）
+    Permission.INSPECT_VIEW,
     Permission.INSPECT_SUBMIT,
     Permission.CONFLICT_VIEW,
     Permission.CONFLICT_RESOLVE,
@@ -247,12 +253,23 @@ def has_permission(permissions: Iterable[str] | None, required: str | None) -> b
 
     - `required` 为空表示该接口不要求权限，直接通过。
     - 集合里含通配符 `*` 视为满足任何要求。
+    - 集合里含**模块级通配** `模块:*`（如 `inspect:*`）时，该模块下的任意动作都通过。
+
+    ⚠️ 模块级通配是 2026-10-13 补的：云库里 `sys_role.permissions` 实际存的是
+    `space:*` / `device:*` / `inspect:*` 这类**前缀通配**（见 docs/seed.sql 与
+    线上 sys_role 表），而这里原先只做**精确匹配** —— 结果是「管理员」这个角色
+    带着 `inspect:*` 却过不了 `inspect:view`，一旦给接口加上鉴权，
+    **连管理员都会被 403 拦掉**。支持前缀通配后，库里的数据才真正生效。
     """
     if not required:
         return True
     owned = permissions or ()
     owned_set = owned if isinstance(owned, (set, frozenset)) else set(owned)
-    return WILDCARD in owned_set or required in owned_set
+    if WILDCARD in owned_set or required in owned_set:
+        return True
+    # 模块级通配：`inspect:*` 覆盖 `inspect:view` / `inspect:submit`
+    module = required.split(":", 1)[0]
+    return f"{module}:*" in owned_set
 
 
 def effective_permissions(role_name: str | None, raw_permissions: Any) -> set[str]:

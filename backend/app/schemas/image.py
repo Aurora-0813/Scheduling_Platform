@@ -233,6 +233,15 @@ class SketchRecognition(BaseModel):
             "'剧院式排布，前方设讲台'。看不出来填 null。"
         ),
     )
+    spaceType: int | None = Field(
+        default=None,
+        description=(
+            "从草图布局推断的**场地类型整数**：1=会议室 2=展厅 3=多功能厅 4=户外场地。"
+            "圆桌/剧院式排布、有讲台或投影幕通常是会议室；有展台/展板是展厅；"
+            "露天广场/园区空地是户外场地。判断不了填 null，**不要瞎猜** ——"
+            "这个字段直接决定后续能检索到哪些场地。"
+        ),
+    )
     requirements: list[str] = Field(
         default_factory=list,
         description=(
@@ -272,6 +281,16 @@ class SketchRecognition(BaseModel):
             data["capacity"] = None if raw_capacity is None else int(raw_capacity)
         except (TypeError, ValueError):
             data["capacity"] = None
+
+        # spaceType 是场地检索的关键维度：**转不出 1~4 就置 None**。
+        # 宁可让用户在前端手选场地，也不能把一个瞎猜的类型带进检索 ——
+        # 猜「会议室」而实际是「展厅」，用户会看到一堆根本不对的候选。
+        raw_space_type = data.get("spaceType")
+        try:
+            space_type = None if raw_space_type is None else int(raw_space_type)
+        except (TypeError, ValueError):
+            space_type = None
+        data["spaceType"] = space_type if space_type in (1, 2, 3, 4) else None
 
         data["layout"] = _coerce_optional_str(data.get("layout"), max_len=512)
         data["requirements"] = _coerce_str_list(data.get("requirements"))
@@ -357,6 +376,12 @@ class SketchAnalyzeData(BaseModel):
     capacity: int | None = Field(None, description="预估容纳人数 [契约]")
     layout: str | None = Field(None, description="布局文字描述 [契约]")
     requirements: list[str] = Field(default_factory=list, description="草图隐含的约束关键词 [契约]")
+    #: 从布局推断的场地类型 1/2/3/4（2026-10-13 新增）。
+    #: 前端拿它直接调 `GET /resources/spaces/available?spaceType=…` 查候选场地；
+    #: 为 null 时不传该参数（退化为「不限类型」），由用户在前端手选。
+    spaceType: int | None = Field(
+        None, description="从草图布局推断的场地类型 1会议室/2展厅/3多功能厅/4户外场地；判断不出为 null [新增]"
+    )
     confidence: float = Field(0.0, ge=0.0, le=1.0, description="解读置信度 0~1 [契约]")
 
     needConfirm: bool = Field(True, description="是否需要用户确认 [新增]")

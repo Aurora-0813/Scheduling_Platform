@@ -21,13 +21,24 @@ import { listOf, totalOf } from '@/utils/normalize.js'
  * 提交巡检照片，AI 识别设备状态并自动生成维修工单
  * @param {string} filePath 图片临时路径
  * @param {number} [spaceId] 关联空间 ID
+ * @param {number} [deviceId] **明确指定的设备 ID**（扫码或下拉选中）。传了后端就精确
+ *   更新这一台，跳过「按 AI 认出的名字模糊匹配 → 多台时自动分配」那条会标错设备的路径。
+ * @param {string} [locationHint] **具体位置**（如「3楼走廊东侧」）。插座/门把手这类
+ *   不在设备台账里的固定设施，位置是它们唯一的精度来源。
  * @returns {Promise<{deviceStatus, report, repairSuggestion, ticketId, deviceWarning}>}
  */
-export function submit(filePath, spaceId) {
+export function submit(filePath, spaceId, deviceId, locationHint) {
   const formData = {}
   if (spaceId !== undefined && spaceId !== null && spaceId !== '') {
     // FormData 里的值会被转成字符串，后端用 int 接收，这里显式转一下
     formData.spaceId = String(spaceId)
+  }
+  if (deviceId !== undefined && deviceId !== null && deviceId !== '') {
+    formData.deviceId = String(deviceId)
+  }
+  // 具体位置：插座/门把手这类不在台账里的设施，位置是它们唯一的精度来源
+  if (locationHint) {
+    formData.locationHint = String(locationHint).slice(0, 128)
   }
   return upload({ path: '/inspect/submit', filePath, name: 'file', formData, silent: true })
 }

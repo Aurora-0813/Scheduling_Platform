@@ -11,7 +11,42 @@ snake_case，前端取值拿到 None 却不报错，排查成本极高。直接�
 
 from pydantic import BaseModel, ConfigDict, Field
 
-__all__ = ["ScheduleRequest", "TraceStep", "Plan", "ScheduleData"]
+from app.core.camel import CamelModel
+
+__all__ = ["ScheduleRequest", "TraceStep", "Plan", "ScheduleData", "AgentModeRequest"]
+
+
+class AgentModeRequest(CamelModel):
+    """`PUT /api/v1/agent/mode` 请求体（2026-10-13 修）。
+
+    ## 为什么需要这个模型（原来没有，于是接口是坏的）
+
+    原签名是 `async def set_mode(deepMode: bool | None = None, aiRecommend: bool | None = None)`。
+    在 FastAPI 里，**标量类型的默认参数会被当成 query 参数**，只有 Pydantic 模型
+    才会从 JSON body 取。于是：
+
+        PUT /agent/mode   body = {"deepMode": true}
+
+    `deepMode` 取到的是 `None`（query 里没有），两个 `if` 都不进，
+    接口返回 200 + `未做改动`，**开关纹丝不动**。前端发的是 body，
+    所以 Web 管理端那对按钮点了没有任何效果，而且不报错 —— 最坏的一种故障。
+
+    2026-10-13 实测（启真后端 + 真 JWT，见本轮验证记录）：
+        · body 传参 → `data` 永远停在默认值，`runtime_flags.json` 不生成
+        · query 传参 `?deepMode=true` → 立刻生效
+    修法就是这里：**收一个模型**，两个字段都可缺省 —— 只传自己关心的那一个，
+    不传的保持原样。`CamelModel` 让线上字段名保持 camelCase（`deepMode`），
+    与前端、与 `GET /agent/mode` 的返回、与小程序端全都对得上。
+    """
+
+    deepMode: bool | None = Field(
+        None,
+        description="深度模式：true 走多轮 Agent（40~80 秒，思考链完整）；不传则保持原样",
+    )
+    aiRecommend: bool | None = Field(
+        None,
+        description="AI 推荐：true 由大模型给推荐与理由（解析约 32 秒）；不传则保持原样",
+    )
 
 
 class ScheduleRequest(BaseModel):
@@ -40,6 +75,28 @@ class ScheduleRequest(BaseModel):
     imageContext: dict = Field(
         default_factory=dict,
         description="模块 2 传入的图像解析上下文",
+    )
+    # ⚠️ 2026-10-13 由 `bool = False` 改成**三态** `bool | None = None`。
+    # 改动理由是一次真实的静默失败：两端客户端都在客户端就把 fast 定成了 True
+    # （前端默认 { ...data, fast: data.fast !== false }、小程序默认 fast: true），
+    # 于是后端那个「🧠 深度思考 / ⚡ 快速决策」全局开关**从来没被读过** ——
+    # 按钮高亮会换、runtime_flags.json 也会写，但调度永远走快速模式。
+    #
+    # 现在的口径（见 app/core/flags.py::resolve_fast）：
+    #   None  → 跟随全局开关 deepMode（服务端说了算，**推荐调用方什么都不传**）
+    #   True  → 强制快速模式
+    #   False → 强制多轮 Agent
+    #
+    # 注意这里**不能**给 False 以外的默认值：给 True 就等于替所有调用方做了决定，
+    # 全局开关又会退回「摆设」；给 False 则与「快速模式是默认」的既有口径冲突。
+    # 只有 None 能让「不传 = 听服务端」这条语义成立。
+    fast: bool | None = Field(
+        None,
+        description=(
+            "是否走快速模式（全量候选 + 单次模型调用，约 5~10 秒，trace 只有 3 步）。\n"
+            "不传（推荐）则跟随后端全局开关 deepMode：开则多轮 Agent（40~80 秒，思考链完整），\n"
+            "关则快速模式。显式传 true / false 可强制指定，用于脚本化调用与联调。"
+        ),
     )
 
 

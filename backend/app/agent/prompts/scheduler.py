@@ -29,9 +29,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
-__all__ = ["SCHEDULER_PROMPT", "build_scheduler_prompt"]
+__all__ = ["SCHEDULER_PROMPT", "build_scheduler_prompt", "build_fast_prompt"]
 
 #: 场地类型对照表。与主文档 6.3 表 4 逐字一致，也和
 #: `app/agent/tools/query_spaces.py::SPACE_TYPE_LABELS` 一致。

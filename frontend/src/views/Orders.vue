@@ -17,8 +17,11 @@
       Agent 建的单只能一直挂着，或者被取消掉。
     -->
     <div class="sp-ai-bar">
-      <div class="sp-ic">📋</div>
-      <span>
+      <div class="sp-ic">◈</div>
+      <span v-if="canManage">
+        管理视角：显示<b>全部用户</b>的预约单（含「所属用户」列）。列表<b>不分页</b>，一次展示全部。
+      </span>
+      <span v-else>
         这里只显示<b>你本人</b>的预约单。列表<b>不分页</b>，一次展示全部。
       </span>
     </div>
@@ -36,11 +39,14 @@
       </button>
     </div>
 
-    <div class="sp-card">
+    <!-- 加 .orders-table-wrap 是为了让表格**在自己内部滚动**（见下方 scoped 样式），
+         这样 22 行数据不分页也能一屏看完，页面本身不出现滚动条。 -->
+    <div class="sp-card sp-table-wrap">
       <table class="sp-table">
         <thead>
           <tr>
             <th style="width: 76px">预约单</th>
+            <th v-if="canManage" style="width: 110px">所属用户</th>
             <th>场地</th>
             <th>时段</th>
             <th>设备</th>
@@ -51,7 +57,7 @@
         </thead>
         <tbody>
           <tr v-if="!pagedOrders.length">
-            <td colspan="7" class="empty-cell">
+            <td :colspan="canManage ? 8 : 7" class="empty-cell">
               {{ loading ? '加载中…' : '这个状态下还没有预约单' }}
             </td>
           </tr>
@@ -61,6 +67,7 @@
             :class="{ 'is-cancelled': order.orderStatus === 3 }"
           >
             <td><b>#{{ order.orderId }}</b></td>
+            <td v-if="canManage">{{ order.username || '用户 #' + order.userId }}</td>
             <td>{{ spaceName(order.spaceId) }}</td>
             <td class="time-cell">{{ order.startTime }}<br />{{ order.endTime }}</td>
             <td class="device-cell">{{ deviceNames(order.deviceIds) }}</td>
@@ -161,7 +168,7 @@
 
         <!-- Agent 建的单一律带 agentRequest；手建的单这里是空的 -->
         <div v-if="detail.agentRequest" class="sp-card" style="margin-bottom: 14px">
-          <div class="sp-card-head"><b>🤖 Agent 原始需求</b></div>
+          <div class="sp-card-head"><b>Agent 原始需求</b></div>
           <div class="sp-ask">
             <div class="sp-who"><span class="sp-live is-blue"></span> 用户口述 · 已规整</div>
             {{ detail.agentRequest }}
@@ -170,7 +177,7 @@
 
         <div v-if="detailTrace.length" class="sp-card" style="margin-bottom: 14px">
           <div class="sp-card-head">
-            <b>🧠 当时的思考链</b>
+            <b>当时的思考链</b>
             <span class="sp-grow"></span>
             <span class="sp-tag is-purple">{{ detailTrace.length }} 步</span>
           </div>
@@ -233,9 +240,23 @@ import { computed, onMounted, ref, watch } from 'vue'
 
 import { ElMessage } from 'element-plus'
 
-import { cancelOrder, completeOrder, confirmOrder, getMyOrders } from '@/api/orders'
+import { cancelOrder, completeOrder, confirmOrder, getAllOrders, getMyOrders } from '@/api/orders'
 import { getDevices, getSpaces } from '@/api/resources'
+import { useAuthStore } from '@/store/auth'
 import { devicesOf, ordersOf, spacesOf } from '@/utils/normalize'
+
+const authStore = useAuthStore()
+
+/**
+ * 是否是**管理视角**（2026-10-13 加）。
+ *
+ * `order:approve` = 「能否管理全部预约」：
+ *   · 系统管理员（权限 `*`）→ true
+ *   · 管理员（库里 `order:*`，前缀通配命中）→ true
+ *   · 普通用户（只有 order:add/list/cancel）→ false
+ * true 走 `/orders/all`（全库 + 显示所属用户）；false 走 `/orders/my`（只有自己的）。
+ */
+const canManage = computed(() => authStore.hasPermission('order:approve'))
 
 const loading = ref(false)
 const actingId = ref(null)
@@ -342,7 +363,9 @@ function deviceNames(deviceIds) {
 async function load() {
   loading.value = true
   try {
-    orders.value = ordersOf(await getMyOrders()).sort((a, b) =>
+    // 管理视角看全库，普通用户只看自己的（后端两侧都做了归属/权限校验）
+    const data = canManage.value ? await getAllOrders() : await getMyOrders()
+    orders.value = ordersOf(data).sort((a, b) =>
       String(b.createTime).localeCompare(String(a.createTime)),
     )
     // 页码可能因为筛选/删除而越界
@@ -436,8 +459,10 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+/* 表格的「容器内滚动」已提到全局 `.sp-table-wrap`（styles/index.css），
+   与「资源与设备」页共用同一套，避免两处各写一份、改一处漏一处。 */
 .tab-count {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--sp-t3);
   margin-left: 4px;
 }
@@ -449,7 +474,7 @@ onMounted(async () => {
 }
 
 .time-cell {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--sp-t3);
   line-height: 1.6;
   font-family: ui-monospace, Consolas, monospace;

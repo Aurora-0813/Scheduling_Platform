@@ -1,0 +1,7 @@
+{
+  "app": {
+    "bundleName": "uni.app.UNIC88D062",
+    "icon": "$media:layered_image",   // 改为 layered_image
+    "label": "$string:app_name"
+  }
+}

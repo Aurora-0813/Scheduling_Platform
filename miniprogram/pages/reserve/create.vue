@@ -98,14 +98,14 @@ async function submit() {
 
 <style scoped>
 .page { padding: 24rpx; }
-.form-item { background: #fff; border-radius: 16rpx; padding: 24rpx; margin-bottom: 20rpx; display: flex; justify-content: space-between; align-items: center; }
+.form-item { background: #fff; border-radius: var(--r-md); padding: 24rpx; margin-bottom: 20rpx; display: flex; justify-content: space-between; align-items: center; }
 .form-item.column { flex-direction: column; align-items: flex-start; }
-.label { color: #333; width: 160rpx; flex-shrink: 0; }
+.label { color: var(--t1); width: 160rpx; flex-shrink: 0; }
 .column .label { width: auto; margin-bottom: 16rpx; }
-.picker { color: #666; flex: 1; text-align: right; }
+.picker { color: var(--t2); flex: 1; text-align: right; }
 .input { flex: 1; text-align: right; }
-.devices { display: flex; flex-wrap: wrap; gap: 16rpx; }
-.device-item { font-size: 26rpx; color: #333; display: flex; align-items: center; gap: 8rpx; }
-.hint { color: #bbb; font-size: 24rpx; }
+.devices { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.device-item { font-size: 26rpx; color: var(--t1); display: flex; align-items: center; gap: var(--s1); }
+.hint { color: var(--t3); font-size: 24rpx; }
 .submit { margin-top: 40rpx; }
 </style>

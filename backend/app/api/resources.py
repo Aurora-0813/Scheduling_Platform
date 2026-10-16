@@ -20,9 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.config import settings
 from ..core.database import get_db
-from ..core.exceptions import DeviceNotFoundError, SpaceNotFoundError
+from ..core.exceptions import DeviceNotFoundError, ParamInvalidError, SpaceNotFoundError
 from ..core.response import ok
-from ..core.utils import format_clock, format_time
+from ..core.utils import format_clock, format_time, parse_time
 from ..models import DeviceResource, ReserveOrder, SpaceResource
 from ..schemas.resource import DeviceUpdate, SpaceCreate
 from ..services import order_service, space_service
@@ -140,6 +140,62 @@ async def list_spaces(db: AsyncSession = Depends(get_db)):
     return ok([_space_out(s, occupancy=occupancy.get(s.id)) for s in spaces])
 
 
+@router.get("/spaces/available")
+async def available_spaces(
+    capacity: int = Query(1, ge=1, le=10000, description="容纳人数下限（草图识别出的人数）"),
+    startTime: str = Query(..., description="开始时间 YYYY-MM-DD HH:mm:ss"),
+    endTime: str = Query(..., description="结束时间 YYYY-MM-DD HH:mm:ss"),
+    spaceType: int | None = Query(
+        None, ge=1, le=4, description="场地类型 1会议室/2展厅/3多功能厅/4户外场地；不传=不限类型"
+    ),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """**某个时段真正订得上的**场地列表（2026-10-13 新增，供草图上绘制预约用）。
+
+    为什么需要它：
+        草图上绘制预约的流程是「草图 → AI 识别人数/类型 → 用户选设备与时间 →
+        **选场地** → 建单」。中间这一步需要「这个时段哪些场地是空的」，
+        而原有的 `GET /spaces` 只给台账 + 此刻占用，回答不了「未来某时段」。
+
+    实现：**直接包一层 `space_service.query_spaces`**（Agent 的 `query_spaces` Tool
+        走的是同一个函数）。所以时段重叠排除、开放时间过滤、容量/类型过滤的口径
+        与 Agent 路径**完全一致** —— 不会出现「这个接口说空的、建单却说冲突」。
+
+    返回的 `spaces[].spaceId` 与 `GET /spaces` 同名，前端两个列表可复用同一套渲染。
+
+    鉴权：需要登录（要暴露「某个时段这个场地是空的」这种占用信息）。
+    """
+    if spaceType is None:
+        # 不限类型：逐类型各查一次再合并。
+        # 为什么不另写一条「类型可选」的 SQL：`query_spaces` 是主文档 §5.3 冻结签名的
+        # 函数，而且它的时段口径（半开区间 + OCCUPYING_STATUS）必须和建单严格同源 ——
+        # 再抄一份 SQL 就等于把同一套判重规则实现两遍，改一处漏一处。
+        merged: dict[int, dict] = {}
+        for type_code in (1, 2, 3, 4):
+            res = await space_service.query_spaces(capacity, type_code, startTime, endTime)
+            for s in res["spaces"]:
+                merged[s["id"]] = s
+        raw_spaces = sorted(merged.values(), key=lambda s: s["capacity"])
+    else:
+        res = await space_service.query_spaces(capacity, spaceType, startTime, endTime)
+        raw_spaces = res["spaces"]
+
+    spaces = [
+        {
+            "spaceId": s["id"],
+            "spaceName": s["spaceName"],
+            "spaceType": s["spaceType"],
+            "capacity": s["capacity"],
+            "location": s["location"],
+            "budget": s["budget"],
+            "openStartTime": s["openStartTime"],
+            "openEndTime": s["openEndTime"],
+        }
+        for s in raw_spaces
+    ]
+    return ok({"count": len(spaces), "spaces": spaces})
+
+
 @router.get("/spaces/{spaceId}/booked")
 async def space_bookings(
     spaceId: int,
@@ -217,6 +273,60 @@ async def create_space(
     await db.commit()
     await db.refresh(space)
     return ok(_space_out(space), "新增场地成功")
+
+
+@router.get("/devices/available")
+async def available_devices(
+    startTime: str = Query(..., description="开始时间 YYYY-MM-DD HH:mm:ss"),
+    endTime: str = Query(..., description="结束时间 YYYY-MM-DD HH:mm:ss"),
+    deviceType: str | None = Query(None, description="设备类型（如 投影仪）；不传=全部类型"),
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """某时段**每台设备还剩几台**可以借（2026-10-13 新增）。
+
+    为什么需要它：
+        草图上绘制预约时，用户选完时间要能立刻看到「我想要的投影仪这个时段还有没有」，
+        而不是等到点「生成预约单」才被 409 告知设备已约满。
+
+    区间只返回 `device_status == 1`（完好）的设备 —— 损坏 / 缺配件的本来就不该出现在
+    可选列表里；`remainingCount` 才是「这个时段还能借几台」。
+
+    口径：与建单的设备判重**严格同源**（都走 `order_service` 里同一套重叠计数），
+    所以不会出现「这里显示能借、建单却说约满」。
+    """
+    try:
+        start_dt = parse_time(startTime)
+        end_dt = parse_time(endTime)
+    except ValueError as exc:
+        # `parse_time` 抛的是面向用户的中文原因（§5.1 的时间格式约定），原样透传
+        raise ParamInvalidError(str(exc)) from None
+    if end_dt <= start_dt:
+        raise ParamInvalidError(f"结束时间({endTime})不晚于开始时间({startTime})，时段倒置。")
+
+    stmt = select(DeviceResource).where(DeviceResource.device_status == 1)
+    if deviceType:
+        stmt = stmt.where(DeviceResource.device_type == deviceType)
+    devices = (await db.execute(stmt.order_by(DeviceResource.id))).scalars().all()
+
+    stats = await order_service.device_availability_for_window(
+        db, device_ids=[d.id for d in devices], start=start_dt, end=end_dt
+    )
+
+    items = []
+    for d in devices:
+        stat = stats.get(d.id, {})
+        items.append(
+            {
+                "deviceId": d.id,
+                "deviceName": d.device_name,
+                "deviceType": d.device_type,
+                "availableCount": stat.get("availableCount", 0),
+                "usedCount": stat.get("usedCount", 0),
+                "remainingCount": stat.get("remainingCount", 0),
+            }
+        )
+    return ok({"count": len(items), "devices": items})
 
 
 @router.get("/devices")

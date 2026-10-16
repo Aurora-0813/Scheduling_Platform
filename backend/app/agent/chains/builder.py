@@ -31,6 +31,7 @@ from app.agent.chains.trace import build_trace, collect_stamped_messages, parse_
 from app.agent.context import agent_run_context
 from app.agent.prompts.scheduler import build_scheduler_prompt
 from app.agent.tools import AGENT_TOOLS
+from app.core.llm import thinking_body
 from app.core.config import settings
 from app.schemas.agent import Plan, ScheduleData
 
@@ -96,6 +97,10 @@ def build_model() -> Any:
         temperature=settings.LLM_TEMPERATURE,
         timeout=settings.AGENT_TIMEOUT,
         max_retries=settings.LLM_MAX_RETRIES,
+        # 思考模式开关（默认 None → 不发送 → 行为不变）。
+        # 加在**构造**处而不是 create_agent 那层：模型随后会被 bind_tools 包装，
+        # extra_body 在构造时设置才能保证透传到每一次工具往返调用。
+        extra_body=thinking_body(settings.LLM_ENABLE_THINKING),
     )
 
 

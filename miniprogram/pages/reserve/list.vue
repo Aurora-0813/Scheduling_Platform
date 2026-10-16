@@ -99,19 +99,19 @@ onShow(load)
 
 <style scoped>
 .page { padding: 24rpx; padding-bottom: 160rpx; }
-.filters { display: flex; gap: 16rpx; margin-bottom: 24rpx; flex-wrap: wrap; }
-.filter-item { padding: 8rpx 24rpx; background: #fff; border-radius: 32rpx; font-size: 24rpx; color: #666; }
-.filter-item.active { background: #2b85e4; color: #fff; }
-.empty { text-align: center; color: #999; margin-top: 160rpx; }
-.card { background: #fff; border-radius: 16rpx; padding: 24rpx; margin-bottom: 20rpx; }
+.filters { display: flex; gap: var(--s2); margin-bottom: 24rpx; flex-wrap: wrap; }
+.filter-item { padding: 8rpx 24rpx; background: #fff; border-radius: var(--r-lg); font-size: 24rpx; color: var(--t2); }
+.filter-item.active { background: var(--primary); color: #fff; }
+.empty { text-align: center; color: var(--t3); margin-top: 160rpx; }
+.card { background: #fff; border-radius: var(--r-md); padding: 24rpx; margin-bottom: 20rpx; }
 .row { display: flex; justify-content: space-between; align-items: center; }
 .title { font-size: 30rpx; font-weight: 600; }
-.meta { color: #666; font-size: 26rpx; margin-top: 12rpx; }
-.meta.ai { color: #2b85e4; }
-.actions { display: flex; gap: 16rpx; margin-top: 20rpx; justify-content: flex-end; }
+.meta { color: var(--t2); font-size: 26rpx; margin-top: 12rpx; }
+.meta.ai { color: var(--primary); }
+.actions { display: flex; gap: var(--s2); margin-top: 20rpx; justify-content: flex-end; }
 .fab {
   position: fixed; right: 40rpx; bottom: 140rpx; width: 100rpx; height: 100rpx;
-  border-radius: 50%; background: #2b85e4; color: #fff; font-size: 56rpx;
+  border-radius: 50%; background: var(--primary); color: #fff; font-size: 56rpx;
   display: flex; align-items: center; justify-content: center; box-shadow: 0 6rpx 16rpx rgba(43,133,228,0.4);
 }
 </style>

@@ -1,0 +1,15 @@
+{
+  "network-security-config": {
+    "base-config": {
+      "cleartextTrafficPermitted": true
+    },
+    "domain-config": [
+      {
+        "domains": [
+          { "name": "192.168.43.10" }
+        ],
+        "cleartextTrafficPermitted": true
+      }
+    ]
+  }
+}

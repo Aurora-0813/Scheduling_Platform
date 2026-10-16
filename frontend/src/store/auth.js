@@ -12,10 +12,15 @@ export const useAuthStore = defineStore('auth', {
   getters: {
     isLogin: (state) => Boolean(state.accessToken),
     permissions: (state) => state.userInfo?.permissions || [],
-    // ["*"] 或具体权限码包含该权限
+    // ["*"] 或具体权限码包含该权限；同时支持**模块级通配** `模块:*`
     hasPermission: (state) => (permission) => {
       const perms = state.userInfo?.permissions || []
-      return perms.includes('*') || perms.includes(permission)
+      if (perms.includes('*') || perms.includes(permission)) return true
+      // 云库里「管理员」存的是 `inspect:*` 这种前缀写法（见 sys_role.permissions），
+      // 只做精确匹配的话，他会连自己模块的菜单都看不见 ——
+      // 判定口径必须与后端 `core/permissions.py::has_permission` 完全一致。
+      const module = String(permission || '').split(':')[0]
+      return Boolean(module) && perms.includes(`${module}:*`)
     },
   },
   actions: {

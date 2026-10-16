@@ -52,12 +52,67 @@
             <text class="ma">›</text>
           </view>
         </picker>
+
+        <!--
+          巡检设备（2026-10-13 新增）
+
+          为什么要由人来选：照片里两台投影仪长得一模一样，视觉模型只报得出「投影仪」
+          这个品类；后端拿它去匹配会命中 4 台，只能自动分配（挑 id 最小的）——
+          于是坏的是 03、系统却把 01 标成损坏。谁在拍，谁最清楚拍的是哪一台。
+        -->
+        <picker
+          :range="deviceList"
+          range-key="deviceName"
+          @change="onDeviceChange"
+        >
+          <view class="mbrow pick">
+            <text class="k">巡检设备</text>
+            <text class="v">{{ deviceLabel }}</text>
+            <text class="ma">›</text>
+          </view>
+        </picker>
+      </view>
+
+      <!--
+        扫设备条码（2026-10-13 新增）
+
+        条码内容约定 `<场地ID>-<设备ID>`（如 `1-3`），扫一次把上面两项都填好。
+        用 uni.scanCode（**原生扫码**）而不是「拍照让 AI 读条码」：
+        1D 条码是机器码，任何视觉大模型都读不了；原生扫码才是 100% 准确的。
+      -->
+      <view class="mcard">
+        <view class="mbrow pick" hover-class="btn-on" :hover-stay-time="60" @tap="scanTag">
+          <text class="k">📷 扫设备条码</text>
+          <text class="v">{{ scanHint }}</text>
+          <text class="ma">›</text>
+        </view>
+      </view>
+
+      <!--
+        具体位置（2026-10-13 新增）
+
+        电路、插座、门把手这类**不在设备台账里**的固定设施，只有场地一级的精度不够用 ——
+        「这个场地有个插座坏了」定位不到是哪一个。位置是它们唯一的精度来源。
+        可选：AI 也会从画面里推断一个，用户填的优先（他就在现场）。
+      -->
+      <view class="mcard">
+        <view class="mbrow">
+          <text class="k">具体位置</text>
+          <input
+            v-model="locationHint"
+            class="loc"
+            type="text"
+            :maxlength="40"
+            placeholder="可选，如 3楼走廊东侧"
+            placeholder-class="loc-ph"
+          />
+        </view>
       </view>
 
       <!-- 识别结果 -->
       <view v-if="result" class="mcard">
         <view class="mtitle">
-          <text>🤖 AI 识别结果</text>
+          <text>识别结果</text>
           <text v-if="confidenceText" class="more">{{ confidenceText }}</text>
         </view>
 
@@ -132,7 +187,7 @@
 import { ref, computed } from 'vue'
 import { onLoad, onUnload } from '@dcloudio/uni-app'
 import { submit } from '@/api/inspect.js'
-import { spaces as fetchSpaces } from '@/api/resources.js'
+import { spaces as fetchSpaces, devices as fetchDevices } from '@/api/resources.js'
 import { statusLabel, statusTag } from '@/utils/dict.js'
 import { first, spaceName } from '@/utils/normalize.js'
 import { IMAGE_LIMIT } from '@/config/index.js'
@@ -144,10 +199,20 @@ const result = ref(null)
 const analyzing = ref(false)
 const spaceList = ref([])
 const spaceIndex = ref(-1)
+const deviceList = ref([])
+const deviceIndex = ref(-1)
+const scanHint = ref('扫码自动填入上方两项')
+/** 具体位置（可选）：插座/门把手这类非台账设施靠它定位到「哪一个」 */
+const locationHint = ref('')
 
 const spaceLabel = computed(() => {
   if (spaceIndex.value < 0 || !spaceList.value.length) return '未选择'
   return spaceName(spaceList.value[spaceIndex.value]) || '未选择'
+})
+
+const deviceLabel = computed(() => {
+  if (deviceIndex.value < 0 || !deviceList.value.length) return '未选择（可选）'
+  return deviceList.value[deviceIndex.value].deviceName || '未选择（可选）'
 })
 
 /** 后端契约里没有置信度字段，Mock 额外给了；有才显示 */
@@ -169,6 +234,7 @@ const deviceName = computed(() => {
 
 onLoad(() => {
   loadSpaces()
+  loadDevices()
 })
 
 // 页面销毁时把 loading 计数归零：万一有哪条路径没配平，残留的计数会让之后
@@ -198,6 +264,82 @@ function onSpaceChange(e) {
   const index = Number(e && e.detail && e.detail.value)
   if (Number.isInteger(index) && index >= 0 && index < spaceList.value.length) {
     spaceIndex.value = index
+  }
+}
+
+/** 取设备的主键：后端 /resources/devices 给的是 deviceId，容错兼容 id */
+function deviceIdAt(index) {
+  const d = index >= 0 ? deviceList.value[index] : null
+  if (!d) return undefined
+  return first(d.deviceId, d.id)
+}
+
+async function loadDevices() {
+  try {
+    const res = await fetchDevices({ page: 1, pageSize: 100 })
+    // 只列「完好且还有可借台数」的：损坏的、已在维修中的不该再被巡检选中
+    deviceList.value = res.list.filter(
+      (d) => d.deviceStatus === 1 && (d.availableCount || 0) > 0,
+    )
+  } catch (e) {
+    deviceList.value = []
+  }
+}
+
+function onDeviceChange(e) {
+  const index = Number(e && e.detail && e.detail.value)
+  if (Number.isInteger(index) && index >= 0 && index < deviceList.value.length) {
+    deviceIndex.value = index
+    scanHint.value = '扫码自动填入上方两项'
+  }
+}
+
+/**
+ * 扫设备条码 → 自动填入「巡检区域 + 巡检设备」。
+ *
+ * 条码内容约定 `<场地ID>-<设备ID>`（如 `1-3`）。
+ * 用原生 uni.scanCode：1D 条码是机器码，视觉大模型读不了，原生扫码才准。
+ */
+function scanTag() {
+  if (typeof uni.scanCode !== 'function') {
+    toast('当前环境不支持扫码，请手动选择')
+    return
+  }
+  uni.scanCode({
+    onlyFromCamera: false,
+    scanType: ['barCode', 'qrCode'],
+    success: (res) => applyScan(String((res && res.result) || '').trim()),
+    fail: (err) => {
+      const msg = String((err && err.errMsg) || '')
+      if (/cancel/i.test(msg)) return
+      toast('扫码失败，请手动选择')
+    },
+  })
+}
+
+function applyScan(raw) {
+  const parts = String(raw || '').split('-')
+  const sid = Number(parts[0])
+  const did = Number(parts[1])
+  if (parts.length < 2 || !Number.isInteger(sid) || !Number.isInteger(did)) {
+    toast(`条码格式不对：${raw}（应为 场地ID-设备ID）`)
+    return
+  }
+  const si = spaceList.value.findIndex((s) => Number(first(s.spaceId, s.id)) === sid)
+  if (si < 0) {
+    toast(`条码里的场地(ID=${sid})不在列表里`)
+    return
+  }
+  spaceIndex.value = si
+
+  const di = deviceList.value.findIndex((d) => Number(first(d.deviceId, d.id)) === did)
+  if (di >= 0) {
+    deviceIndex.value = di
+    scanHint.value = `已识别：${deviceList.value[di].deviceName}`
+    toast('已自动填入巡检区域与设备')
+  } else {
+    scanHint.value = `已识别场地：${spaceLabel.value}（设备请手动选）`
+    toast('该设备不在可巡检列表里（可能已损坏或在维修中）')
   }
 }
 
@@ -321,7 +463,13 @@ async function analyze(path) {
       spaceIndex.value >= 0 && spaceList.value[spaceIndex.value]
         ? first(spaceList.value[spaceIndex.value].spaceId, spaceList.value[spaceIndex.value].id)
         : undefined
-    result.value = await submit(path, spaceId)
+    // deviceId 传了 → 后端精确更新这一台；没选（undefined）→ 保持原来的 AI 模糊匹配
+    result.value = await submit(
+      path,
+      spaceId,
+      deviceIdAt(deviceIndex.value),
+      locationHint.value.trim(),
+    )
   } catch (e) {
     toast(e.message || '识别失败，请换一张照片试试')
     result.value = null
@@ -353,9 +501,21 @@ function goTickets() {
 
 .ma {
   font-size: 34rpx;
-  color: #c6ced9;
+  color: var(--bd);
   flex: none;
   margin-left: 12rpx;
+}
+
+.loc {
+  flex: 1;
+  text-align: right;
+  font-size: 26rpx;
+  color: var(--t1);
+}
+
+.loc-ph {
+  color: var(--t3);
+  font-size: 24rpx;
 }
 
 .note {

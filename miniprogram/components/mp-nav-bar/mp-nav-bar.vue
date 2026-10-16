@@ -145,14 +145,14 @@ function onRight() {
   display: flex;
   align-items: center;
   padding-left: 26rpx;
-  border-bottom: 1px solid var(--bd-l, #ebeef5);
+  border-bottom: 1px solid var(--bd-l, var(--bd-l));
   position: relative;
 }
 
 .nb-back {
   font-size: 44rpx;
   line-height: 1;
-  color: #7a8ba0;
+  color: var(--t3);
   padding-right: 12rpx;
   margin-top: -6rpx;
 }
@@ -168,7 +168,7 @@ function onRight() {
   transform: translateX(-50%);
   font-size: 32rpx;
   font-weight: 600;
-  color: var(--t1, #303133);
+  color: var(--t1, var(--t1));
   max-width: 50%;
   overflow: hidden;
   white-space: nowrap;
@@ -179,7 +179,7 @@ function onRight() {
 .nb-big {
   font-size: 34rpx;
   font-weight: 600;
-  color: var(--t1, #303133);
+  color: var(--t1, var(--t1));
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -191,7 +191,7 @@ function onRight() {
 .nb-right {
   margin-left: auto;
   font-size: 24rpx;
-  color: var(--t3, #909399);
+  color: var(--t3, var(--t3));
   flex: none;
 }
 </style>

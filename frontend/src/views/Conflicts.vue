@@ -20,7 +20,7 @@
     <div class="cf-cols">
       <div class="sp-card">
         <div class="sp-card-head">
-          <b>🚨 AI 软冲突雷达</b>
+          <b>软冲突雷达</b>
         </div>
 
         <!-- 雷达动效只在扫出冲突时出现：没有数据时不做无意义的动效 -->
@@ -212,7 +212,7 @@ onMounted(loadConflicts)
 /* 左右两栏：原型这里用内联 flex，收进 scoped；窄屏改纵向堆叠 */
 .cf-cols {
   display: flex;
-  gap: 14px;
+  gap: var(--sp-s3);
   align-items: flex-start;
 }
 
@@ -268,7 +268,7 @@ onMounted(loadConflicts)
 
 .cf-actions {
   display: flex;
-  gap: 10px;
+  gap: var(--sp-s2);
 }
 
 .notify-title {

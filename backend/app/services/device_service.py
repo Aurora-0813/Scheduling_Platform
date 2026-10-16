@@ -9,7 +9,7 @@ from sqlalchemy import select
 from app.core.database import AsyncSessionLocal
 from app.models.resource import DeviceResource
 
-__all__ = ["query_devices"]
+__all__ = ["query_devices", "list_available_devices"]
 
 
 def _to_dict(row: DeviceResource) -> dict:
@@ -50,6 +50,28 @@ async def query_devices(device_type: str) -> dict:
     stmt = (
         select(DeviceResource)
         .where(DeviceResource.device_type == device_type)
+        .order_by(DeviceResource.id)
+    )
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(stmt)).scalars().all()
+    return {"count": len(rows), "devices": [_to_dict(r) for r in rows]}
+
+
+async def list_available_devices() -> dict:
+    """列出**全部可借用设备**（`device_status=1` 且 `available_count>0`）。
+
+    用途：单次调用快速模式需要全量候选。
+
+    ⚠️ 过滤口径与 `app/agent/tools/query_devices.py` 的 Tool 层**完全一致**：
+    只有「完好且还有库存」的设备才进候选。坏设备/零库存不在候选里，
+    模型**没有机会**把它们排进方案 —— 这是确定性的兜底，不依赖 Prompt 提醒。
+    """
+    stmt = (
+        select(DeviceResource)
+        .where(
+            DeviceResource.device_status == 1,
+            DeviceResource.available_count > 0,
+        )
         .order_by(DeviceResource.id)
     )
     async with AsyncSessionLocal() as session:

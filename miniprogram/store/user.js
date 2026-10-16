@@ -24,6 +24,27 @@ export function roleText() {
   return authApi.roleText(userStore.role)
 }
 
+/** 是否系统管理员（admin 账户）。用于「只有 admin 才显示巡检」这类界面控制。 */
+export function isAdmin() {
+  return userStore.role === '系统管理员'
+}
+
+/**
+ * 是否有**巡检**权限（2026-10-13 口径变更）。
+ *
+ * 业务口径：
+ *   · **管理员（资源管理员）= 普通用户 + AI 巡检** —— 对应目标场景里现场巡检的「工作人员」
+ *   · **系统管理员** = 全部权限
+ *   · **普通用户** = 没有巡检权限
+ *
+ * ⚠️ 必须与后端 `Permission.INSPECT_VIEW / INSPECT_SUBMIT` 的口径一致：
+ * 后端已给 4 个巡检接口挂上权限校验（原先只校验「登录」）。
+ * 前端多显示一个入口 = 点进去直接吃 403，比不显示更糟。
+ */
+export function canInspect() {
+  return userStore.role === '系统管理员' || userStore.role === '管理员'
+}
+
 /** 展示名：优先昵称，退回用户名，再退回占位 */
 export function displayName() {
   if (!userStore.info) return '访客'
@@ -85,4 +106,15 @@ export function requireLogin() {
   return false
 }
 
-export default { userStore, restoreSession, fetchInfo, doLogin, doLogout, requireLogin, roleText, displayName }
+export default {
+  userStore,
+  restoreSession,
+  fetchInfo,
+  doLogin,
+  doLogout,
+  requireLogin,
+  roleText,
+  displayName,
+  isAdmin,
+  canInspect,
+}

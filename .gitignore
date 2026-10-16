@@ -156,3 +156,5 @@ miniprogram/project.private.config.json
 # ============================================================================
 backups/
 
+Report_Materials/*.mp4
+Report_Materials/*.pptx

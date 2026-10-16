@@ -110,6 +110,7 @@ __all__ = [
     "update_agent_trace",
     "peak_device_occupancy",
     "device_loan_windows",
+    "device_availability_for_window",
     "CONFLICT_TIME",
     "CONFLICT_DEVICE_MISSING",
     "CONFLICT_DEVICE_UNAVAILABLE",
@@ -510,6 +511,71 @@ async def _device_conflicts(
                 }
             )
     return conflicts
+
+
+async def device_availability_for_window(
+    db,
+    *,
+    device_ids: list[int],
+    start: Any,
+    end: Any,
+) -> dict[int, dict[str, int]]:
+    """
+    某时段每台设备的**剩余可借数**（2026-10-13 新增，**只读，不写任何列**）。
+
+    口径与 `_device_conflicts` **刻意同源**：
+
+        某设备在该时段的剩余量 = available_count − 该时段**重叠单数**
+
+    ⚠️ 为什么必须逐字沿用「重叠单数」，不能自己换一种算法：
+        · 不用「峰值并发数」—— `_device_conflicts` 判冲突用的就是重叠单数。
+          两处各算各的，就会出现「可用性接口说还能借、一点建单却报设备已约满」，
+          而用户完全无法理解这两句话为什么矛盾。
+        · 不用「此刻在用的数量」—— 那回答不了「我选的这个时段还剩几台」。
+        · `peak_device_occupancy` 是**另一套口径**（窗口是「未来 N 天」的峰值），
+          服务于「资源与设备」列表页的实时剩余，**不要混用**。
+
+    占用口径同样取 `ACTIVE_ORDER_STATUSES`（1 待确认 / 2 已确认）：
+    取消 / 完成离开该集合后名额自动回来，不需要任何回补代码。
+
+    返回：`{device_id: {"availableCount": 上限, "usedCount": 该时段已占, "remainingCount": 剩余}}`
+    （不在 `wanted` 里的设备不会出现在结果里；查不到的行按可用上限 0 处理 = 保守拒绝）
+    """
+    wanted = set(device_ids)
+    if not wanted:
+        return {}
+
+    caps = {
+        d.id: (d.available_count or 0)
+        for d in (
+            await db.execute(select(DeviceResource).where(DeviceResource.id.in_(wanted)))
+        ).scalars()
+    }
+
+    rows = (
+        await db.execute(
+            select(ReserveOrder.device_ids).where(
+                ReserveOrder.order_status.in_(ACTIVE_ORDER_STATUSES),
+                ReserveOrder.end_time > start,
+                ReserveOrder.start_time < end,
+            )
+        )
+    ).all()
+
+    used: Counter[int] = Counter()
+    for (raw_device_ids,) in rows:
+        for did in _hit_device_ids(raw_device_ids, wanted):
+            # 一单里同一台设备只算一次（`_hit_device_ids` 内部去重）
+            used[did] += 1
+
+    return {
+        did: {
+            "availableCount": caps.get(did, 0),
+            "usedCount": used[did],
+            "remainingCount": max(0, caps.get(did, 0) - used[did]),
+        }
+        for did in wanted
+    }
 
 
 async def _check_devices(db, device_ids: list[int], locked: list, start, end) -> None:

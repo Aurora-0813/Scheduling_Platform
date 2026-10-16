@@ -1,26 +1,75 @@
 {
-  "name": "AI 智能空间调度",
-  "appid": "",
-  "description": "AI 全感知·智能空间与设备综合调度平台 — 微信小程序端",
-  "versionName": "0.1.0",
-  "versionCode": "100",
-  "transformPx": false,
-  "vueVersion": "3",
-  "uniStatistics": {
-    "enable": false
-  },
-  "mp-weixin": {
-    "_comment_appid": "真实 AppID。原来这里是空的，而 HBuilderX 重新编译时会用 manifest 的值覆盖 unpackage/dist/dev/mp-weixin/project.config.json —— 一旦被覆盖成空串，开发者工具就退回「无 AppID 体验模式」，真机预览、隐私接口等能力都会受限。与 miniprogram/project.config.json 保持一致。",
-    "appid": "wxbe3bfbb2c6c13c97",
-    "setting": {
-      "urlCheck": false,
-      "es6": true,
-      "postcss": true,
-      "minified": true
+    "name" : "AI 智能空间调度",
+    "appid" : "__UNI__C88D062",
+    "description" : "AI 全感知·智能空间与设备综合调度平台 — 微信小程序端",
+    "versionName" : "0.1.0",
+    "versionCode" : "100",
+    "transformPx" : false,
+    "vueVersion" : "3",
+    "uniStatistics" : {
+        "enable" : false
     },
-    "usingComponents": true
-  },
-  "h5": {
-    "title": "AI 智能空间调度"
-  }
+    "mp-weixin" : {
+        "appid" : "wxbe3bfbb2c6c13c97",
+        "setting" : {
+            "urlCheck" : false,
+            "es6" : true,
+            "postcss" : true,
+            "minified" : true
+        },
+        "usingComponents" : true
+    },
+    "app-plus" : {
+        "usingComponents" : true,
+        "nvueStyleCompiler" : "uni-app",
+        "compilerVersion" : 3,
+        "splashscreen" : {
+            "alwaysShowBeforeRender" : true,
+            "waiting" : true,
+            "autoclose" : true,
+            "delay" : 0
+        },
+        "modules" : {
+            "Camera" : {},
+            "Record" : {}
+        },
+        "distribute" : {
+            "android" : {
+                "permissions" : [
+                    "<uses-permission android:name=\"android.permission.INTERNET\"/>",
+                    "<uses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\"/>",
+                    "<uses-permission android:name=\"android.permission.CAMERA\"/>",
+                    "<uses-permission android:name=\"android.permission.RECORD_AUDIO\"/>",
+                    "<uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\"/>",
+                    "<uses-permission android:name=\"android.permission.WRITE_EXTERNAL_STORAGE\"/>"
+                ],
+                "minSdkVersion" : 21,
+                "targetSdkVersion" : 27,
+                "abiFilters" : [ "armeabi-v7a", "arm64-v8a" ]
+            },
+            "ios" : {
+                "dSYMs" : false
+            },
+            "sdkConfigs" : {}
+        }
+    },
+    "h5" : {
+        "title" : "AI 智能空间调度"
+    },
+    "app-harmony" : {
+        "distribute" : {
+            "bundleName" : "uni.app.UNIC88D062",
+            "signingConfigs" : {
+                "default" : {
+                    "certpath" : "c:\\Users\\admin\\AppData\\Roaming\\HBuilder X\\extensions\\launcher\\agc-certs\\1791808215682.cer",
+                    "keyAlias" : "debugKey",
+                    "keyPassword" : "0000001B83ACAC382C7E18878DAE807279B0B6433AD813EE7D0FEA3C6067801BA89B984E0C22DF15D5D8E5",
+                    "profile" : "c:\\Users\\admin\\AppData\\Roaming\\HBuilder X\\extensions\\launcher\\agc-certs\\1791808215682.p7b",
+                    "signAlg" : "SHA256withECDSA",
+                    "storeFile" : "c:\\Users\\admin\\AppData\\Roaming\\HBuilder X\\extensions\\launcher\\agc-certs\\1791808215682.p12",
+                    "storePassword" : "0000001B83ACAC382C7E18878DAE807279B0B6433AD813EE7D0FEA3C6067801BA89B984E0C22DF15D5D8E5"
+                }
+            }
+        }
+    }
 }

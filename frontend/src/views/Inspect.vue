@@ -40,7 +40,7 @@
                  这里预览的是用户本地上传的原始文件（真实图片），没有文件才退回相机空态。 -->
             <img v-if="previewUrl" :src="previewUrl" alt="巡检照片" />
             <div v-else class="sp-cam">
-              <span>📷</span>
+              <span>◈</span>
               点击此处 · 提交巡检照片
             </div>
             <!-- 识别框位置由本页样式居中，**只是示意**：接口不返回真实检测坐标，
@@ -55,7 +55,7 @@
         </button>
 
         <div class="sp-card">
-          <div class="sp-card-head"><b>🤖 多模态识别结论</b></div>
+          <div class="sp-card-head"><b>识别结论</b></div>
           <template v-if="resultRows.length">
             <div v-for="row in resultRows" :key="row.k" class="sp-mbrow">
               <span class="sp-k">{{ row.k }}</span>
@@ -73,7 +73,7 @@
       <div class="col-right">
         <div class="sp-card">
           <div class="sp-card-head">
-            <b>📋 AI 巡检摘要</b>
+            <b>巡检摘要</b>
             <span class="sp-grow"></span>
             <!-- 巡检编号 / 巡检人接口不返回，只展示能对上的那张工单的编号与创建时间 -->
             <span v-if="resultTicket" class="sp-muted">
@@ -91,7 +91,7 @@
 
         <div class="sp-card">
           <div class="sp-card-head">
-            <b>🧰 维修工单列表</b>
+            <b>维修工单列表</b>
             <!-- 计数按真实工单状态统计；为 0 的整块不显示，原型里「2 条处理中」是设计稿占位 -->
             <span v-if="waitingCount" class="sp-tag is-blue">{{ waitingCount }} 条待处理</span>
             <span v-if="processingCount" class="sp-tag is-orange">{{ processingCount }} 条处理中</span>
@@ -198,6 +198,10 @@
               (ticketDetail.row.deviceId ? `设备ID ${ticketDetail.row.deviceId}` : '未关联设备')
             }}
           </el-descriptions-item>
+          <el-descriptions-item label="具体位置">
+            <!-- 电路/插座/门把手这类不在设备台账里的固定设施，靠它定位到「哪一个」 -->
+            {{ ticketDetail.row.locationHint || '—' }}
+          </el-descriptions-item>
           <el-descriptions-item label="AI 判定">
             <span
               v-if="ticketDetail.row.deviceStatus"
@@ -217,6 +221,17 @@
           <h4>AI 巡检结论</h4>
           <p v-if="ticketDetail.row.report" class="td-text">{{ ticketDetail.row.report }}</p>
           <p v-else class="sp-muted">该工单没有关联的巡检结论。</p>
+          <!--
+            原始巡检照片（2026-10-13 新增）：来自关联巡检记录的 image_url。
+            工单表不存这一列，是后端靠 inspect_id JOIN 回巡检记录透出来的。
+            照片在巡检提交时就已落盘，这里只是把它显示出来，方便管理员核对。
+          -->
+          <img
+            v-if="ticketDetail.row.inspectImageUrl"
+            class="td-photo"
+            :src="ticketDetail.row.inspectImageUrl"
+            alt="巡检照片"
+          />
         </div>
 
         <!--
@@ -258,6 +273,29 @@
               :value="space.spaceId"
             />
           </el-select>
+        </el-form-item>
+        <el-form-item label="巡检设备">
+          <el-select
+            v-model="inspectDialog.deviceId"
+            placeholder="可不选（不选则按 AI 识别结果匹配）"
+            clearable
+            filterable
+            style="width: 100%"
+          >
+            <el-option
+              v-for="d in devices"
+              :key="d.deviceId"
+              :label="d.deviceName"
+              :value="d.deviceId"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="具体位置">
+          <el-input
+            v-model="inspectDialog.locationHint"
+            placeholder="可选，如 3楼走廊东侧"
+            maxlength="40"
+          />
         </el-form-item>
         <el-form-item label="巡检照片">
           <el-upload
@@ -358,7 +396,7 @@
           与列表里的判定标签（judgeTagClass）保持一致，不另立一套颜色。
         -->
         <div class="sp-witem verify-banner" :class="verifyResult.passed ? 'is-green' : 'is-red'">
-          <span class="verify-ic">{{ verifyResult.passed ? '✅' : '⚠️' }}</span>
+          <span class="verify-ic">{{ verifyResult.passed ? '通过' : '待确认' }}</span>
           <div>
             <b>{{ verifyResult.passed ? '核验通过，工单已完成' : '核验未通过，工单状态未变更' }}</b>
             <p>{{ verifyResult.message }}</p>
@@ -420,7 +458,7 @@ import { ElMessage } from 'element-plus'
 // （`PUT /tickets/{id}/status`），供「到场发现是误报、直接标记完成」这类
 // 人工判断使用，只是本页不再调它 —— 所以这里去掉 import 而不是删掉那个函数。
 import { getTickets, handleTicket as submitTicketHandle, submitInspect } from '@/api/inspect'
-import { getSpaces } from '@/api/resources'
+import { getDevices, getSpaces } from '@/api/resources'
 import { spacesOf } from '@/utils/normalize'
 
 const loading = ref(false)
@@ -429,9 +467,16 @@ const keyword = ref()
 
 const tickets = ref([])
 const spaces = ref([])
+// 巡检设备下拉的候选：只列「完好且还有可借台数」的（损坏/维修中的不该再被选中）
+const devices = ref([])
 const uploadFile = ref(null)
 
-const inspectDialog = reactive({ visible: false, spaceId: null })
+// deviceId / locationHint 是 2026-10-13 新增的。
+// deviceId：照片里两台投影仪长得一样，模型只报得出「投影仪」这个品类，
+//   后端拿它匹配会命中 4 台、只能自动分配（挑 id 最小的）→ 坏的是 03 却把 01 标损坏。
+//   由人来选/扫码才准。不选也能提交（退回原来的 AI 模糊匹配）。
+// locationHint：插座/门把手这类不在台账里的固定设施，位置是唯一的精度来源。
+const inspectDialog = reactive({ visible: false, spaceId: null, deviceId: null, locationHint: '' })
 const resultDialog = reactive({ visible: false })
 const aiResult = reactive({})
 
@@ -630,6 +675,9 @@ function onFileRemove() {
 function openInspectDialog() {
   inspectUploadRef.value?.clearFiles()
   uploadFile.value = null
+  // 设备 / 位置也要清：上一次选的设备留着，下一次提交会**静默地报错那一台**
+  inspectDialog.deviceId = null
+  inspectDialog.locationHint = ''
   inspectDialog.visible = true
 }
 
@@ -644,7 +692,12 @@ async function submitInspection() {
   }
   submitting.value = true
   try {
-    const data = await submitInspect(uploadFile.value, inspectDialog.spaceId)
+    const data = await submitInspect(
+      uploadFile.value,
+      inspectDialog.spaceId,
+      inspectDialog.deviceId,
+      inspectDialog.locationHint,
+    )
     Object.assign(aiResult, data)
     inspectDialog.visible = false
     resultDialog.visible = true
@@ -757,11 +810,21 @@ async function loadTickets() {
 onMounted(async () => {
   loading.value = true
   try {
-    const [spacesData] = await Promise.all([getSpaces(), loadTickets()])
+    const [spacesData, devicesData] = await Promise.all([
+      getSpaces(),
+      getDevices(),
+      loadTickets(),
+    ])
     // 真实接口 /resources/spaces 返回的是**裸数组**（不是 {list:[…]}），
     // 且字段是 spaceId/spaceName —— 详见 utils/normalize.js 顶部的对照表。
     // 原先写 `spacesData.list || []` 会拿到 undefined，**不报错、只是下拉框空**。
     spaces.value = spacesOf(spacesData)
+    // /resources/devices 的形状与 /resources/spaces 一样是**裸数组**，这里两种都兼容。
+    // 只留「完好 + 有可借台数」的：损坏的、已在维修中的不该再被巡检选中。
+    const rawDevices = Array.isArray(devicesData) ? devicesData : (devicesData || {}).list || []
+    devices.value = rawDevices.filter(
+      (d) => d.deviceStatus === 1 && (d.availableCount || 0) > 0,
+    )
   } finally {
     loading.value = false
   }
@@ -779,7 +842,7 @@ onMounted(async () => {
 .inspect-grid {
   display: grid;
   grid-template-columns: 392px minmax(0, 1fr);
-  gap: 14px;
+  gap: var(--sp-s3);
   align-items: start;
 }
 
@@ -787,7 +850,7 @@ onMounted(async () => {
 .col-right {
   display: flex;
   flex-direction: column;
-  gap: 13px;
+  gap: var(--sp-s3);
   min-width: 0;
 }
 
@@ -826,11 +889,12 @@ onMounted(async () => {
 .photo-trigger:hover .sp-imgbox,
 .photo-trigger:focus-visible .sp-imgbox {
   border-color: var(--sp-accent);
-  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.16);
+  box-shadow: var(--sp-focus);
 }
 
 .photo-trigger:focus-visible {
   outline: none;
+  border-radius: var(--sp-r-md);
 }
 
 .photo-trigger:hover .sp-cam span,
@@ -839,7 +903,7 @@ onMounted(async () => {
 }
 
 .photo-trigger:active .sp-imgbox {
-  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.26);
+  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.34);
 }
 
 .photo-box img {
@@ -877,7 +941,7 @@ onMounted(async () => {
 .cell-sub {
   margin-top: 3px;
   max-width: 300px;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--sp-t3);
   white-space: nowrap;
   overflow: hidden;
@@ -914,7 +978,7 @@ onMounted(async () => {
   margin-top: 8px;
   max-width: 100%;
   max-height: 260px;
-  border-radius: 6px;
+  border-radius: var(--sp-r-sm);
   border: 1px solid var(--sp-border-l);
 }
 
@@ -955,7 +1019,7 @@ onMounted(async () => {
 .verify-banner {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: var(--sp-s2);
 }
 
 .verify-ic {

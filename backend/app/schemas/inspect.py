@@ -57,11 +57,24 @@ class InspectAnalysis(BaseModel):
     )
     deviceName: str | None = Field(
         None,
-        description="画面中设备的名称（如 投影仪01）。认不出填 null，不要编造。",
+        description=(
+            "画面中**设备或设施**的名称。台账里的设备写编号（如 投影仪01）；"
+            "不在台账里的固定设施（电路/插座/门把手等）写通用名，**优先从这份清单里选**："
+            "配电箱、电路、插座、开关、照明灯具、空调、出风口、水管、水龙头、消防栓、"
+            "灭火器、门、门把手、门锁、窗、玻璃、墙面、地面、天花板、楼梯、扶手、"
+            "标识牌、垃圾桶、窗帘。认不出填 null，不要编造。"
+        ),
     )
     deviceType: str | None = Field(
         None,
-        description="画面中设备的类型（如 投影仪 / 音响 / 显示屏）。认不出填 null。",
+        description="画面中设备或设施的类型（如 投影仪 / 音响 / 显示屏 / 插座）。认不出填 null。",
+    )
+    locationHint: str | None = Field(
+        None,
+        description=(
+            "画面里能看出的**具体位置**（如「3楼走廊东侧」「会议室门口」）。"
+            "看不出填 null，不要编造。用户在现场填的位置会覆盖这里。"
+        ),
     )
 
 
@@ -118,6 +131,12 @@ class InspectSubmitData(BaseModel):
     #: 该设备可借数已经是 0（可借台数用光 / 已有人报修），本次只记录故障、未再减。
     #: 不回传的话，用户会看到「工单建了但可借数没变」，以为是 bug。
     deviceWarning: str | None = None
+    #: 本次落库的**具体位置**（用户填的优先，没填才是 AI 从画面推断的）。
+    #: 固定设施（插座/门把手）不在设备台账里，位置是它们唯一的精度来源。
+    locationHint: str | None = None
+    #: 本次巡检照片的访问路径（如 /uploads/20261013/xxx.jpg），落盘失败时为 None。
+    #: 工单列表里同名字段可直接用于回看照片。
+    imageUrl: str | None = None
 
 
 class TicketItem(BaseModel):
@@ -129,10 +148,18 @@ class TicketItem(BaseModel):
     #: 来自关联的巡检记录（`inspect_record.ai_result`），见 inspect_service 的说明
     deviceStatus: str | None = None
     deviceName: str | None = None
+    #: **具体位置**（如「3楼走廊东侧」）：固定设施不在设备台账里，
+    #: 位置是它们唯一的精度来源。用户填的优先，没填才是 AI 从画面推断的。
+    locationHint: str | None = None
     status: int
     statusText: str
     report: str | None = None
     createTime: str | None = None
+
+    #: **原始巡检照片**的访问路径（来自关联巡检记录的 `image_url`）。
+    #: 工单表本身不存这一列，靠 `inspect_id` JOIN 回巡检记录取 ——
+    #: 照片在巡检时就已落盘，这里只是把它透出给前端回看。
+    inspectImageUrl: str | None = None
 
     # ---------- 处理结果与 AI 核验（模块 6 追加，均可空）----------
     #: 处理结果照片地址；没走过 /handle 的工单为 None

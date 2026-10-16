@@ -9,14 +9,22 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
+from ..core.permissions import Permission
 from ..core.response import ok
 from ..models import ACTIVE_ORDER_STATUSES, ReserveOrder
+from .deps import CurrentUser, require_permission
 
 router = APIRouter(prefix="/conflicts", tags=["conflicts"])
 
 
 @router.get("/scan")
-async def conflict_scan(db: AsyncSession = Depends(get_db)):
+async def conflict_scan(
+    db: AsyncSession = Depends(get_db),
+    # 2026-10-13 加权限：本接口**扫描全库活跃订单**，会暴露他人的占用与冲突信息。
+    # 原先任何登录用户都能调（前端只要输 /conflicts 就能看到）。
+    # 口径：管理员 `conflict:*`（通配命中）/ 系统管理员 `*` 通过，普通用户 403。
+    _current: CurrentUser = Depends(require_permission(Permission.CONFLICT_VIEW)),
+):
     result = await db.execute(
         select(ReserveOrder).where(ReserveOrder.order_status.in_(ACTIVE_ORDER_STATUSES))
     )

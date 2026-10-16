@@ -32,6 +32,23 @@ export function getAgentMetrics(detail = true) {
 // 历史说明：这里曾同时存在 `agentSchedule`（裸 data）与 `agentScheduleVerbose`
 // 两个函数，前者是为了兼容「直接用 `Object.assign(schedule, data)` 的旧调用方」。
 // 2026-09-30 调度入口统一收敛到 Agent 调度台后，裸 data 版已无调用方，两函数合并。
-export function agentSchedule(data) {
-  return bizHttp.post('/agent/schedule', data, { passMessage: true })
+export function agentSchedule(data = {}) {
+  // ⚠️ 2026-10-13 改：**不再默认发 `fast: true`**。
+  //
+  // 原实现是 `{ ...data, fast: data.fast !== false }`，即调用方不传就发 true。
+  // 这让管理端那对「🧠 深度思考 / ⚡ 快速决策」按钮**永远不起作用**：
+  // 后端 /agent/schedule 当时只看请求体里的 fast，压根没读 deepMode 开关。
+  // 于是点了「深度思考」高亮会变、后端也真的落盘，但每轮调度还是快速模式 ——
+  // 没有多轮思考链、也没有 40~80 秒，用户只会以为「深度思考原来这么快」。
+  //
+  // 现在的口径（后端 app/core/flags.py::resolve_fast）：
+  //   · 不传 fast  → 跟随后端全局开关（**这是本函数的默认行为**）
+  //   · fast: true / false → 强制指定，给联调与脚本化调用用
+  // 所以这里**原样透传**：data 里没有 fast，请求体里就不会出现这个字段。
+  // 不要在客户端替服务端定模式 —— 那正是上面那个缺陷的根因。
+  return bizHttp.post(
+    '/agent/schedule',
+    { ...data },
+    { passMessage: true },
+  )
 }

@@ -21,6 +21,7 @@
 
 import logging
 from functools import lru_cache
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
@@ -32,6 +33,33 @@ logger = logging.getLogger(__name__)
 
 # 模型配置缺失时的错误码（与 §4.5 错误码表保持一致：属于「识别服务不可用」）
 _CODE_MODEL_UNAVAILABLE = 41003
+
+
+def thinking_body(flag: bool | None) -> dict[str, Any]:
+    """把「是否思考」的三态开关翻译成请求参数（2026-10-14 加）。
+
+    三态语义（**默认值刻意保证行为不变**）：
+
+    | flag     | 返回                          | 效果                                  |
+    | -------- | ----------------------------- | ------------------------------------- |
+    | `None`   | `{}`                          | **不发送**该参数，模型用自己的默认值  |
+    | `True`   | `{'enable_thinking': True}`   | 显式先思考后回复                      |
+    | `False`  | `{'enable_thinking': False}`  | 显式直接回复（显著更快）              |
+
+    为什么默认是 `None` 而不是 `False`：qwen3.8/3.7/3.6/3.5 系列**默认开启思考**，
+    若把默认写成 False，等于在没人配置的情况下把所有既有部署的行为改掉了。
+    用 `None` 表示「不干预」，只有明确配置才生效。
+
+    返回的是要放进 `ChatOpenAI(extra_body=...)` 的字典 ——
+    `enable_thinking` 不是 OpenAI 标准参数，必须走 extra_body（官方文档口径）。
+
+    为什么抽成函数而不是各处内联：**「不配置就不发送」这个语义最容易在复制粘贴中
+    被写成 `{'enable_thinking': flag}`**，那样 None 会变成字面量 null 发给服务端。
+    集中一处，语义只有一种写法。
+    """
+    if flag is None:
+        return {}
+    return {'enable_thinking': bool(flag)}
 
 
 @lru_cache(maxsize=1)
@@ -74,6 +102,8 @@ def get_vision_llm() -> BaseChatModel:
             temperature=0.1,  # 感知任务要「确定性」，温度压到最低，减少模型发挥
             timeout=settings.LLM_TIMEOUT,  # 单次调用超时（秒）
             max_retries=settings.LLM_MAX_RETRIES,  # SDK 自动重试；仍失败由 service 层降级
+            # 思考模式开关（默认 None → 不发送 → 行为不变），见 thinking_body 的说明
+            extra_body=thinking_body(settings.VISION_ENABLE_THINKING),
         )
     except ImportError as exc:
         # 依赖没装全（如缺 langchain-openai）时给一句能照做的提示
@@ -180,4 +210,6 @@ def build_llm(*, temperature: float = 0.4, timeout: float | None = None) -> Base
         timeout=timeout or settings.LLM_TIMEOUT,  # ← C2 并名后的结果
         max_retries=1,
         temperature=temperature,
+        # 思考模式开关（默认 None → 不发送 → 行为不变）
+        extra_body=thinking_body(settings.LLM_ENABLE_THINKING),
     )

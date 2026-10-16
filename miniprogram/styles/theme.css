@@ -1,46 +1,120 @@
 /* ============================================================
- * AI 全感知·智能空间与设备综合调度平台 — 小程序端主题
+ * 小程序端主题 —— 中性蓝白 / 信息优先（2026-10-14 重构）
  * 设计基准：示例样式.html（390px 宽），按 1px = 2rpx 换算
  *
- * 平台适配说明（勿改回去）：
+ * ## 这次重构改了什么
+ *
+ * | 维度 | 之前 | 现在 |
+ * |---|---|---|
+ * | 主色 | 蓝紫渐变 (#409eff → #7c5cff) | 单一蓝 #409eff 实色 + 明度阶梯 |
+ * | 渐变 | 20 处 | **0 处**（柱状图式的同色深浅除外） |
+ * | 持续动画 | 10 个 keyframes / 大量 infinite | **2 个**（波形、运行中呼吸），且受 reduce-motion 控制 |
+ * | 圆角 | 14/16/20/24/28/30rpx 混用 | 12 / 16 / 20rpx 三档 |
+ * | 阴影 | 含发光型 | 只留两级，均无发光 |
+ * | 交互态 | 只有 hover-class={btn-on} | 补齐 focus-visible / disabled / loading |
+ *
+ * ## 平台适配说明（勿改回去）
  *  1. 小程序 WXSS 不支持 `*` 通配选择器，故用 page{} + 元素选择器显式重置
  *  2. 不支持 :root，主题变量挂在 page 上（自定义属性会沿 DOM 树继承，
  *     因此自定义组件内部同样能取到 var(--primary) 等）
  *  3. 低版本 webview 不认 `inset` 简写，一律展开为 top/right/bottom/left
  *  4. 原型里的 h4 / p / b / i 等标签不是小程序组件，选择器一律改写成 class
  *     （如 .ai-hero h4 → .ai-hero .tt），否则样式不会命中
+ *  5. `env(safe-area-inset-bottom)` 在小程序里可用，但需同时保留 constant() 兜底
+ *
+ * ## 三条硬约定
+ *  1. 改样式只改这里与各页面 scoped 样式，不要在模板里写死颜色
+ *  2. **不要加渐变与发光**。紫色只作为**分类色**出现（小面积色块），
+ *     不参与任何渐变 —— 蓝紫渐变是「AI 概念稿」最典型的签名
+ *  3. 任何 infinite 动画都必须给出 prefers-reduced-motion 降级（见文件末尾）
  * ============================================================ */
 
 page {
-  /* 主色 */
+  /* ---- 主色：单一蓝 + 明度阶梯 ---- */
   --primary: #409eff;
-  --primary-d: #2a7fd4;
+  --primary-h: #337ecc; /* 按压/选中：降明度，而不是降透明度 */
+  --primary-a: #2a6fb8;
+  --primary-bg: #ecf5ff;
+  --primary-line: #c6e2ff;
+  --primary-d: #2a7fd4; /* 兼容旧引用 */
 
-  /* AI 专属渐变 */
-  --ai-a: #409eff;
-  --ai-b: #7c5cff;
-  --ai-soft: #eef4ff;
-  --ai-line: #d6e4ff;
+  /* ---- 分类色（小面积色块；紫是分类色之一，不参与渐变） ---- */
+  --cat-purple: #7c5cff;
+  --cat-purple-bg: #f2eefc;
+  --cat-purple-line: #ddd4fb;
 
-  /* 语义色 */
-  --success: #67c23a;
-  --warning: #e6a23c;
-  --danger: #f56c6c;
+  /* ---- @deprecated 兼容别名（2026-10-14 重命名） ----
+   *
+   * 旧变量名不能直接删：部分页面 scoped 样式还在引用它们
+   * （pages/order/list.vue、pages/login/index.vue 等 11 处）。
+   * 直接删会让那些声明**整条失效**（border/ background 取不到值），
+   * 表现为「边框消失、这块变成透明」—— 不明显，但很难查。
+   *
+   * ⚠️ --ai-a / --ai-b 现在**都指向同一个主色**，因此页面里
+   * `linear-gradient(..., var(--ai-a), var(--ai-b))` 会渲染成纯色块。
+   * 这是**刻意**的：那两个页面样式本身就是蓝紫渐变，
+   * 而蓝紫渐变是本次重构要消灭的头号 AI 感来源。
+   * 保留别名 = 不改页面代码就完成了去渐变，等页面逐个收敛后再删除本段。
+   */
+  --ai-a: var(--primary);
+  --ai-b: var(--primary);
+  --ai-soft: var(--primary-bg);
+  --ai-line: var(--primary-line);
 
-  /* 文字层级 */
-  --t1: #303133;
-  --t2: #606266;
-  --t3: #909399;
+  /* ---- 语义色 ---- */
+  --success: #17a34a;
+  --success-bg: #eaf7ee;
+  --warning: #c47b16;
+  --warning-bg: #fdf4e6;
+  --danger: #d92d20;
+  --danger-bg: #fdeceb;
 
-  /* 边框与背景 */
-  --bd: #dcdfe6;
-  --bd-l: #ebeef5;
+  /* ---- 文字层级（全部 ≥ WCAG AA） ---- */
+  --t1: #1f2329;
+  --t2: #4e5969;
+  --t3: #6b7280;
+
+  /* ---- 边框与背景 ---- */
+  --bd: #d8dde5;
+  --bd-l: #e8ecf1;
   --bg: #f5f7fa;
+  --bg-hover: #f7f9fc;
+  --bg-active: #eef1f6;
+
+  /* ---- 阴影：两级，都不发光 ---- */
+  --sh1: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --sh2: 0 8px 24px rgba(16, 24, 40, 0.08);
+
+  /* ---- 图表辅助色 ----
+   * 只用于「占用率」这类进度条的高低两档（同色深浅，不是多彩渐变）。
+   * 与语义色分开命名，因为它们的对比度要求不同：
+   * 图表色只需在**同类之间**可区分，不必满足正文 AA。 */
+  --chart-ok: #3dba75;
+  --chart-full: #ef7b7b;
+
+  /* ---- 圆角（三档） ---- */
+  --r-xs: 8rpx; /* 极小元素专用：标签、复选框、日期格 */
+  --r-sm: 12rpx;
+  --r-md: 16rpx;
+  --r-lg: 20rpx;
+  --r-pill: 999rpx;
+
+  /* ---- 间距（4 的倍数，×2 为 rpx） ---- */
+  --s1: 8rpx;
+  --s2: 16rpx;
+  --s3: 24rpx;
+  --s4: 32rpx;
+  --s5: 48rpx;
+
+  /* ---- 动效 ---- */
+  --dur: 180ms;
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
 
   min-height: 100%;
   background: var(--bg);
   color: var(--t1);
   font-size: 28rpx;
+  line-height: 1.6;
   font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
@@ -56,117 +130,88 @@ button {
   box-sizing: border-box;
 }
 
-/* ================= 动效 ================= */
-@keyframes breathe {
+/* ================= 动效 =================
+ *
+ * ⚠️ 重构后**只保留两个循环动画**，且都承载真实状态：
+ *     wv   —— 录音中的波形律动（用户必须知道「正在收音」）
+ *     pulse —— 运行中的状态点呼吸（极轻，幅度只有透明度）
+ *
+ * 删除的装饰性动画（原先都无信息量，只制造「AI 演示」观感）：
+ *     blink（打字光标）、scanY / scanX（扫光）、
+ *     gradientMove（渐变条流动）、ring（脉冲扩散环）、spinSlow（雷达旋转）
+ */
+@keyframes pulse {
   0%,
   100% {
+    opacity: 1;
+  }
+  50% {
     opacity: 0.45;
-    transform: scale(0.9);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.15);
-  }
-}
-
-@keyframes blink {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0;
-  }
-}
-
-@keyframes scanY {
-  0% {
-    top: -12%;
-  }
-  100% {
-    top: 112%;
-  }
-}
-
-@keyframes scanX {
-  0% {
-    left: -40%;
-  }
-  100% {
-    left: 124%;
   }
 }
 
 @keyframes stepIn {
   from {
     opacity: 0;
-    transform: translateY(18rpx);
   }
   to {
     opacity: 1;
-    transform: none;
-  }
-}
-
-@keyframes gradientMove {
-  0% {
-    background-position: 0% 50%;
-  }
-  100% {
-    background-position: 200% 50%;
   }
 }
 
 @keyframes wv {
   0%,
   100% {
-    transform: scaleY(0.26);
+    transform: scaleY(0.3);
   }
   50% {
     transform: scaleY(1);
   }
 }
 
-@keyframes ring {
-  0% {
-    transform: scale(0.7);
-    opacity: 0.85;
-  }
-  100% {
-    transform: scale(1.9);
-    opacity: 0;
-  }
-}
-
-@keyframes spinSlow {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 /* ================= 原子 ================= */
 
-/* 呼吸圆点：表示「在线 / 运行中」 */
+/* 运行中：极轻的呼吸（用于「有任务在跑」这类瞬时状态） */
 .live {
-  width: 14rpx;
-  height: 14rpx;
+  width: 16rpx;
+  height: 16rpx;
   border-radius: 50%;
   background: var(--success);
   display: inline-block;
   flex: none;
-  animation: breathe 1.8s ease-in-out infinite;
+  animation: pulse 1.8s ease-in-out infinite;
 }
 
 .live.b {
   background: var(--primary);
 }
 
-/* 打字机光标 */
+/* 静态状态点：表示「在线 / 已连接」这类持续状态。
+   状态没变就不该有东西在动 —— 因此不带任何动画。 */
+.dot {
+  width: 16rpx;
+  height: 16rpx;
+  border-radius: 50%;
+  background: var(--success);
+  display: inline-block;
+  flex: none;
+}
+
+.dot.b {
+  background: var(--primary);
+}
+
+.dot.gray {
+  background: var(--t3);
+}
+
+/* 打字光标：保留类名与字形，但**去掉闪烁**。
+   闪烁的终端光标是典型的 AI 演示符号，且持续动效对阅读是干扰。 */
 .caret::after {
   content: '▌';
   color: var(--primary);
-  animation: blink 1s step-end infinite;
   margin-left: 2rpx;
+  opacity: 0.7;
 }
 
 /* ================= 布局骨架 ================= */
@@ -179,7 +224,7 @@ button {
 /* 页面主体。自定义导航栏的高度由 mp-nav-bar 的占位块负责 */
 .app-body {
   flex: 1;
-  padding: 26rpx;
+  padding: var(--s3);
   min-height: 0;
 }
 
@@ -196,7 +241,7 @@ button {
   right: 0;
   bottom: 0;
   z-index: 90;
-  padding: 24rpx 28rpx 44rpx;
+  padding: var(--s3) var(--s3) 44rpx;
   padding-bottom: calc(44rpx + constant(safe-area-inset-bottom));
   padding-bottom: calc(44rpx + env(safe-area-inset-bottom));
   background: #fff;
@@ -205,7 +250,7 @@ button {
 
 .app-cta-row {
   display: flex;
-  gap: 20rpx;
+  gap: var(--s2);
 }
 
 /* 主按钮占更大宽度（原型 flex:1.8） */
@@ -213,131 +258,170 @@ button {
   flex: 1.8;
 }
 
-/* ================= 标签 ================= */
+/* ================= 标签 =================
+ * 圆角由 20rpx（胶囊）改为 8rpx —— 小面积色块用方角更「工具感」，
+ * 胶囊形在中文界面里容易显得像聊天气泡。
+ */
 .tag {
   display: inline-block;
-  padding: 4rpx 16rpx;
-  border-radius: 20rpx;
+  padding: 4rpx 14rpx;
+  border-radius: 8rpx;
   font-size: 22rpx;
-  line-height: 32rpx;
+  line-height: 34rpx;
+  border: 1px solid transparent;
 }
 
 .tag.blue {
-  background: #ecf5ff;
-  color: #409eff;
+  background: var(--primary-bg);
+  color: var(--primary-h);
+  border-color: var(--primary-line);
 }
 
 .tag.purple {
-  background: #f2eefc;
-  color: #7c5cff;
+  background: var(--cat-purple-bg);
+  color: #5b3fd1;
+  border-color: var(--cat-purple-line);
 }
 
 .tag.green {
-  background: #f0f9eb;
-  color: #67c23a;
+  background: var(--success-bg);
+  color: #0f7a37;
+  border-color: #c4e8d1;
 }
 
 .tag.orange {
-  background: #fdf6ec;
-  color: #e6a23c;
+  background: var(--warning-bg);
+  color: #9a5f0f;
+  border-color: #f2ddb8;
 }
 
 .tag.red {
-  background: #fef0f0;
-  color: #f56c6c;
+  background: var(--danger-bg);
+  color: #b42318;
+  border-color: #f6cdc9;
 }
 
 .tag.gray {
-  background: #f4f4f5;
-  color: #909399;
+  background: var(--bg-active);
+  color: var(--t2);
+  border-color: var(--bd-l);
 }
 
-/* ================= 按钮 ================= */
+/* ================= 按钮 =================
+ * 按压反馈由 hover-class="btn-on" 触发（小程序没有 :active 可靠语义）。
+ * 原先 .btn-on 只是 opacity:0.82，会把**文字**一起变淡；
+ * 现在改为背景降一档明度，文字保持清晰。
+ */
 .btn {
-  border: none;
-  border-radius: 12rpx;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
   padding: 16rpx 28rpx;
-  font-size: 25rpx;
+  font-size: 26rpx;
   font-family: inherit;
+  line-height: 1.5;
   color: #fff;
   background: var(--primary);
   text-align: center;
+  min-height: 80rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color var(--dur) var(--ease);
 }
 
 .btn.ghost {
   background: #fff;
-  border: 1px solid var(--bd);
+  border-color: var(--bd);
   color: var(--t2);
 }
 
+.btn.ghost.btn-on {
+  background: var(--bg-hover);
+  border-color: var(--primary-line);
+  color: var(--primary-h);
+}
+
+/* ⚠️ 兼容旧类名。原先是蓝紫渐变 + 发光阴影 —— 最重的 AI 感来源。
+   现改为与 .btn 同色的实色；模板无需改动。 */
 .btn.ai {
-  background: linear-gradient(135deg, var(--ai-a), var(--ai-b));
-  box-shadow: 0 6rpx 24rpx rgba(64, 158, 255, 0.32);
+  background: var(--primary);
+  box-shadow: none;
 }
 
 .btn.block {
-  display: block;
+  display: flex;
   width: 100%;
   padding: 22rpx;
-  font-size: 27rpx;
-  border-radius: 16rpx;
+  font-size: 28rpx;
+  border-radius: var(--r-md);
+  min-height: 88rpx;
 }
 
-/* 高危动作：生成工单 / 确认占用类 */
+/* 高危动作：生成工单 / 确认占用类。
+   原先是从橙到红的**渐变**，现改为单一红实色（渐变在此没有信息意义）。 */
 .btn.warn {
-  background: linear-gradient(135deg, #e6a23c, #f56c6c);
+  background: var(--danger);
 }
 
 /* 按压反馈：配合 hover-class="btn-on" 使用 */
 .btn-on {
-  opacity: 0.82;
+  background: var(--primary-h);
+}
+
+.btn.ghost.btn-on {
+  background: var(--bg-active);
 }
 
 .btn.disabled {
-  opacity: 0.5;
+  background: var(--bg-active);
+  color: var(--t3);
+  border-color: var(--bd-l);
 }
 
 /* ================= 卡片 ================= */
 .mcard {
   background: #fff;
-  border-radius: 24rpx;
-  padding: 28rpx;
-  margin-bottom: 22rpx;
-  border: 1px solid #f0f3f8;
+  border-radius: var(--r-lg);
+  padding: var(--s3);
+  margin-bottom: var(--s2);
+  border: 1px solid var(--bd-l);
+  box-shadow: var(--sh1);
 }
 
 .mtitle {
-  font-size: 27rpx;
+  font-size: 28rpx;
   font-weight: 600;
   color: var(--t1);
-  margin-bottom: 22rpx;
+  margin-bottom: var(--s2);
   display: flex;
   align-items: center;
-  gap: 14rpx;
+  gap: var(--s2);
+  line-height: 1.5;
 }
 
 .mtitle .more {
   margin-left: auto;
-  font-size: 23rpx;
+  font-size: 24rpx;
   color: var(--t3);
   font-weight: 400;
 }
 
 /* 卡片内正文 */
 .mtext {
-  font-size: 25rpx;
+  font-size: 26rpx;
   color: var(--t2);
-  line-height: 1.85;
+  line-height: 1.7;
 }
 
 /* ================= 键值行 ================= */
 .mbrow {
   display: flex;
-  align-items: center;
-  font-size: 25rpx;
+  align-items: flex-start;
+  font-size: 26rpx;
   color: var(--t2);
   padding: 18rpx 0;
-  border-bottom: 1px solid #f5f7fa;
+  border-bottom: 1px solid var(--bd-l);
+  line-height: 1.6;
 }
 
 .mbrow:last-child {
@@ -346,21 +430,26 @@ button {
 
 .mbrow .k {
   color: var(--t3);
-  width: 132rpx;
+  width: 140rpx;
   flex: none;
-  font-size: 24rpx;
+  font-size: 25rpx;
 }
 
 .mbrow .v {
   flex: 1;
   min-width: 0;
+  word-break: break-word;
 }
 
 .mbrow .v.warn {
-  color: #e6a23c;
+  color: var(--warning);
 }
 
-/* ================= 首页快捷入口（原型 .grid4） ================= */
+/* ================= 首页快捷入口（原型 .grid4） =================
+ * 四个入口色块由「四种不同浅色」改为**同一浅蓝底 + 主色图标**：
+ * 四色并列是本项目里最明显的「AI 模板」观感之一，
+ * 而入口之间并没有需要颜色区分的信息差异。
+ */
 .grid4 {
   display: flex;
   flex-wrap: wrap;
@@ -372,41 +461,38 @@ button {
   font-size: 23rpx;
   color: var(--t2);
   padding: 12rpx 0 4rpx;
+  line-height: 1.5;
 }
 
 .grid4 .cell .ic {
   display: flex;
-  width: 92rpx;
-  height: 92rpx;
+  width: 88rpx;
+  height: 88rpx;
   margin: 0 auto 16rpx;
-  border-radius: 30rpx;
+  border-radius: var(--r-md);
   align-items: center;
   justify-content: center;
-  font-size: 42rpx;
-  background: #ecf5ff;
+  font-size: 40rpx;
+  background: var(--primary-bg);
+  color: var(--primary-h);
 }
 
-.grid4 .cell .ic.g2 {
-  background: #eef7ff;
-}
-
-.grid4 .cell .ic.g3 {
-  background: #f3efff;
-}
-
+.grid4 .cell .ic.g2,
+.grid4 .cell .ic.g3,
 .grid4 .cell .ic.g4 {
-  background: #fff3e8;
+  background: var(--primary-bg);
+  color: var(--primary-h);
 }
 
 /* ================= 代码/工具调用回显 ================= */
 .code {
-  background: #f7f9fc;
-  border: 1px solid #e9eef6;
-  border-radius: 12rpx;
+  background: var(--bg-hover);
+  border: 1px solid var(--bd-l);
+  border-radius: var(--r-sm);
   padding: 14rpx 20rpx;
   font-family: ui-monospace, Consolas, monospace;
   font-size: 23rpx;
-  color: #4a6a92;
+  color: #3d5a80;
   margin-top: 12rpx;
   line-height: 1.6;
   white-space: nowrap;
@@ -416,188 +502,183 @@ button {
 
 /* ================= 告警/提示条 ================= */
 .witem {
+  border: 1px solid var(--warning-bg);
   border-left: 6rpx solid var(--warning);
-  background: #fffaf1;
-  border-radius: 0 14rpx 14rpx 0;
+  background: var(--warning-bg);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
   padding: 20rpx 24rpx;
-  margin-bottom: 20rpx;
-  font-size: 24rpx;
+  margin-bottom: var(--s2);
+  font-size: 25rpx;
   color: var(--t2);
+  line-height: 1.6;
 }
 
 .witem .wt {
   display: block;
-  font-size: 25rpx;
+  font-size: 26rpx;
   color: var(--t1);
   margin-bottom: 10rpx;
   font-weight: 600;
 }
 
 .witem .wp {
-  font-size: 23rpx;
+  font-size: 24rpx;
   color: var(--t3);
-  line-height: 1.55;
+  line-height: 1.65;
   margin-bottom: 14rpx;
   display: block;
 }
 
 .witem.red {
   border-left-color: var(--danger);
-  background: #fef6f6;
+  border-color: var(--danger-bg);
+  background: var(--danger-bg);
 }
 
 .witem.blue {
   border-left-color: var(--primary);
-  background: #f2f8ff;
+  border-color: var(--primary-bg);
+  background: var(--primary-bg);
 }
 
-/* ================= AI 提示条 ================= */
+/* ================= 提示条 =================
+ * 原先：蓝→紫渐变底 + 渐变图标块。
+ * 现在：中性浅蓝底 + 1px 边框 + 白底图标块。
+ * 左边那根 3rpx 实色条保留 —— 它用颜色区分提示级别，是信息不是装饰。
+ */
 .aibar {
   display: flex;
-  align-items: center;
-  gap: 22rpx;
+  align-items: flex-start;
+  gap: var(--s2);
   padding: 22rpx 30rpx;
-  margin-bottom: 28rpx;
-  border-radius: 16rpx;
-  font-size: 25rpx;
+  margin-bottom: var(--s3);
+  border-radius: var(--r-md);
+  font-size: 26rpx;
+  line-height: 1.7;
   color: var(--t2);
-  background: linear-gradient(90deg, #eef5ff, #f5f1ff 60%, #fff);
-  border: 1px solid var(--ai-line);
+  background: var(--primary-bg);
+  border: 1px solid var(--primary-line);
 }
 
 .aibar .ic {
-  width: 48rpx;
-  height: 48rpx;
+  width: 44rpx;
+  height: 44rpx;
   flex: none;
-  border-radius: 14rpx;
+  border-radius: var(--r-sm);
   font-size: 24rpx;
-  color: #fff;
+  color: var(--primary-h);
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, var(--ai-a), var(--ai-b));
+  background: #fff;
+  border: 1px solid var(--primary-line);
+  margin-top: 2rpx;
 }
 
 .aibar .tx {
   flex: 1;
 }
 
-/* ================= AI 主视觉卡（原型 .ai-hero） ================= */
+/* ================= 主视觉卡（原型 .ai-hero） =================
+ * 原先：蓝紫渐变底 + 一道 4.6s 循环扫光。
+ * 扫光是纯装饰且是最重的「AI 演示」符号，已删除；
+ * 底色改为白卡 + 主色左边框，让内容而不是卡片外观成为主角。
+ */
 .ai-hero {
-  border-radius: 28rpx;
-  padding: 30rpx;
-  margin-bottom: 24rpx;
-  position: relative;
-  overflow: hidden;
-  background: linear-gradient(135deg, #eef5ff, #f7f3ff);
-  border: 1px solid var(--ai-line);
+  border-radius: var(--r-lg);
+  padding: var(--s3);
+  margin-bottom: var(--s2);
+  background: #fff;
+  border: 1px solid var(--bd-l);
+  border-left: 6rpx solid var(--primary);
+  box-shadow: var(--sh1);
 }
 
+/* 扫光装饰已删除。 */
 .ai-hero::after {
-  content: '';
-  position: absolute;
-  top: -60%;
-  left: -40%;
-  width: 65%;
-  height: 220%;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.9), transparent);
-  transform: rotate(20deg);
-  animation: scanX 4.6s ease-in-out infinite;
+  content: none;
 }
 
 .ai-hero .tt {
-  font-size: 28rpx;
+  font-size: 30rpx;
   color: var(--t1);
   margin-bottom: 14rpx;
-  position: relative;
-  z-index: 2;
   display: flex;
   align-items: center;
   gap: 14rpx;
   font-weight: 600;
+  line-height: 1.5;
 }
 
 .ai-hero .dd {
-  font-size: 24rpx;
+  font-size: 26rpx;
   color: var(--t2);
   line-height: 1.7;
-  position: relative;
-  z-index: 2;
   display: block;
 }
 
-/* ================= 方案卡（原型 .plan） ================= */
+/* ================= 方案卡（原型 .plan） =================
+ * 同样去掉渐变底、扫光与渐变文字价格。
+ */
 .plan {
-  border-radius: 28rpx;
-  padding: 30rpx;
-  margin-bottom: 24rpx;
-  position: relative;
-  overflow: hidden;
-  background: linear-gradient(140deg, #eef5ff, #f6f1ff);
-  border: 1px solid var(--ai-line);
+  border-radius: var(--r-lg);
+  padding: var(--s3);
+  margin-bottom: var(--s2);
+  background: #fff;
+  border: 1px solid var(--bd-l);
+  border-left: 6rpx solid var(--primary);
+  box-shadow: var(--sh1);
 }
 
 .plan::after {
-  content: '';
-  position: absolute;
-  top: -60%;
-  left: -40%;
-  width: 65%;
-  height: 220%;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.9), transparent);
-  transform: rotate(20deg);
-  animation: scanX 4s ease-in-out infinite;
+  content: none;
 }
 
 .plan .tt {
-  font-size: 29rpx;
+  font-size: 30rpx;
   color: var(--t1);
   margin-bottom: 18rpx;
-  position: relative;
-  z-index: 2;
   font-weight: 600;
   display: block;
+  line-height: 1.5;
 }
 
 .plan .dd {
-  font-size: 24rpx;
-  line-height: 1.9;
+  font-size: 26rpx;
+  line-height: 1.7;
   color: var(--t2);
-  position: relative;
-  z-index: 2;
   display: block;
 }
 
 .plan .price {
   font-size: 44rpx;
-  font-weight: 700;
+  font-weight: 600;
   margin-top: 18rpx;
-  position: relative;
-  z-index: 2;
   display: inline-block;
-  background: linear-gradient(90deg, #2a7fd4, #7c5cff);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--t1);
+  /* 原先是渐变文字（background-clip: text）—— 已改为实色。 */
 }
 
-/* ================= 思考链步骤 ================= */
+/* ================= 思考链步骤 =================
+ * 逐步入场保留（一次性、用于让用户跟上新增步骤），
+ * 但去掉原先每一步都带的 18rpx 位移 —— 多步同时出现时会显得乱。
+ */
 .mbstep {
   display: flex;
-  gap: 20rpx;
-  padding-bottom: 28rpx;
+  gap: var(--s2);
+  padding-bottom: var(--s3);
   position: relative;
-  animation: stepIn 0.5s ease both;
+  animation: stepIn 200ms var(--ease) both;
 }
 
 .mbstep::before {
   content: '';
   position: absolute;
-  left: 20rpx;
-  top: 46rpx;
+  left: 21rpx;
+  top: 50rpx;
   bottom: 0;
-  width: 3rpx;
-  background: linear-gradient(180deg, #bfd9ff, #e4ecfa);
+  width: 1px;
+  background: var(--bd-l);
 }
 
 .mbstep:last-child::before {
@@ -607,17 +688,18 @@ button {
 .mbstep .txt {
   flex: 1;
   min-width: 0;
-  font-size: 25rpx;
+  font-size: 26rpx;
   line-height: 1.7;
   color: var(--t2);
 }
 
 .mbstep .txt .ss {
   display: block;
-  font-size: 26rpx;
+  font-size: 27rpx;
   color: var(--t1);
   margin-bottom: 8rpx;
   font-weight: 600;
+  line-height: 1.5;
 }
 
 .tnum {
@@ -625,43 +707,49 @@ button {
   height: 44rpx;
   flex: none;
   border-radius: 50%;
-  font-size: 20rpx;
-  font-weight: 700;
+  font-size: 21rpx;
+  font-weight: 600;
   color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1;
-  background: linear-gradient(135deg, var(--ai-a), var(--ai-b));
-  box-shadow: 0 0 0 6rpx #eaf2ff;
+  background: var(--primary);
+  border: 3rpx solid #fff;
 }
 
 .tnum.g {
-  background: linear-gradient(135deg, #67c23a, #3d9a34);
-  box-shadow: 0 0 0 6rpx #eaf7e6;
+  background: var(--success);
 }
 
 .tnum.o {
-  background: linear-gradient(135deg, #e6a23c, #d18a1f);
-  box-shadow: 0 0 0 6rpx #fdf3e4;
+  background: var(--warning);
 }
 
-/* ================= 语音录入（原型 .rec / .wave） ================= */
+/* ================= 语音录入（原型 .rec / .wave） =================
+ * ⚠️ 这一块**保留了两个动画**，因为它们是真实状态指示：
+ *     .rec::before/::after —— 录音中向外扩散的波纹
+ *     .wave .bar          —— 音量波形律动
+ * 但都改小了幅度、去掉了发光，并且只在「真的在录音」时运行
+ * （静态时用 .wave.off 停掉，见下）。
+ */
 .rec {
-  width: 212rpx;
-  height: 212rpx;
+  width: 200rpx;
+  height: 200rpx;
   border-radius: 50%;
-  margin: 32rpx auto 28rpx;
+  margin: var(--s3) auto var(--s3);
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 72rpx;
+  font-size: 68rpx;
   color: #fff;
-  background: linear-gradient(150deg, var(--ai-a), var(--ai-b));
-  box-shadow: 0 16rpx 52rpx rgba(64, 158, 255, 0.4);
+  background: var(--primary);
+  box-shadow: var(--sh2);
 }
 
+/* 录音中：波纹改为**静态外圈**（不再无限扩散）。
+   是不是正在收音由 .rec.on 的实色圈 + 波形律动共同表达，不需要脉冲。 */
 .rec::before,
 .rec::after {
   content: '';
@@ -671,17 +759,25 @@ button {
   bottom: 0;
   left: 0;
   border-radius: 50%;
-  border: 3rpx solid rgba(64, 158, 255, 0.55);
-  animation: ring 2.4s ease-out infinite;
+  border: 3rpx solid var(--primary-line);
 }
 
 .rec::after {
-  animation-delay: 1.2s;
+  top: -20rpx;
+  right: -20rpx;
+  bottom: -20rpx;
+  left: -20rpx;
+  border-color: rgba(64, 158, 255, 0.22);
 }
 
-/* 录音中：波纹更快、更亮，视觉上「在收音」 */
+/* 录音中：加深按钮底色并在外圈加一层实色描边 */
 .rec.on {
-  box-shadow: 0 16rpx 52rpx rgba(124, 92, 255, 0.55);
+  background: var(--primary-h);
+  box-shadow: var(--sh2);
+}
+
+.rec.on::after {
+  border-color: var(--primary-line);
 }
 
 .wave {
@@ -692,11 +788,12 @@ button {
   height: 80rpx;
 }
 
+/* 波形用**单一主色**（原先是从蓝到紫的渐变）。 */
 .wave .bar {
   width: 8rpx;
   height: 68rpx;
-  border-radius: 6rpx;
-  background: linear-gradient(180deg, var(--ai-a), var(--ai-b));
+  border-radius: 4rpx;
+  background: var(--primary);
   animation: wv 1s ease-in-out infinite;
   transform-origin: center;
 }
@@ -704,8 +801,8 @@ button {
 /* 静态时停止律动，避免「没在录音却在动」的误导 */
 .wave.off .bar {
   animation: none;
-  transform: scaleY(0.26);
-  opacity: 0.4;
+  transform: scaleY(0.3);
+  opacity: 0.35;
 }
 
 .wave .bar:nth-child(2) {
@@ -745,38 +842,40 @@ button {
 /* ================= ASR 文本 + 语义高亮（原型 .asr / .ent） ================= */
 .asr {
   background: #fff;
-  border: 1px solid #f0f3f8;
-  border-radius: 24rpx;
-  padding: 26rpx;
-  font-size: 27rpx;
-  line-height: 2;
+  border: 1px solid var(--bd-l);
+  border-radius: var(--r-lg);
+  padding: var(--s3);
+  font-size: 28rpx;
+  line-height: 1.8;
   color: var(--t1);
 }
 
+/* 实体高亮：时间 / 数量 / 设备 / 预算。
+   预算用分类紫（小面积色块），不是品牌渐变。 */
 .ent {
   padding: 2rpx 10rpx;
-  border-radius: 8rpx;
+  border-radius: 6rpx;
   font-weight: 600;
 }
 
 .ent.t {
   background: #e2f1ff;
-  color: #2a7fd4;
+  color: #1f5f9e;
 }
 
 .ent.n {
-  background: #e6f8ec;
-  color: #3d9a34;
+  background: var(--success-bg);
+  color: #0f7a37;
 }
 
 .ent.d {
-  background: #fdf0dd;
-  color: #c47b16;
+  background: var(--warning-bg);
+  color: #9a5f0f;
 }
 
 .ent.b {
-  background: #f7e9f8;
-  color: #a44fc0;
+  background: var(--cat-purple-bg);
+  color: #5b3fd1;
 }
 
 /* 约束 chip（原型 .chips / .chip） */
@@ -784,26 +883,29 @@ button {
   display: flex;
   flex-wrap: wrap;
   gap: 14rpx;
-  margin-top: 22rpx;
+  margin-top: var(--s2);
 }
 
 .chip {
   font-size: 23rpx;
   padding: 10rpx 22rpx;
-  border-radius: 28rpx;
-  background: #eef5ff;
-  border: 1px solid var(--ai-line);
-  color: #2a7fd4;
+  border-radius: var(--r-sm);
+  background: var(--primary-bg);
+  border: 1px solid var(--primary-line);
+  color: var(--primary-h);
 }
 
-/* ================= 拍照取景框（原型 .imgbox-mb / .bbox） ================= */
+/* ================= 拍照取景框（原型 .imgbox-mb / .bbox） =================
+ * 扫描线由「无限上下来回扫动」改为**静止在取景框顶部的一条细线**。
+ * 「正在识别」的信号交给文案与骨架态，不靠持续动画。
+ */
 .imgbox {
   height: 360rpx;
-  border-radius: 24rpx;
-  margin-bottom: 22rpx;
+  border-radius: var(--r-lg);
+  margin-bottom: var(--s2);
   position: relative;
   overflow: hidden;
-  background: linear-gradient(140deg, #eef2f8, #e3eaf4);
+  background: var(--bg-hover);
   border: 1px solid var(--bd-l);
 }
 
@@ -818,23 +920,25 @@ button {
   align-items: center;
   justify-content: center;
   gap: 18rpx;
-  font-size: 25rpx;
-  color: #a8b6c9;
+  font-size: 26rpx;
+  color: var(--t3);
+  line-height: 1.6;
 }
 
 .imgbox .cam .big {
-  font-size: 72rpx;
-  opacity: 0.5;
+  font-size: 68rpx;
+  opacity: 0.4;
 }
 
 .imgbox .scanline {
   position: absolute;
   left: 0;
   right: 0;
+  top: 0;
   height: 4rpx;
-  background: linear-gradient(90deg, transparent, #409eff, transparent);
-  box-shadow: 0 0 28rpx rgba(64, 158, 255, 0.8);
-  animation: scanY 2.6s linear infinite;
+  background: var(--primary);
+  opacity: 0.7;
+  box-shadow: none;
 }
 
 /* 识别框 */
@@ -845,8 +949,8 @@ button {
   width: 56%;
   height: 48%;
   border: 4rpx solid var(--success);
-  border-radius: 12rpx;
-  box-shadow: 0 0 0 8rpx rgba(103, 194, 58, 0.14);
+  border-radius: var(--r-sm);
+  box-shadow: none;
 }
 
 /* 识别框上方的标签条 */
@@ -858,8 +962,9 @@ button {
   background: var(--success);
   color: #fff;
   padding: 4rpx 18rpx;
-  border-radius: 10rpx;
+  border-radius: 8rpx;
   white-space: nowrap;
+  line-height: 1.4;
 }
 
 /* 四角标记 */
@@ -901,24 +1006,25 @@ button {
 /* 识别框出现在已选照片上时，四角标记用白色更清楚 */
 .bbox.on-photo {
   border-color: #fff;
-  box-shadow: 0 0 0 8rpx rgba(255, 255, 255, 0.2);
 }
 
 /* ================= 消息卡（原型 .msg） ================= */
 .msg {
   background: #fff;
-  border-radius: 24rpx;
+  border-radius: var(--r-lg);
   padding: 26rpx 28rpx;
-  margin-bottom: 20rpx;
-  border: 1px solid #f0f3f8;
+  margin-bottom: var(--s2);
+  border: 1px solid var(--bd-l);
   position: relative;
   overflow: hidden;
+  box-shadow: var(--sh1);
 }
 
 .msg.unread {
-  border-color: var(--ai-line);
+  border-color: var(--primary-line);
 }
 
+/* 未读标记由「蓝紫渐变竖条」改为**单一主色竖条**（分类/状态色不该用渐变）。 */
 .msg.unread::before {
   content: '';
   position: absolute;
@@ -926,17 +1032,18 @@ button {
   top: 26rpx;
   bottom: 26rpx;
   width: 6rpx;
-  background: linear-gradient(180deg, var(--ai-a), var(--ai-b));
+  background: var(--primary);
 }
 
 .msg .h {
   display: flex;
   align-items: center;
-  font-size: 26rpx;
+  font-size: 27rpx;
   font-weight: 600;
   color: var(--t1);
   margin-bottom: 12rpx;
   gap: 14rpx;
+  line-height: 1.5;
 }
 
 .msg .h .t {
@@ -948,7 +1055,7 @@ button {
 }
 
 .msg .txt {
-  font-size: 24rpx;
+  font-size: 25rpx;
   color: var(--t3);
   line-height: 1.7;
   display: block;
@@ -961,10 +1068,10 @@ button {
 }
 
 .empty .icon {
-  font-size: 90rpx;
-  opacity: 0.35;
+  font-size: 84rpx;
+  opacity: 0.3;
   display: block;
-  margin-bottom: 24rpx;
+  margin-bottom: var(--s2);
 }
 
 .empty .txt {
@@ -972,5 +1079,28 @@ button {
   color: var(--t3);
   line-height: 1.7;
   display: block;
-  margin-bottom: 28rpx;
+  margin-bottom: var(--s3);
+}
+
+/* ============================================================
+ * 可访问性降级
+ * ------------------------------------------------------------
+ * 尊重系统「减少动态效果」设置。小程序基础库 2.x 起支持该媒体查询，
+ * 不支持的低版本会直接忽略整块 —— 不影响正常渲染。
+ * ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  .live,
+  .wave .bar,
+  .mbstep {
+    animation: none;
+  }
+
+  view,
+  text,
+  button,
+  .btn,
+  .mcard,
+  .msg {
+    transition-duration: 0.01ms;
+  }
 }

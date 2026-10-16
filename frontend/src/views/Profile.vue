@@ -69,7 +69,7 @@
         </div>
 
         <div class="sp-ai-bar rbac-bar">
-          <span class="sp-ic">🛡</span>
+          <span class="sp-ic">◈</span>
           <span>
             角色与权限由后端 <b>RBAC</b> 体系（sys_role.permissions）统一下发，前端只按权限码渲染菜单，
             不在前端保存或修改权限。
@@ -118,7 +118,7 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: var(--sp-s3);
   padding: 28px 20px;
   text-align: center;
 }
@@ -133,8 +133,9 @@ onMounted(async () => {
   font-size: 28px;
   font-weight: 600;
   color: #fff;
-  background: var(--sp-ai-gradient);
-  box-shadow: 0 6px 18px rgba(64, 158, 255, 0.28);
+  /* 原为渐变底 + 蓝色发光阴影；改为单一主色 + 轻阴影。 */
+  background: var(--sp-accent);
+  box-shadow: var(--sp-sh1);
 }
 
 .user-name {
@@ -184,7 +185,7 @@ onMounted(async () => {
 .perm-box {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--sp-s2);
 }
 
 /* 权限码是需要逐字比对的标识，用等宽字体减少误读 */

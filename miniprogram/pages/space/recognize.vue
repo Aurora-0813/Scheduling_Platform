@@ -3,6 +3,17 @@
     <mp-nav-bar title="拍照识场" back />
 
     <view class="app-body has-cta">
+      <!--
+        两种输入方式并列：拍照识场 / 手绘草图（2026-10-13 加）。
+        手绘草图走的是**独立的预约流程页**（它要额外选设备/时间/场地并直接建单，
+        与「识别出一个已知场地再去预约」是两条链路），所以这里用 redirectTo 而不是
+        navigateTo —— 两者是同一层级的「模式」，叠页面栈会让返回行为变得莫名其妙。
+      -->
+      <view class="modebar">
+        <view class="mode on">📷 拍照识场</view>
+        <view class="mode" hover-class="btn-on" :hover-stay-time="60" @tap="goSketch">✍️ 手绘草图</view>
+      </view>
+
       <view class="imgbox" @tap="pick">
         <image v-if="photo" class="photo" :src="photo" mode="aspectFill" />
         <view v-else class="cam">
@@ -40,7 +51,7 @@
 
         <view class="mcard">
           <view class="mtitle">
-            <text>🤖 AI 识别结果</text>
+            <text>识别结果</text>
             <text v-if="confidenceText" class="more">{{ confidenceText }}</text>
           </view>
 
@@ -81,47 +92,43 @@
           <text v-else-if="slotsNote" class="mtext">{{ slotsNote }}</text>
 
           <template v-else>
-            <text class="stepk">1 · 选日期（未来两周）</text>
-            <scroll-view scroll-x class="dayscroll" :show-scrollbar="false">
-              <view class="dayrow">
-                <view
-                  v-for="d in dayOptions"
-                  :key="d.key"
-                  class="day"
-                  :class="{ on: selectedDay === d.key, off: !d.hasSlot }"
-                  hover-class="btn-on"
-                  :hover-stay-time="60"
-                  @tap="selectDay(d)"
-                >
-                  <text class="dl">{{ d.label }}</text>
-                  <text class="ds">{{ d.sub }}</text>
-                </view>
-              </view>
-            </scroll-view>
+            <!--
+              时间选择（2026-10-14 改版）。
 
-            <text class="stepk">2 · 选时间段{{ selectedSlot ? '' : '（必选）' }}</text>
-            <text v-if="!selectedDay" class="mtext">先选一个日期</text>
-            <text v-else-if="!currentSlots.length" class="mtext">
-              这天没有可用的时段，换一天试试
-            </text>
-            <view v-else class="slotgrid">
-              <view
-                v-for="s in currentSlots"
-                :key="s.key"
-                class="slotbtn"
-                :class="{ on: selectedSlot && selectedSlot.key === s.key }"
-                hover-class="btn-on"
-                :hover-stay-time="60"
-                @tap="selectSlot(s)"
-              >{{ s.range }}</view>
+              原先这里是「1 选日期（未来两周横滚）→ 2 从当天算好的空闲段里点一个」。
+              改成与「确认预约」页同一种交互：**日期 + 开始 / 结束时间**。
+
+              两个改进：
+                1. 可选时间**严格来自该场地的开放时段**（spaceMeta.openStartTime/EndTime），
+                   不再拿一个写死的 7:00~23:45 去套所有场地 —— 展厅 9:00 才开、
+                   中心广场 6:00 就开，场地之间不一样；
+                2. 用户自己定起止，而不是从系统算好的段里挑。
+
+              仍然比「确认预约」多一层保护：这里能拿到该场地的占用数据，
+              所以选到与已有预约重叠的时间时会**提示**（不拦，真正的判重在后端事务里）。
+            -->
+            <view class="kv">
+              <text class="k">日期</text>
+              <picker mode="date" :value="selectedDay || todayKey" :start="todayKey" :end="maxDateKey" @change="onDateChange">
+                <text class="v pick">{{ dateLabel }} ›</text>
+              </picker>
             </view>
-
-            <text v-if="selectedSlot" class="slotnote on">
-              已选 {{ selectedSlot.absolute }} —— 点下面的按钮带着它去预约，跳过去还能改。
+            <view class="kv">
+              <text class="k">开始</text>
+              <picker mode="selector" :range="timeOptions" :value="startIndex" @change="onStartChange">
+                <text class="v pick">{{ startTime || '请选择' }} ›</text>
+              </picker>
+            </view>
+            <view class="kv">
+              <text class="k">结束</text>
+              <picker mode="selector" :range="endTimeOptions" :value="endIndex" @change="onEndChange">
+                <text class="v pick">{{ endTime || '请选择' }} ›</text>
+              </picker>
+            </view>
+            <text class="card-sub">
+              可预约时间：{{ openRangeText }}（本场地的开放时段，{{ TIME_STEP_MIN }} 分钟一档）
             </text>
-            <text v-else class="slotnote">
-              先选日期，再点一个时间段；选好之后才能带着它去预约。
-            </text>
+            <text v-if="conflictHint" class="slotnote warn">{{ conflictHint }}</text>
           </template>
         </view>
 
@@ -165,8 +172,8 @@
           :class="{ disabled: needsSlot }"
           hover-class="btn-on"
           :hover-stay-time="60"
-          @tap="goVoice"
-        >{{ needsSlot ? '请先选时间段' : '带着它去预约 →' }}</view>
+          @tap="goConfirm"
+        >{{ needsSlot ? '请先选时间段' : '下一步：确认预约 →' }}</view>
       </view>
     </view>
   </view>
@@ -183,7 +190,8 @@
  *
  * ⚠️ confidence 低于阈值时后端给 needConfirm=true + question，
  *   此时**不能**直接把结果当成已确认场地用，必须先追问（§4.4 模块 2）。
- * ⚠️ imageUrl 是 /uploads/... 相对路径，展示前要拼 BASE_URL。
+ * ⚠️ imageUrl 是 /uploads/... 相对路径，展示前要走 `absoluteUrl()` 拼后端地址 ——
+ *   它**每次现取**地址（登录页可在运行时改，内网穿透换地址后不必重打包）。
  */
 import { ref, computed } from 'vue'
 import { onUnload } from '@dcloudio/uni-app'
@@ -195,6 +203,7 @@ import { IMAGE_LIMIT } from '@/config/index.js'
 import { first } from '@/utils/normalize.js'
 import { toast, showLoading, hideLoading, resetLoading } from '@/utils/toast.js'
 import { agentStore } from '@/store/agent.js'
+import { setPrefill } from '@/store/reservePrefill.js'
 import { userStore } from '@/store/user.js'
 import { parseDateTime } from '@/utils/format.js'
 
@@ -202,11 +211,10 @@ import { parseDateTime } from '@/utils/format.js'
 // 每一次 show/hide 都错位 —— 微信侧会一直报「showLoading 与 hideLoading 必须配对使用」
 onUnload(() => resetLoading())
 
-/** 空闲时段：往后看两周、每段至少 60 分钟 */
+/** 可选日期范围：从今天起往后两周 */
 const SLOT_DAYS = 14
-const SLOT_MIN_MINUTES = 60
-/** 单日最多列几段，避免被切得太碎的场地撑爆页面 */
-const SLOT_PER_DAY_MAX = 6
+/** 时间选择器的粒度（分钟）。15 分钟与「确认预约」页保持一致 */
+const TIME_STEP_MIN = 15
 
 const WEEKDAY_CN = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
@@ -215,12 +223,19 @@ const result = ref(null)
 const analyzing = ref(false)
 /** /booked 返回的场地权威信息（容量 / 位置 / 开放时段）—— 识别结果里没有这些 */
 const spaceMeta = ref(null)
-/** 日期 key（YYYY-MM-DD）→ 当天的空闲时段数组 */
-const slotsByDay = ref({})
-/** 当前选中的日期 key；空串表示还没选 */
+/**
+ * 该场地**已被占用**的时段（原始区间，已排序）。
+ *
+ * ⚠️ 2026-10-14 改版：这里不再预先把「空闲段」算成一个可点列表，
+ *    而是留作**冲突提示**用 —— 用户要的是「自己选开始/结束」，不是「从系统给的段里挑」。
+ *    占用口径仍由后端 /booked 过滤（1 待确认 / 2 已确认），前端只做区间求交。
+ */
+const busyRanges = ref([])
+/** 当前选中的日期 key（YYYY-MM-DD）；空串表示还没选 */
 const selectedDay = ref('')
-/** 当前选中的时段；**必选项**，没选不让往下走 */
-const selectedSlot = ref(null)
+/** 开始 / 结束时间（HH:mm），**必选项**，没选全不让往下走 */
+const startTime = ref('')
+const endTime = ref('')
 const slotsLoading = ref(false)
 const slotsNote = ref('')
 
@@ -235,25 +250,110 @@ const dayOptions = computed(() => {
       key,
       label: dayLabel(i, day),
       sub: pad2(day.getMonth() + 1) + '-' + pad2(day.getDate()),
-      hasSlot: (slotsByDay.value[key] || []).length > 0,
     })
   }
   return out
 })
 
-/** 选中日期下的可点时段 */
-const currentSlots = computed(() => slotsByDay.value[selectedDay.value] || [])
+/** 场地开放时段（分钟数），未取到时为 null */
+const openStartMin = computed(() => clockToMinutes((spaceMeta.value || {}).openStartTime))
+const openEndMin = computed(() => clockToMinutes((spaceMeta.value || {}).openEndTime))
 
-/** 这个场地这两周里到底有没有可选的时段 */
-const hasSelectableSlots = computed(() =>
-  Object.keys(slotsByDay.value).some((k) => (slotsByDay.value[k] || []).length > 0)
-)
+/** 日期 + 场地名，给 picker 和提示文案用 */
+const dateLabel = computed(() => {
+  if (!selectedDay.value) return '请选择日期'
+  const d = dayOptions.value.find((x) => x.key === selectedDay.value)
+  return selectedDay.value + (d ? ' ' + d.label : '')
+})
 
 /**
- * 时间段是**必选项**：只要还有可选时段，就必须先选一个才能去预约。
- * 一段都没有时（比如整两周都被占满）不做强制，否则用户会被卡死在这一页。
+ * 时间选择器的选项：**严格取自场地的开放时段**，按 TIME_STEP_MIN 切档。
+ *
+ * ⚠️ 关键口径：不做「8:00~22:00 写死」—— 每个场地开放时间不同
+ *    （A栋201 是 8:00-22:00、展厅是 9:00-21:00、中心广场 6:00-23:00），
+ *    写死会让用户选到场地没开门的时间，提交时才被后端拒。
+ *    后端 space_service.py 是按 open_start_time / open_end_time 过滤的，这里同源。
+ *
+ * 选今天时，**已过去的时间不出现**：给一个已经开始的时间点没有意义。
  */
-const needsSlot = computed(() => hasSelectableSlots.value && !selectedSlot.value)
+const timeOptions = computed(() => {
+  const s = openStartMin.value
+  const e = openEndMin.value
+  if (s === null || e === null || e <= s) return []
+  const isToday = selectedDay.value === ymd(new Date())
+  const now = new Date()
+  const nowMin = now.getHours() * 60 + now.getMinutes()
+  const out = []
+  for (let m = s; m <= e; m += TIME_STEP_MIN) {
+    if (isToday && m <= nowMin) continue
+    out.push(pad2(Math.floor(m / 60)) + ':' + pad2(m % 60))
+  }
+  return out
+})
+
+/** 结束时间只能在**开始时间之后**，所以从下一档开始给 */
+const endTimeOptions = computed(() => {
+  const i = timeOptions.value.indexOf(startTime.value)
+  if (i < 0) return timeOptions.value
+  return timeOptions.value.slice(i + 1)
+})
+
+/** 日期 picker 不能选过去：start 取今天 */
+const todayKey = computed(() => ymd(new Date()))
+
+/** 日期 picker 的上限：今天 + (SLOT_DAYS - 1) 天 */
+const maxDateKey = computed(() => {
+  const d = new Date()
+  d.setDate(d.getDate() + SLOT_DAYS - 1)
+  return ymd(d)
+})
+
+/** picker 的下标回显（没选过时给 0，picker 自己会显示第一项） */
+const startIndex = computed(() => Math.max(0, timeOptions.value.indexOf(startTime.value)))
+const endIndex = computed(() => Math.max(0, endTimeOptions.value.indexOf(endTime.value)))
+
+/** 「可预约时间：8:00 – 22:00」这行提示，直接来自场地开放时段 */
+const openRangeText = computed(() => {
+  const meta = spaceMeta.value || {}
+  const s = meta.openStartTime
+  const e = meta.openEndTime
+  if (!s || !e) return '以场地实际开放时间为准'
+  return String(s).slice(0, 5) + ' – ' + String(e).slice(0, 5)
+})
+
+/**
+ * 用户选的时间段是否与已有预约重叠。
+ *
+ * 前端**不拦**，只提示：占用数据可能因他人下单而过期，真正的判重在后端事务里
+ * （space_service 用 SELECT ... FOR UPDATE 锁资源）。这里拦反而会拦错。
+ */
+const conflictHint = computed(() => {
+  const s = hmToMin(startTime.value)
+  const e = hmToMin(endTime.value)
+  if (s === null || e === null || e <= s || !selectedDay.value) return ''
+  const dayKey = selectedDay.value
+  const hit = busyRanges.value.find(
+    (b) => b.dayKey === dayKey && s < b.endMin && e > b.startMin
+  )
+  if (!hit) return ''
+  return (
+    '这段时间与已有预约（' +
+    pad2(Math.floor(hit.startMin / 60)) + ':' + pad2(hit.startMin % 60) +
+    '-' +
+    pad2(Math.floor(hit.endMin / 60)) + ':' + pad2(hit.endMin % 60) +
+    '）重叠，提交时可能被拒。'
+  )
+})
+
+/**
+ * 时间段是**必选项**：日期、开始、结束三项都要有。
+ * 选今天且当天已无可选时间时（开放时段都过去了），不做强制，否则用户被卡死。
+ */
+const needsSlot = computed(() => {
+  if (!selectedDay.value) return true
+  if (!startTime.value || !endTime.value) return true
+  return false
+})
 
 const candidates = computed(() => {
   const c = result.value ? result.value.candidates : null
@@ -309,6 +409,11 @@ function candidateConf(c) {
   const n = Number(c.confidence)
   if (!c.confidence || isNaN(n)) return ''
   return `${n <= 1 ? Math.round(n * 100) : Math.round(n)}%`
+}
+
+/** 切到「手绘草图」模式（独立的预约流程页）。用 redirectTo：两者是同层级的模式，不叠页面栈。 */
+function goSketch() {
+  uni.redirectTo({ url: '/pages/space/sketch' })
 }
 
 function pick() {
@@ -408,14 +513,15 @@ function pickCandidate(c) {
  * 「这个场地这几天什么时候能用」，直接查占用自己减更准，也能跨天。
  */
 async function loadFreeSlots(spaceId) {
-  slotsByDay.value = {}
-  selectedDay.value = ''
-  selectedSlot.value = null
   spaceMeta.value = null
+  busyRanges.value = []
+  selectedDay.value = ''
+  startTime.value = ''
+  endTime.value = ''
   slotsNote.value = ''
   if (spaceId === undefined || spaceId === null || spaceId === '') return
   if (!userStore.loggedIn) {
-    slotsNote.value = '登录后可查看这个场地的空闲时段'
+    slotsNote.value = '登录后可查看这个场地的占用时段'
     return
   }
 
@@ -423,92 +529,38 @@ async function loadFreeSlots(spaceId) {
   try {
     const res = await spaceBookings(spaceId, SLOT_DAYS)
     spaceMeta.value = res || null
-    slotsByDay.value = computeSlotsByDay(res)
-    // 默认落在**第一个有空档的日期**上：用户进来只需要再点一下时间段
-    const firstKey = Object.keys(slotsByDay.value).find(
-      (k) => (slotsByDay.value[k] || []).length > 0
-    )
-    if (firstKey) {
-      selectedDay.value = firstKey
-    } else {
-      slotsNote.value = `未来 ${SLOT_DAYS} 天没有 ${SLOT_MIN_MINUTES} 分钟以上的连续空档`
-    }
+    busyRanges.value = extractBusyRanges(res)
+    // 默认落在今天；若今天开放时段已过完，时间选项会是空的，用户自己换日期
+    selectedDay.value = ymd(new Date())
   } catch (e) {
-    slotsNote.value = (e && e.message) || '空闲时段查询失败'
+    slotsNote.value = (e && e.message) || '占用时段查询失败'
   } finally {
     slotsLoading.value = false
   }
 }
 
 /**
- * 开放时段 − 已占用 = 空闲，**按天分组**，每天列出全部够长的空档。
+ * 从 /booked 的响应里抽出「已占用区间」，供冲突提示使用。
  *
- * ⚠️ 占用口径不在这里重判：后端 `/booked` 已经按「1 待确认 / 2 已确认」
- * 过滤过了（与下单判重同源），这里只做区间减法，避免两处口径漂移。
- *
- * 为什么从「每天只给第一段」改成「列出全天所有空档」：
- * 现在的交互是**先选日期、再选时间段**，一天只给一段等于替用户把时间定了，
- * 那不叫让他选。今天从「下一个整/半点」起算，已经过去的不展示。
+ * ⚠️ 占用口径不在这里重判：后端已经按「1 待确认 / 2 已确认」过滤过
+ *    （与下单判重同源），前端只做区间求交，避免两处口径漂移。
  */
-function computeSlotsByDay(res) {
-  const out = {}
-  const data = res || {}
-  const bookings = Array.isArray(data.bookings) ? data.bookings : []
-  const openS = clockToMinutes(data.openStartTime)
-  const openE = clockToMinutes(data.openEndTime)
-  if (openS === null || openE === null || openE <= openS) return out
-
-  const busy = []
+function extractBusyRanges(res) {
+  const bookings = Array.isArray((res || {}).bookings) ? res.bookings : []
+  const out = []
   bookings.forEach((b) => {
     const s = parseDateTime(b.startTime)
     const e = parseDateTime(b.endTime)
-    if (s && e && e > s) busy.push({ s, e })
+    if (!s || !e || e <= s) return
+    // 跨天占用（本系统按日开放，正常不会出现）拆成不处理：只取同一天内的交集，
+    // 若起止不在同一天，就按各自那天的分钟数记录，宁可多提示也不漏提示
+    const dayKey = ymd(s)
+    out.push({
+      dayKey,
+      startMin: s.getHours() * 60 + s.getMinutes(),
+      endMin: e.getDate() === s.getDate() ? e.getHours() * 60 + e.getMinutes() : 24 * 60,
+    })
   })
-  busy.sort((a, b) => a.s.getTime() - b.s.getTime())
-
-  const now = new Date()
-  for (let d = 0; d < SLOT_DAYS; d++) {
-    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + d)
-    const dayKey = ymd(day)
-    const dayStart = atMinutes(day, openS)
-    const dayClose = atMinutes(day, openE)
-
-    let cursor = dayStart
-    if (d === 0) {
-      // 今天：向上取整到下一个整/半点，别给用户一个已经开始的时间
-      const r = new Date(now.getTime())
-      r.setSeconds(0, 0)
-      const rest = r.getMinutes() % 30
-      r.setMinutes(r.getMinutes() + (rest === 0 ? 30 : 30 - rest))
-      if (r > cursor) cursor = r
-    }
-
-    const list = []
-    if (cursor < dayClose) {
-      for (const seg of busy) {
-        if (seg.e <= dayStart || seg.s >= dayClose) continue
-        const s = seg.s < cursor ? cursor : seg.s
-        const e = seg.e > dayClose ? dayClose : seg.e
-        if (e <= cursor) continue
-        // 这段占用开始之前还剩得下 → 记一段空档
-        if (gapMinutes(cursor, s) >= SLOT_MIN_MINUTES) {
-          list.push(makeSlot(dayKey, cursor, s))
-        }
-        cursor = e
-        if (cursor >= dayClose) break
-        if (list.length >= SLOT_PER_DAY_MAX) break
-      }
-      // 收尾：最后一个占用段结束到闭馆之间
-      if (
-        list.length < SLOT_PER_DAY_MAX &&
-        cursor < dayClose &&
-        gapMinutes(cursor, dayClose) >= SLOT_MIN_MINUTES
-      ) {
-        list.push(makeSlot(dayKey, cursor, dayClose))
-      }
-    }
-    out[dayKey] = list
-  }
   return out
 }
 
@@ -518,26 +570,19 @@ function clockToMinutes(t) {
   return Number(m[1]) * 60 + Number(m[2])
 }
 
-function atMinutes(day, minutes) {
-  const d = new Date(day.getFullYear(), day.getMonth(), day.getDate())
-  d.setMinutes(minutes)
-  return d
-}
-
-function gapMinutes(a, b) {
-  return Math.round((b.getTime() - a.getTime()) / 60000)
-}
-
 function pad2(n) {
   return n < 10 ? '0' + n : String(n)
 }
 
-function hm(d) {
-  return pad2(d.getHours()) + ':' + pad2(d.getMinutes())
-}
-
 function ymd(d) {
   return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
+}
+
+/** 'HH:mm' → 分钟数；无法解析返回 null */
+function hmToMin(t) {
+  const m = String(t || '').match(/^(\d{1,2}):(\d{2})$/)
+  if (!m) return null
+  return Number(m[1]) * 60 + Number(m[2])
 }
 
 /** 今天 / 明天 / 后天，再往后直接给星期几 */
@@ -546,29 +591,6 @@ function dayLabel(offset, day) {
   if (offset === 1) return '明天'
   if (offset === 2) return '后天'
   return WEEKDAY_CN[day.getDay()]
-}
-
-function makeSlot(dayKey, start, end) {
-  return {
-    key: dayKey + ' ' + hm(start),
-    dayKey,
-    range: hm(start) + '-' + hm(end),
-    // 给 Agent 的是**绝对时间**：相对时间（"明天"）靠模型自己换算不稳定，
-    // 而这里我们已经精确知道是哪一天了，没必要让它再猜一次
-    absolute: dayKey + ' ' + hm(start) + '-' + hm(end),
-  }
-}
-
-/** 选日期。换日期必须重选时间段 —— 「必选」是按具体时段算的，不是按天算的 */
-function selectDay(d) {
-  if (!d.hasSlot || selectedDay.value === d.key) return
-  selectedDay.value = d.key
-  selectedSlot.value = null
-}
-
-/** 选时间段；再点一次取消选择（取消后按钮会重新变灰，符合「必选」的直觉） */
-function selectSlot(s) {
-  selectedSlot.value = selectedSlot.value && selectedSlot.value.key === s.key ? null : s
 }
 
 /**
@@ -606,24 +628,107 @@ function pushImageContext() {
  * 文本里带上场地名、容量与选中的时段，**同时**把 imageContext 交给 Agent：
  * 文本是给人改的（跳过去还能接着说），imageContext 才是给 Agent 用的权威数据（含 spaceId）。
  */
-function goVoice() {
+/** 日期 + 开始/结束 → 绝对起止时间（确认页要的是 YYYY-MM-DD HH:mm:ss） */
+function slotBounds() {
+  if (!selectedDay.value || !startTime.value || !endTime.value) return { start: '', end: '' }
+  return {
+    start: selectedDay.value + ' ' + startTime.value + ':00',
+    end: selectedDay.value + ' ' + endTime.value + ':00',
+  }
+}
+
+/** 选日期：换日期必须清掉已选时间（时间选项是按天重算的，留着会是无效档位） */
+function onDateChange(e) {
+  selectedDay.value = e.detail.value
+  startTime.value = ''
+  endTime.value = ''
+}
+
+/** 选开始时间：顺手把结束时间推到下一档，省一次点击（用户可再改） */
+function onStartChange(e) {
+  const list = timeOptions.value
+  const i = Number(e.detail.value)
+  startTime.value = list[i] || ''
+  const next = list[i + 1] || list[i]
+  // 只在「结束时间还没选，或已被推到开始之前」时才自动带一个默认值
+  if (next && (!endTime.value || hmToMin(endTime.value) <= hmToMin(startTime.value))) {
+    endTime.value = next
+  }
+}
+
+function onEndChange(e) {
+  endTime.value = endTimeOptions.value[Number(e.detail.value)] || ''
+}
+
+/**
+ * 去确认页补齐信息（2026-10-13 改）。
+ *
+ * 原先这里直接跳**语音页**，等于把「选设备」整个跳过了 ——
+ * 拍照能认出是哪间场地和人数，但**认不出该用哪些设备**
+ * （照片里有没有投影仪，和这次要不要用投影仪，是两回事），时间也通常拍不出来。
+ * 所以现在把识别到的部分（场地 / 人数 / 设备类型 / 时段）预填进确认页，
+ * 缺的（主要是具体设备）交给用户在那里补。
+ */
+function goConfirm() {
   if (!result.value) return
   if (needsSlot.value) {
-    toast('请先选一个日期和时间段')
+    toast('请先选日期、开始与结束时间')
     return
   }
   const name = displayName.value
-  const cap = spaceMeta.value && spaceMeta.value.capacity
-  const parts = [`我要预约${name}`]
-  if (cap) parts.push(`${cap}人`)
-  if (selectedSlot.value) parts.push(selectedSlot.value.absolute)
-  agentStore.request = parts.join('，')
-  pushImageContext()
-  uni.navigateTo({ url: '/pages/voice/record' })
+  const meta = spaceMeta.value || {}
+  const cap = meta.capacity || result.value.capacity || null
+  const types = (devices.value || []).map((d) => d.deviceType).filter(Boolean)
+  const bounds = slotBounds()
+
+  pushImageContext() // 先把 imageContext 写进 agentStore，再原样转交给确认页
+  const sid = result.value.spaceId
+  setPrefill({
+    source: 'image',
+    sourceLabel: '拍照识场',
+    spaceId: sid === undefined || sid === null ? null : sid,
+    capacity: cap,
+    spaceType: meta.spaceType || 0,
+    deviceTypes: types,
+    slotStart: bounds.start,
+    slotEnd: bounds.end,
+    text:
+      '我要预约' +
+      name +
+      (cap ? '，' + cap + '人' : '') +
+      (bounds.start ? '，' + bounds.start + ' 至 ' + bounds.end : ''),
+    imageContext: agentStore.imageContext,
+  })
+  uni.navigateTo({ url: '/pages/reserve/confirm' })
 }
 </script>
 
 <style scoped>
+/* 输入方式模式条（2026-10-13 加）：拍照识场 / 手绘草图 并列 */
+.modebar {
+  display: flex;
+  gap: var(--s2);
+  margin-bottom: 22rpx;
+}
+
+.modebar .mode {
+  flex: 1;
+  text-align: center;
+  font-size: 27rpx;
+  padding: 18rpx 0;
+  border-radius: var(--r-pill);
+  color: var(--t2);
+  background: var(--bg-hover);
+  border: 1px solid var(--bd-l);
+}
+
+.modebar .mode.on {
+  color: #fff;
+  background: var(--primary-h);
+  border-color: var(--primary-h);
+  font-weight: 600;
+}
+
 .photo {
   position: absolute;
   top: 0;
@@ -646,17 +751,17 @@ function goVoice() {
 .cands {
   display: flex;
   flex-direction: column;
-  gap: 14rpx;
+  gap: var(--s2);
   margin-top: 18rpx;
 }
 
 .cand {
   display: flex;
   align-items: center;
-  gap: 14rpx;
+  gap: var(--s2);
   background: #fff;
   border: 1px solid var(--ai-line);
-  border-radius: 16rpx;
+  border-radius: var(--r-md);
   padding: 20rpx 24rpx;
 }
 
@@ -695,7 +800,7 @@ function goVoice() {
 
 .dayrow {
   display: flex;
-  gap: 14rpx;
+  gap: var(--s2);
   padding-bottom: 4rpx;
 }
 
@@ -709,9 +814,9 @@ function goVoice() {
   width: 108rpx;
   padding: 14rpx 0;
   text-align: center;
-  border-radius: 16rpx;
-  background: #f5f7fa;
-  border: 1px solid #e6eaf0;
+  border-radius: var(--r-md);
+  background: var(--bg-hover);
+  border: 1px solid var(--bd-l);
 }
 
 .day.off {
@@ -745,25 +850,47 @@ function goVoice() {
 .slotgrid {
   display: flex;
   flex-wrap: wrap;
-  gap: 14rpx;
+  gap: var(--s2);
 }
 
-.slotbtn {
-  min-width: 176rpx;
-  text-align: center;
-  font-size: 25rpx;
-  padding: 16rpx 20rpx;
-  border-radius: 16rpx;
-  color: var(--t1);
-  background: #f5f7fa;
-  border: 1px solid #e6eaf0;
+/* ---- 时间选择（2026-10-14 改版）----
+ * 由「点空闲段」改为「日期 + 开始/结束时间」选择器，
+ * 所以下面用 .kv 承载 picker —— 与「确认预约」页的 ① 使用时间 是同一套写法。
+ */
+.kv {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16rpx 0;
+  border-top: 1rpx solid var(--bd-l);
 }
 
-.slotbtn.on {
-  color: #fff;
-  background: var(--primary);
-  border-color: var(--primary);
-  font-weight: 600;
+.kv .k {
+  color: var(--t3);
+  font-size: 26rpx;
+  flex-shrink: 0;
+  width: 120rpx;
+}
+
+/* 可点区域要撑满右侧，否则只有文字那一小块能点，手感很差 */
+.kv picker {
+  flex: 1;
+  min-width: 0;
+}
+
+.pick {
+  display: block;
+  text-align: right;
+  font-size: 26rpx;
+  color: var(--primary);
+}
+
+.card-sub {
+  display: block;
+  margin-top: 14rpx;
+  font-size: 22rpx;
+  color: var(--t3);
+  line-height: 1.6;
 }
 
 .slotnote {
@@ -774,8 +901,11 @@ function goVoice() {
   line-height: 1.7;
 }
 
-.slotnote.on {
-  color: var(--primary);
-  font-weight: 600;
+/* 与已有预约重叠时的提示。用 warning 色（这是「可能失败」的提示，不是错误） */
+.slotnote.warn {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border-radius: var(--r-xs);
+  padding: 12rpx 16rpx;
 }
 </style>

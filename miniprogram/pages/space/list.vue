@@ -269,14 +269,14 @@ function setDays(d) {
 .seg {
   display: flex;
   flex-wrap: wrap;
-  gap: 14rpx;
+  gap: var(--s2);
   margin-bottom: 22rpx;
 }
 
 .sg {
   font-size: 24rpx;
   padding: 12rpx 26rpx;
-  border-radius: 28rpx;
+  border-radius: var(--r-lg);
   color: var(--t2);
   background: #fff;
   border: 1px solid var(--bd-l);
@@ -292,7 +292,7 @@ function setDays(d) {
 .sphead {
   display: flex;
   align-items: center;
-  gap: 16rpx;
+  gap: var(--s2);
 }
 
 .spmain {
@@ -303,7 +303,7 @@ function setDays(d) {
 .sptop {
   display: flex;
   align-items: center;
-  gap: 14rpx;
+  gap: var(--s2);
   margin-bottom: 12rpx;
 }
 
@@ -323,14 +323,14 @@ function setDays(d) {
 .chev {
   flex: none;
   font-size: 34rpx;
-  color: #c6ced9;
+  color: var(--bd);
 }
 
 /* 展开区 */
 .bk {
   margin-top: 22rpx;
   padding-top: 22rpx;
-  border-top: 1px solid #f0f3f8;
+  border-top: 1px solid var(--bd-l);
 }
 
 .bkhead {
@@ -348,20 +348,20 @@ function setDays(d) {
 
 .bkd {
   display: flex;
-  gap: 10rpx;
+  gap: var(--s1);
 }
 
 .bd {
   font-size: 22rpx;
   padding: 6rpx 18rpx;
-  border-radius: 20rpx;
+  border-radius: var(--r-lg);
   color: var(--t3);
-  background: #f4f6fa;
+  background: var(--bg-hover);
 }
 
 .bd.on {
   color: var(--primary);
-  background: #eef5ff;
+  background: var(--primary-bg);
   border: 1px solid var(--ai-line);
 }
 
@@ -385,12 +385,12 @@ function setDays(d) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16rpx;
+  gap: var(--s2);
   padding: 14rpx 0;
 }
 
 .bkrow + .bkrow {
-  border-top: 1px solid #f6f8fb;
+  border-top: 1px solid var(--bg-hover);
 }
 
 .bkleft {

@@ -76,7 +76,9 @@
           :description="spaceKeyword ? '没有匹配的场地，换个关键词试试' : '暂无场地数据'"
           :image-size="70"
         />
-        <table v-else class="sp-table">
+        <!-- sp-table-wrap：让台账在卡片内滚动，页面不出现整页滚动条（见 styles/index.css） -->
+        <div v-else class="sp-table-wrap">
+          <table class="sp-table">
           <thead>
             <tr>
               <th class="c w-id">ID</th>
@@ -125,7 +127,8 @@
               </td>
             </tr>
           </tbody>
-        </table>
+          </table>
+        </div>
         <div class="sp-pager">
           <!-- /resources/spaces 真实返回**裸数组**、忽略 page/pageSize，后端没有分页能力，
                所以这里只报真实条数，不渲染页码（不造假分页器）。 -->
@@ -150,7 +153,8 @@
           :description="deviceKeyword ? '没有匹配的设备，换个关键词试试' : '暂无设备数据'"
           :image-size="70"
         />
-        <table v-else class="sp-table">
+        <div v-else class="sp-table-wrap">
+          <table class="sp-table">
           <thead>
             <tr>
               <th class="c w-id">ID</th>
@@ -207,7 +211,8 @@
               </td>
             </tr>
           </tbody>
-        </table>
+          </table>
+        </div>
         <div class="sp-pager">
           <!-- 同场地：/resources/devices 也是裸数组、无分页，只报真实条数。 -->
           <span>共 {{ filteredDevices.length }} 台设备</span>
@@ -543,7 +548,7 @@ onMounted(refresh)
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--sp-s3);
   margin: 0 0 12px;
 }
 

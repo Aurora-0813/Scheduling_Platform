@@ -195,8 +195,8 @@ function goPlan() {
 <style scoped>
 .req {
   background: #fff;
-  border: 1px solid #f0f3f8;
-  border-radius: 20rpx;
+  border: 1px solid var(--bd-l);
+  border-radius: var(--r-lg);
   padding: 22rpx 24rpx;
   margin-bottom: 28rpx;
 }
@@ -220,7 +220,7 @@ function goPlan() {
 .sline {
   display: inline-flex;
   align-items: baseline;
-  gap: 12rpx;
+  gap: var(--s2);
   margin-bottom: 6rpx;
 }
 
@@ -240,7 +240,7 @@ function goPlan() {
 .waiting {
   display: flex;
   align-items: center;
-  gap: 16rpx;
+  gap: var(--s2);
   padding: 40rpx 0;
   font-size: 25rpx;
   color: var(--t3);

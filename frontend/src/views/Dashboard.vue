@@ -1,9 +1,19 @@
+<!--
+  ⚠️ 全页遮罩已去掉（2026-10-14）。
+
+  原来根节点挂着 v-loading="loading"，文案还是「AI 正在生成结构化建议…约 30~60 秒」，
+  而 loading 等的是 Promise.all([stats, report]) —— 于是 0.8 秒就能算完的统计，
+  被 74 秒的 AI 建议一起遮住，用户一进页面就是转圈。
+
+  现在遮罩只挂在下面的 .dash-body（统计主体）上，且只等 stats；
+  AI 建议由它自己的卡片显示「生成中」，两件事互不牵连。
+-->
 <template>
-  <div v-loading="loading" element-loading-text="AI 正在生成结构化建议，该接口较慢（约 30~60 秒），请勿刷新">
+  <div>
     <!-- 页头：对齐原型 PC-4 的 pagebar（标题 + 右侧「导出报告」「重新生成建议」） -->
     <div class="sp-pagebar">
       <h3>AI 数据洞察面板</h3>
-      <span class="sp-tag is-blue">📅 近 7 天</span>
+      <span class="sp-tag is-blue">近 7 天</span>
       <div class="sp-acts">
         <!-- 后端约定：导出按钮的可用性只看 exportUrl（degraded 与 exportUrl=null 不等价） -->
         <button
@@ -14,17 +24,27 @@
         >
           导出报告
         </button>
-        <!-- 该接口实测 26.7~51.6 秒，生成期间禁用，避免重复打请求 -->
-        <button class="sp-btn is-ai is-sm" :disabled="loading" @click="load">
-          🤖 {{ loading ? '生成中…' : '重新生成建议' }}
+        <!-- 该接口实测 27~74 秒，生成期间禁用，避免重复打请求。
+             判据用 reportLoading 而不是 loading：整页遮罩只等 stats（0.8 秒），
+             用 loading 会让按钮在建议还在生成时就恢复可点。 -->
+        <button class="sp-btn is-ai is-sm" :disabled="reportLoading" @click="load">
+          {{ reportLoading ? '生成中…' : '重新生成建议' }}
         </button>
       </div>
     </div>
 
+    <!-- 统计主体：遮罩只覆盖这一块，并且只等 stats（实测 0.8 秒）。
+         AI 建议在右侧卡片里自己显示进度，不参与这层等待。 -->
+    <div class="dash-body" v-loading="loading" element-loading-text="正在读取近 7 天的预约与设备数据…">
     <!-- AI 状态条：把 degraded 的两种含义如实讲清楚，而不是把占位零值渲染成真实 0 -->
     <div class="sp-ai-bar">
-      <span class="sp-ic">🤖</span>
+      <span class="sp-ic">◈</span>
       <span v-if="loading">正在读取近 7 天的预约与设备数据 …</span>
+      <!-- 统计已就绪、AI 还在写建议：这条必须排在 degraded 判断之前，
+           否则「还在生成」会被误读成「AI 不可用已降级」。 -->
+      <span v-else-if="reportLoading">
+        近 7 天统计已就绪；<b>AI 正在生成结构化建议</b>（约 30~70 秒，可先看下方统计，不必等）。
+      </span>
       <span v-else-if="stats.degraded">
         统计数据暂时不可用（后端读库失败，四项为<b>占位零值</b>，不代表场地真空着）—— 演示应急预案已生效。
       </span>
@@ -133,7 +153,7 @@
       <div class="insight-col is-wide">
         <div class="sp-card">
           <div class="sp-card-head">
-            <b>🤖 AI 结构化运营建议</b>
+            <b>结构化运营建议</b>
             <span class="sp-grow"></span>
             <span class="sp-tag is-purple">finding · evidence · suggestion</span>
           </div>
@@ -145,12 +165,22 @@
               <div class="sp-bar-anim"></div>
             </div>
           </template>
+          <!--
+            「正在生成」必须排在 degraded 之前判断：
+            还在生成时 report.degraded 也还是初值，先判 degraded 会把它误说成「模型不可用」。
+            文案里给出预期时长并指明「可以先看左侧」，用户就知道不用干等。
+          -->
+          <div v-else-if="reportLoading" class="sp-muted empty">
+            AI 正在生成建议（约 30~70 秒），左侧统计数字可先看。
+          </div>
           <div v-else class="sp-muted empty">
             {{ stats.degraded ? '数据暂时不可用' : '暂无建议' }}
           </div>
         </div>
       </div>
     </div>
+    <!-- /.dash-body -->
+  </div>
   </div>
 </template>
 
@@ -161,6 +191,13 @@ import { getDashboardReport, getDashboardStats } from '@/api/dashboard'
 import { first } from '@/utils/normalize'
 
 const loading = ref(false)
+/**
+ * AI 建议是否在生成中。
+ *
+ * 与 loading 分开：两者是**两次独立等待**（stats 0.8s / report 74s）。
+ * 复用同一个开关会出现「统计出来了但整页还遮着」或「建议没出来却已经解除遮罩」。
+ */
+const reportLoading = ref(false)
 
 const stats = reactive({})
 const report = reactive({})
@@ -223,17 +260,53 @@ function onExport() {
   }
 }
 
-// 抽成函数只是为了让页头的「重新生成建议」复用同一条取数链路：
-// 接口、请求参数、loading 开关与 Promise.all 的并发口径全部保持原样，没有改动业务逻辑。
+// 取数已拆成两步（见下方 loadStats / loadReport）：
+// 原先两者走同一个 Promise.all，于是 0.8 秒的统计被 74 秒的 AI 建议一起遮住。
+// 接口与请求参数都没变，只是不再互相等待。
+/**
+ * 统计面板：/dashboard/stats。**实测 0.8 秒**，是这一屏的主体。
+ *
+ * 拆出来单独 await，是为了让 KPI、高峰分布、设备故障三块**立刻**渲染 ——
+ * 它们全部只依赖 stats，跟 AI 建议没有任何关系。
+ */
+async function loadStats() {
+  const data = await getDashboardStats()
+  Object.assign(stats, data)
+}
+
+/**
+ * AI 结构化建议：/dashboard/report。**实测 74 秒**（波动 27~74 秒）。
+ *
+ * ⚠️ 这是本页最慢的一步，原先它和 stats 一起走 Promise.all，
+ * 于是一整屏要等 74 秒才出现 —— 而 0.8 秒就能算完的统计数字被白白压着。
+ * 现在它独立在后台跑，只有右侧「结构化运营建议」卡片自己显示生成中。
+ *
+ * 失败（模型不可用 / 超时）只清空建议并复位转圈：左下两块统计不受影响。
+ */
+async function loadReport() {
+  reportLoading.value = true
+  try {
+    const data = await getDashboardReport()
+    Object.assign(report, data)
+  } catch (e) {
+    report.suggestions = []
+  } finally {
+    reportLoading.value = false
+  }
+}
+
+/**
+ * 刷新。统计先出，建议随后 —— 刻意**不 await loadReport()**，
+ * 否则点一次按钮又要等 74 秒才看到任何东西。
+ */
 async function load() {
   loading.value = true
   try {
-    const [statsData, reportData] = await Promise.all([getDashboardStats(), getDashboardReport()])
-    Object.assign(stats, statsData)
-    Object.assign(report, reportData)
+    await loadStats()
   } finally {
     loading.value = false
   }
+  loadReport()
 }
 
 onMounted(load)
@@ -243,14 +316,14 @@ onMounted(load)
 /* 两栏比例照原型：左 1.2（图表）/ 右 1.7（建议） */
 .insight-row {
   display: flex;
-  gap: 14px;
+  gap: var(--sp-s3);
   align-items: flex-start;
 }
 
 .insight-col {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--sp-s3);
   flex: 1.2;
   min-width: 0;
 }
@@ -271,14 +344,44 @@ onMounted(load)
   }
 }
 
+/*
+ * 矮屏收紧（2026-10-14 加）。
+ *
+ * 本页左列是「柱状图 + 故障表」两块叠起来，实测 insight-row 高 487px：
+ * 视口 ≥820px 时刚好一屏放下（页面无滚动条），但 1366×768 这类笔记本还差 37px。
+ *
+ * 与其把所有人都挤到，不如只在**确实矮**的时候收一档：
+ *   · 图表高度 150 → 124px（柱子还能看清高低）
+ *   · 两栏间距 12 → 8px
+ * 高度 ≥801px 的屏幕完全不受影响，图表保持原本的舒展。
+ */
+@media (max-height: 800px) {
+  .insight-row,
+  .insight-col {
+    gap: 8px;
+  }
+
+  /* 148 → 118px：实测视口 768 时还差 3px，图表占这一屏纵向的大头，收它是代价最小的一刀 */
+  .sp-chart.is-dense {
+    height: 118px;
+  }
+
+  .sp-kpi .sp-v {
+    font-size: 23px;
+  }
+}
+
 /* 8 根柱子的时间标签比原型的 7 个星期标签长，在 1180~1300px 会把卡片顶出横向滚动，
-   所以这一处图表收窄间距与标签字号（样式仍只作用于本页的这根图表） */
+   所以这一处图表收窄间距与标签字号（样式仍只作用于本页的这根图表）。
+
+   ⚠️ 字号统一为 12px 最小档：原先写 10.5px，比全局最小字号还小，
+      中文在这个尺寸下发虚、长时间看很累。宁可靠收窄 gap 与换行腾地方。 */
 .sp-chart.is-dense {
-  gap: 10px;
+  gap: var(--sp-s2);
 }
 
 .sp-chart.is-dense .sp-bar em {
-  font-size: 10.5px;
+  font-size: 12px;
 }
 
 /* 原型 .sp-d 是给「环比涨跌」用的绿色，这里只是统计口径说明，不是涨跌，所以压回中性色 */
@@ -287,10 +390,10 @@ onMounted(load)
 }
 
 .chart-note {
-  font-size: 11.5px;
+  font-size: 12.5px;
   color: var(--sp-t3);
-  margin-top: 12px;
-  line-height: 1.8;
+  margin-top: var(--sp-s3);
+  line-height: 1.7;
 }
 
 .chart-note .is-peak-text {
@@ -302,12 +405,13 @@ onMounted(load)
 }
 
 .empty {
-  padding: 26px 0;
+  padding: var(--sp-s5) 0;
   text-align: center;
 }
 
 .sp-table .num {
   text-align: right;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 </style>

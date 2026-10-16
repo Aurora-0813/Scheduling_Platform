@@ -9,7 +9,7 @@
       -->
       <template v-if="!active">
         <view class="mcard">
-          <view class="mtitle">🤖 AI 还需要你补充一点信息</view>
+          <view class="mtitle">还需要你补充一点信息</view>
           <text class="mtext">
             {{ agentReply || '暂时没能生成方案。补充一下时间、人数或设备，我再算一次。' }}
           </text>
@@ -40,7 +40,7 @@
 
         <!-- 决策依据：直接展示 plan.reason，这是后端给出的唯一解释来源 -->
         <view v-if="active.reason" class="mcard">
-          <view class="mtitle">🤖 AI 决策依据</view>
+          <view class="mtitle">决策依据</view>
           <text class="mtext">{{ active.reason }}</text>
         </view>
 
@@ -66,7 +66,7 @@
 
         <!-- 摘要 + 自动生成的标签 -->
         <view class="mcard">
-          <view class="mtitle">🤖 AI 预约摘要</view>
+          <view class="mtitle">预约摘要</view>
           <text class="mtext">{{ summary }}</text>
           <view class="tags">
             <text v-for="(t, i) in tags" :key="i" class="tag" :class="t.tone">{{ t.text }}</text>
@@ -126,7 +126,7 @@ import { confirmOrder, createOrder } from '@/api/orders.js'
 import { formatTimeRange, formatMoney } from '@/utils/format.js'
 import { first } from '@/utils/normalize.js'
 import { toast, toastOk, showLoading, hideLoading, resetLoading } from '@/utils/toast.js'
-import { TABS } from '@/utils/tabs.js'
+// 建单成功后改用 reLaunch 去预约详情，不再需要 TABS 的列表兜底（2026-10-14）
 
 // 页面销毁时把 loading 计数归零：万一有哪条路径没配平，残留的计数会让之后
 // 每一次 show/hide 都错位 —— 微信侧会一直报「showLoading 与 hideLoading 必须配对使用」
@@ -145,7 +145,7 @@ const other = computed(() => (isMain.value ? backupPlan.value : mainPlan.value) 
 
 const sideLabel = computed(() => (isMain.value ? '主方案' : '备选方案'))
 
-const activeTitle = computed(() => (isMain.value ? '🤖 推荐方案' : '🤖 备选方案'))
+const activeTitle = computed(() => (isMain.value ? '推荐方案' : '备选方案'))
 
 function nameOf(p) {
   if (!p) return ''
@@ -288,11 +288,22 @@ async function submit() {
     resetAgent()
 
     const id = first(order && order.orderId, order && order.id)
-    if (id !== undefined) {
-      uni.redirectTo({ url: `/pages/order/detail?orderId=${id}` })
-    } else {
-      uni.reLaunch({ url: TABS[1].path })
-    }
+    /*
+     * 与 pages/reserve/confirm.vue 的建单出口保持同一口径（2026-10-14 统一）：
+     *
+     * 1. **reLaunch 而不是 redirectTo**。本页是「语音/草图 → thinking → plan」这条
+     *    最常走的链路的终点，栈里已经压了 3 页。redirectTo 只替换栈顶，
+     *    用户在详情页按返回会依次退回 plan / thinking / record 这些走完的中间页；
+     *    reLaunch 清空页面栈，详情页成为唯一一页。
+     *
+     * 2. **不再带 TABS[1] 兜底**。原先 id 缺失时跳预约列表，用户会停在
+     *    没被清栈的页面上、又看不到成功证据。现在统一去详情页：
+     *    详情页读不到订单会渲染 mp-empty「没有找到这条预约」并给出「返回列表」，
+     *    反馈链是完整的；后端建单成功一定会返回 id，拿不到属异常。
+     *
+     * 3. **带 from=create**，详情页据此不渲染返回箭头（栈已清空，返回无处可去）。
+     */
+    uni.reLaunch({ url: '/pages/order/detail?from=create&orderId=' + encodeURIComponent(id === undefined || id === null ? '' : id) })
   } catch (e) {
     toast(e.message || '创建预约失败')
   } finally {
@@ -310,7 +321,7 @@ async function submit() {
 .tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 12rpx;
+  gap: var(--s2);
   margin-top: 20rpx;
 }
 

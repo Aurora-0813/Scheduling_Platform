@@ -291,7 +291,11 @@ async def _match_device(db: AsyncSession, name: str) -> tuple[DeviceResource | N
 
 
 async def _sync_device_status(
-    db: AsyncSession, *, device_name: str | None, status: str
+    db: AsyncSession,
+    *,
+    device_name: str | None,
+    status: str,
+    device_id: int | None = None,
 ) -> tuple[int | None, str | None, str]:
     """
     按 AI 认出的设备名，把判定结果回写到设备台账：
@@ -348,14 +352,41 @@ async def _sync_device_status(
     让巡检顺手把设备标回完好，等于凭一张照片宣称修好了，绕过了维修确认。
     """
     code = _DEVICE_STATUS_CODE.get(status)
-    if code is None or not device_name:
+    if code is None:
         return None, None, ""
 
-    name = device_name.strip()
-    if not name:
-        return None, None, ""
+    # ---- 分支 A：显式指定了设备（扫码 / 下拉选中的那一台）----
+    # 2026-10-13 新增的「精确识别」路径。原先只有下面那条模糊匹配，而视觉模型
+    # 天生分不出「投影仪01」与「投影仪02」（照片里长得一样），4 台命中就自动分配
+    # —— 坏的是 03，系统却把 01 标成损坏。现在由人（扫码/下拉）明确指定是哪一台。
+    if device_id is not None:
+        device = await db.get(DeviceResource, device_id)
+        if device is None:
+            logger.info("巡检指定了 deviceId=%s，但设备台账里没有这台", device_id)
+            return None, None, REASON_NOT_FOUND
+        # 显式指定同样要挡重复报修：同一台已在处理中就不该再建单
+        if device.device_status != 1 or await _has_open_ticket(db, device.id):
+            logger.info(
+                "巡检指定设备 #%s「%s」，但它已在维修处理中", device.id, device.device_name
+            )
+            return (
+                None,
+                (
+                    f"该设备（{device.device_name}）已在维修工单列表中，"
+                    "处理完成后状态会恢复正常。本次仅记录巡检结果，未重复建单。"
+                ),
+                REASON_ALL_IN_REPAIR,
+            )
+        how = f"按指定设备 #{device.id}「{device.device_name}」"
+    else:
+        # ---- 分支 B：兼容旧路径 —— 按 AI 认出的名字模糊匹配 ----
+        if not device_name:
+            return None, None, ""
+        name = device_name.strip()
+        if not name:
+            return None, None, ""
+        device, how = await _match_device(db, name)
 
-    device, how = await _match_device(db, name)
     if device is None:
         # 命中了、但每台都已在处理 → 给用户一句可读提示，别让他重复提交
         if how.startswith(ALL_IN_REPAIR):
@@ -425,7 +456,10 @@ async def _sync_device_status(
     else:
         device.available_count -= 1
         logger.info(
-            "设备 #%s「%s」可借数 −1 → %s（巡检判定「%s」）",
+            # 用 ASCII 减号而不是 U+2212：Windows 控制台是 GBK 码页，
+            # 日志里出现 U+2212 会抛 UnicodeEncodeError（"--- Logging error ---"），
+            # 功能不受影响，但日志会被刷脏、真问题被淹没。
+            "设备 #%s「%s」可借数 -1 → %s（巡检判定「%s」）",
             device.id,
             device.device_name,
             device.available_count,
@@ -530,19 +564,35 @@ async def _restore_device(db: AsyncSession, ticket: RepairTicket) -> tuple[int |
     return int(device.id), device.available_count
 
 
-def _ticket_item(ticket: RepairTicket, ai_result: dict | None) -> TicketItem:
-    """把 (工单行, 关联巡检记录的 ai_result) 组装成列表项。"""
+def _ticket_item(
+    ticket: RepairTicket,
+    ai_result: dict | None,
+    inspect_image_url: str | None = None,
+    ledger_device_name: str | None = None,
+) -> TicketItem:
+    """把 (工单行, 巡检记录, 台账设备名) 组装成列表项。"""
     ai = ai_result or {}
     return TicketItem(
         id=ticket.id,
         spaceId=ticket.space_id,
         deviceId=ticket.device_id,
         deviceStatus=ai.get("deviceStatus"),
-        deviceName=ai.get("deviceName"),
+        # 设备名**以台账为准**（「投影仪04」这种带编号的），AI 报的品类名只是兜底。
+        # 为什么：照片里两台投影仪长得一样，模型只报得出「投影仪」；到底是哪一台
+        # 由 deviceId 决定（扫码 / 下拉指定）。拿 AI 的品类名当标题的话，
+        # 用户看到的就是一个分不清是哪台的词 —— 这正是「工单里没有具体编号」的根因。
+        deviceName=ledger_device_name or ai.get("deviceName"),
+        # 固定设施（插座 / 门把手）不在设备台账里，位置是它们唯一的精度来源
+        locationHint=ai.get("locationHint"),
         status=ticket.ticket_status,
         statusText=_status_text(ticket.ticket_status),
         report=ai.get("report"),
         createTime=format_time(ticket.create_time),
+        # 原始巡检照片：工单表不存这一列，靠 inspect_id JOIN 回巡检记录取。
+        # 不透出的话，管理员在工单里看不到「当初拍的到底是哪张」。
+        # 空串归一成 None：落盘失败时巡检记录里存的是 ""（该列 NOT NULL），
+        # 直接透出去前端会拿到一个「有值但加载不出来」的图片地址。
+        inspectImageUrl=inspect_image_url or None,
         handleImageUrl=ticket.handle_image_url,
         verifyStatus=ticket.verify_status,
         verifyReport=ticket.verify_report,
@@ -559,6 +609,8 @@ async def submit_inspection(
     space_id: int,
     inspector_id: int,
     llm: BaseChatModel,
+    device_id: int | None = None,
+    location_hint: str | None = None,
 ) -> InspectSubmitData:
     """
     提交一张巡检照片：AI 判定 → 落巡检记录 → 异常时建维修工单。
@@ -569,6 +621,16 @@ async def submit_inspection(
         space_id     : int             拍摄所在场地
         inspector_id : int             巡检人，**必须来自 JWT**（§5.1，禁止从 FormData 传）
         llm          : BaseChatModel   视觉模型（由 get_vision_llm 注入；测试用假模型替换）
+        device_id    : int | None      用户**明确指定**的设备 ID（扫码或下拉选中）。
+                                       **传了就精确更新这一台**，跳过 AI 名称模糊匹配；
+                                       不传则保持原行为（按 AI 认出的名字匹配 → 多台时自动分配）。
+                                       为什么需要它：照片里两台投影仪长得一样，模型只报得出
+                                       「投影仪」这个品类，命中 4 台只能自动分配 —— 会标错设备。
+        location_hint: str | None      **用户填的具体位置**（如「3楼走廊东侧」），可选。
+                                       为什么需要它：固定设施（插座/门把手/电路）**不在设备台账里**，
+                                       只有场地一级的精度 —— 光说「这个场地有个插座坏了」
+                                       无法定位到是哪一个。位置是这类设施唯一的精度来源。
+                                       用户填的**优先于** AI 从画面里推断的位置。
 
     返回：
         InspectSubmitData(datasetStatus, report, repairSuggestion, ticketId)
@@ -632,12 +694,18 @@ async def submit_inspection(
         if status not in ABNORMAL_STATUSES:
             suggestion = ""
 
+    # 具体位置：**用户填的优先** —— 他就在现场，比模型从画面里推断的可靠；
+    # 用户没填才用模型给的。两者都空就是 None（不是空串），前端按空值处理。
+    ai_location = None if parse_failed else ((parsed.locationHint or "").strip() or None)
+    final_location = (location_hint or "").strip() or ai_location
+
     ai_result: dict = {
         "deviceStatus": status,
         "report": report,
         "repairSuggestion": suggestion,
         "deviceName": device_name,
         "deviceType": device_type,
+        "locationHint": final_location,
         "parseFallback": parse_failed,
     }
     if parse_failed and raw_reply:
@@ -655,14 +723,14 @@ async def submit_inspection(
 
     # ---- ⑦ 判定异常 → 建工单 + 同步设备台账 ----
     ticket: RepairTicket | None = None
-    device_id: int | None = None
+    linked_device_id: int | None = None
     device_warning: str | None = None
     if status in ABNORMAL_STATUSES:
         # 先按 AI 认出的设备名回写设备台账（状态 + 可借数 −1），拿到 device_id
         # 再建工单 —— 这样 `repair_ticket.device_id` 不再恒为 NULL，
         # 「资源与设备」页里那台设备的状态与可借数会真的跟着变。
-        device_id, device_warning, sync_reason = await _sync_device_status(
-            db, device_name=device_name, status=status
+        linked_device_id, device_warning, sync_reason = await _sync_device_status(
+            db, device_name=device_name, status=status, device_id=device_id
         )
 
         # ⚠️ 命中的设备**全部已在维修处理中**时**不重复建单**（2026-10-10 加）。
@@ -678,7 +746,7 @@ async def submit_inspection(
         if sync_reason != REASON_ALL_IN_REPAIR:
             ticket = RepairTicket(
                 inspect_id=record.id,
-                device_id=device_id,
+                device_id=linked_device_id,
                 space_id=space_id,
                 ticket_status=1,  # 待处理
                 handler_id=None,  # 处理时才由 PUT 接口写入
@@ -697,6 +765,9 @@ async def submit_inspection(
         # 可借数已经为 0、本次未再减时把原因带回给用户。
         # 不回传的话，用户看到「工单建了、可借数没变」会以为是 bug。
         deviceWarning=device_warning,
+        locationHint=final_location,
+        # 照片在步骤 ③ 就已落盘（落盘失败是空串），这里原样回传，前端可立即回看
+        imageUrl=image_url or None,
     )
 
 
@@ -734,8 +805,17 @@ async def list_tickets(
 
     rows = (
         await db.execute(
-            select(RepairTicket, InspectRecord.ai_result)
+            select(
+                RepairTicket,
+                InspectRecord.ai_result,
+                InspectRecord.image_url,
+                # 台账里的设备名（带编号的那种）—— 见 _ticket_item 里的说明
+                DeviceResource.device_name,
+            )
             .outerjoin(InspectRecord, InspectRecord.id == RepairTicket.inspect_id)
+            # LEFT JOIN 设备台账：工单可能未关联设备（插座/门把手这类非台账设施），
+            # 用 INNER 会让那些工单整条从列表里消失。
+            .outerjoin(DeviceResource, DeviceResource.id == RepairTicket.device_id)
             .where(*where)
             .order_by(RepairTicket.id.desc())
             .offset((page - 1) * page_size)
@@ -747,7 +827,7 @@ async def list_tickets(
         page=page,
         pageSize=page_size,
         total=int(total),
-        list=[_ticket_item(ticket, ai) for ticket, ai in rows],
+        list=[_ticket_item(ticket, ai, img, dev_name) for ticket, ai, img, dev_name in rows],
     )
 
 

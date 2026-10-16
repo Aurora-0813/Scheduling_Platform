@@ -1,0 +1,230 @@
+.nb-fixed[data-v-1de34ced] {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+}
+.nb-inner[data-v-1de34ced] {
+  display: flex;
+  align-items: center;
+  padding-left: 0.8125rem;
+  border-bottom: 1px solid var(--bd-l, #ebeef5);
+  position: relative;
+}
+.nb-back[data-v-1de34ced] {
+  font-size: 1.375rem;
+  line-height: 1;
+  color: #7a8ba0;
+  padding-right: 0.375rem;
+  margin-top: -0.1875rem;
+}
+
+/* 二级页标题：绝对居中，不受左右元素宽度影响 */
+.nb-title[data-v-1de34ced] {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  transform: translateX(-50%);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--t1, #303133);
+  max-width: 50%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 首页大标题 */
+.nb-big[data-v-1de34ced] {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--t1, #303133);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  margin-right: 0.5rem;
+}
+.nb-right[data-v-1de34ced] {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--t3, #909399);
+  flex: none;
+}
+
+
+.empty[data-v-7423a8c1] {
+  padding: 3.75rem 1.25rem;
+  text-align: center;
+}
+.icon[data-v-7423a8c1] {
+  font-size: 2.8125rem;
+  opacity: 0.35;
+  display: block;
+  margin-bottom: 0.75rem;
+}
+.txt[data-v-7423a8c1] {
+  font-size: 0.8125rem;
+  color: var(--t3, #909399);
+  line-height: 1.7;
+  display: block;
+  margin-bottom: 0.875rem;
+}
+.act[data-v-7423a8c1] {
+  display: inline-block;
+  padding: 0.5rem 1.375rem;
+  border-radius: 0.375rem;
+  font-size: 0.78125rem;
+  color: var(--t2, #606266);
+  background: #fff;
+  border: 1px solid var(--bd, #dcdfe6);
+}
+.act-on[data-v-7423a8c1] {
+  opacity: 0.82;
+}
+
+
+/* 类型筛选 */
+.seg[data-v-7bd4c190] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4375rem;
+  margin-bottom: 0.6875rem;
+}
+.sg[data-v-7bd4c190] {
+  font-size: 0.75rem;
+  padding: 0.375rem 0.8125rem;
+  border-radius: 0.875rem;
+  color: var(--t2);
+  background: #fff;
+  border: 1px solid var(--bd-l);
+}
+.sg.on[data-v-7bd4c190] {
+  color: #fff;
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+/* 场地卡 */
+.sphead[data-v-7bd4c190] {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.spmain[data-v-7bd4c190] {
+  flex: 1;
+  min-width: 0;
+}
+.sptop[data-v-7bd4c190] {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  margin-bottom: 0.375rem;
+}
+.spname[data-v-7bd4c190] {
+  font-size: 0.90625rem;
+  font-weight: 600;
+  color: var(--t1);
+}
+.spmeta[data-v-7bd4c190] {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--t3);
+  line-height: 1.8;
+}
+.chev[data-v-7bd4c190] {
+  flex: none;
+  font-size: 1.0625rem;
+  color: #c6ced9;
+}
+
+/* 展开区 */
+.bk[data-v-7bd4c190] {
+  margin-top: 0.6875rem;
+  padding-top: 0.6875rem;
+  border-top: 1px solid #f0f3f8;
+}
+.bkhead[data-v-7bd4c190] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+.bkh[data-v-7bd4c190] {
+  font-size: 0.78125rem;
+  font-weight: 600;
+  color: var(--t1);
+}
+.bkd[data-v-7bd4c190] {
+  display: flex;
+  gap: 0.3125rem;
+}
+.bd[data-v-7bd4c190] {
+  font-size: 0.6875rem;
+  padding: 0.1875rem 0.5625rem;
+  border-radius: 0.625rem;
+  color: var(--t3);
+  background: #f4f6fa;
+}
+.bd.on[data-v-7bd4c190] {
+  color: var(--primary);
+  background: #eef5ff;
+  border: 1px solid var(--ai-line);
+}
+.bkmsg[data-v-7bd4c190] {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--t3);
+  padding: 0.3125rem 0;
+  line-height: 1.8;
+}
+.bkmsg.err[data-v-7bd4c190] {
+  color: var(--danger);
+}
+.bkmsg.ok[data-v-7bd4c190] {
+  color: var(--success);
+}
+.bkrow[data-v-7bd4c190] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4375rem 0;
+}
+.bkrow + .bkrow[data-v-7bd4c190] {
+  border-top: 1px solid #f6f8fb;
+}
+.bkleft[data-v-7bd4c190] {
+  flex: 1;
+  min-width: 0;
+}
+.bktime[data-v-7bd4c190] {
+  display: block;
+  font-size: 0.78125rem;
+  color: var(--t1);
+  font-weight: 600;
+}
+.bksub[data-v-7bd4c190] {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--t3);
+  margin-top: 0.1875rem;
+}
+.bkfoot[data-v-7bd4c190] {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--t3);
+  margin-top: 0.375rem;
+}
+.tip[data-v-7bd4c190] {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--t3);
+  line-height: 1.7;
+  padding: 0.8125rem 0.25rem 0.3125rem;
+}

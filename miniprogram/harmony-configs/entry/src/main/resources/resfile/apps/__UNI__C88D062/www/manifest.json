@@ -1,0 +1,122 @@
+{
+  "@platforms": [
+    "android",
+    "iPhone",
+    "iPad"
+  ],
+  "id": "__UNI__C88D062",
+  "name": "AI 智能空间调度",
+  "version": {
+    "name": "0.1.0",
+    "code": "100"
+  },
+  "description": "AI 全感知·智能空间与设备综合调度平台 — 微信小程序端",
+  "developer": {
+    "name": "",
+    "email": "",
+    "url": ""
+  },
+  "permissions": {
+    "Camera": {},
+    "Record": {},
+    "UniNView": {
+      "description": "UniNView原生渲染"
+    }
+  },
+  "plus": {
+    "useragent": {
+      "value": "uni-app",
+      "concatenate": true
+    },
+    "splashscreen": {
+      "target": "id:1",
+      "autoclose": true,
+      "waiting": true,
+      "delay": 0
+    },
+    "popGesture": "close",
+    "launchwebview": {
+      "render": "always",
+      "id": "1",
+      "kernel": "WKWebview"
+    },
+    "usingComponents": true,
+    "nvueStyleCompiler": "uni-app",
+    "compilerVersion": 3,
+    "distribute": {
+      "google": {
+        "permissions": [
+          "<uses-permission android:name=\"android.permission.INTERNET\"/>",
+          "<uses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\"/>",
+          "<uses-permission android:name=\"android.permission.CAMERA\"/>",
+          "<uses-permission android:name=\"android.permission.RECORD_AUDIO\"/>",
+          "<uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\"/>",
+          "<uses-permission android:name=\"android.permission.WRITE_EXTERNAL_STORAGE\"/>"
+        ],
+        "minSdkVersion": 21,
+        "targetSdkVersion": 27,
+        "abiFilters": [
+          "armeabi-v7a",
+          "arm64-v8a"
+        ]
+      },
+      "apple": {
+        "dSYMs": false
+      },
+      "plugins": {
+        "audio": {
+          "mp3": {
+            "description": "Android平台录音支持MP3格式文件"
+          }
+        }
+      }
+    },
+    "statusbar": {
+      "immersed": "supportedDevice",
+      "style": "dark",
+      "background": "#000000"
+    },
+    "uniStatistics": {
+      "enable": false
+    },
+    "allowsInlineMediaPlayback": true,
+    "uni-app": {
+      "control": "uni-v3",
+      "vueVersion": "3",
+      "compilerVersion": "5.26",
+      "nvueCompiler": "uni-app",
+      "renderer": "auto",
+      "nvue": {
+        "flex-direction": "column"
+      },
+      "nvueLaunchMode": "normal",
+      "webView": {
+        "minUserAgentVersion": "49.0"
+      }
+    }
+  },
+  "app-harmony": {
+    "useragent": {
+      "value": "uni-app",
+      "concatenate": true
+    },
+    "distribute": {
+      "bundleName": "uni.app.UNIC88D062",
+      "signingConfigs": {
+        "default": {
+          "certpath": "c:\\Users\\admin\\AppData\\Roaming\\HBuilder X\\extensions\\launcher\\agc-certs\\1791808215682.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001B83ACAC382C7E18878DAE807279B0B6433AD813EE7D0FEA3C6067801BA89B984E0C22DF15D5D8E5",
+          "profile": "c:\\Users\\admin\\AppData\\Roaming\\HBuilder X\\extensions\\launcher\\agc-certs\\1791808215682.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "c:\\Users\\admin\\AppData\\Roaming\\HBuilder X\\extensions\\launcher\\agc-certs\\1791808215682.p12",
+          "storePassword": "0000001B83ACAC382C7E18878DAE807279B0B6433AD813EE7D0FEA3C6067801BA89B984E0C22DF15D5D8E5"
+        }
+      }
+    },
+    "uniStatistics": {
+      "enable": false
+    }
+  },
+  "launch_path": "__uniappview.html"
+}

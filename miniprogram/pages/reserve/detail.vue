@@ -92,15 +92,15 @@ async function cancel() {
 
 <style scoped>
 .page { padding: 24rpx; }
-.card { background: #fff; border-radius: 16rpx; padding: 24rpx; }
+.card { background: #fff; border-radius: var(--r-md); padding: 24rpx; }
 .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20rpx; }
 .title { font-size: 32rpx; font-weight: 600; }
-.meta { color: #666; font-size: 28rpx; margin-top: 16rpx; }
-.meta.ai { color: #2b85e4; }
+.meta { color: var(--t2); font-size: 28rpx; margin-top: 16rpx; }
+.meta.ai { color: var(--primary); }
 .trace-card { margin-top: 20rpx; }
-.trace-title { font-size: 28rpx; font-weight: 600; color: #2b85e4; margin-bottom: 16rpx; }
-.trace-item { font-size: 26rpx; color: #555; padding: 12rpx 0; border-bottom: 1rpx solid #f0f0f0; }
+.trace-title { font-size: 28rpx; font-weight: 600; color: var(--primary); margin-bottom: 16rpx; }
+.trace-item { font-size: 26rpx; color: var(--t2); padding: 12rpx 0; border-bottom: 1rpx solid var(--bd-l); }
 .trace-item:last-child { border-bottom: none; }
-.trace-ts { margin-left: 12rpx; font-size: 22rpx; color: #999; }
-.actions { margin-top: 40rpx; display: flex; flex-direction: column; gap: 20rpx; }
+.trace-ts { margin-left: 12rpx; font-size: 22rpx; color: var(--t3); }
+.actions { margin-top: 40rpx; display: flex; flex-direction: column; gap: var(--s3); }
 </style>

@@ -60,8 +60,15 @@ export const getOrders = (status) =>
 
 export const getOrder = (id) => request({ path: `/orders/${id}`, method: 'GET' })
 
-export const createOrder = (data) =>
-  request({ path: '/orders/create', method: 'POST', data })
+/**
+ * 创建预约。
+ *
+ * `options` 是 2026-10-13 加的（可选，向后兼容）：草图预约页要自己处理
+ * 「时段/设备冲突」，需要 `{ silent: true }` 关掉请求层的自动 toast ——
+ * 否则用户会先看到一个自动弹的 toast，紧接着又看到我们的冲突弹窗，两条提示打架。
+ */
+export const createOrder = (data, options = {}) =>
+  request({ path: '/orders/create', method: 'POST', data, ...options })
 
 export const confirmOrder = (id) =>
   request({ path: `/orders/${id}/confirm`, method: 'PUT' })

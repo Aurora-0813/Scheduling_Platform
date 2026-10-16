@@ -9,7 +9,7 @@
         不知道该补什么，来回打转。
       -->
       <view v-if="agentStore.lastQuestion" class="askcard">
-        <text class="askt">🤖 AI 还需要你补充</text>
+        <text class="askt">还需要你补充</text>
         <text class="askc">{{ agentStore.lastQuestion }}</text>
       </view>
 
@@ -62,11 +62,54 @@
 
       <!-- 规整后的结构化约束 -->
       <template v-if="chips.length">
-        <text class="sect">🤖 AI 已规整为结构化约束</text>
+        <text class="sect">已规整为结构化约束</text>
         <view class="chips">
           <text v-for="(c, i) in chips" :key="i" class="chip">{{ c }}</text>
         </view>
       </template>
+
+      <!--
+        AI 解析出的条件（2026-10-13 新增，POST /agent/parse）。
+        摆在「手动输入」之前、CTA 之上：用户点完按钮眼睛就在这一带，
+        条件读到哪、哪个字段读空了，必须**当场**能看见 —— 猜错才有机会纠正。
+      -->
+      <view v-if="parsed" class="pcard">
+        <view class="phead">
+          <text class="pt">读出的条件</text>
+          <text class="pc">置信度 {{ Math.round((parsed.confidence || 0) * 100) }}%</text>
+        </view>
+
+        <view v-if="parsedRows.length" class="prows">
+          <view v-for="(r, i) in parsedRows" :key="i" class="prow">
+            <text class="pk">{{ r.k }}</text>
+            <text class="pv">{{ r.v }}</text>
+          </view>
+        </view>
+        <text v-else class="pnone">这句话里没有明确的硬条件，请在确认页自己选。</text>
+
+        <view v-if="parsedRecommend && (parsedRecommend.spaceName || parsedRecommend.reason)" class="prec">
+          <text class="prect">💡 推荐场地</text>
+          <text v-if="parsedRecommend.spaceName" class="precn">{{ parsedRecommend.spaceName }}</text>
+          <text v-if="parsedRecommend.reason" class="precr">{{ parsedRecommend.reason }}</text>
+          <!-- 备选只是并列候选，不带理由会让人以为「也行」；代价必须一起给 -->
+          <text
+            v-for="(a, i) in (parsedRecommend.alternatives || [])"
+            :key="'a' + i"
+            class="preca"
+          >备选：{{ a.spaceName }}<template v-if="a.tradeoff">（{{ a.tradeoff }}）</template></text>
+        </view>
+
+        <!--
+          `missing` 是模型自报的「你没说、我按什么默认值处理的」。
+          这块**必须显示**：它是唯一能让用户发现「AI 悄悄替他做了决定」的地方。
+        -->
+        <view v-if="parsedConditions && parsedConditions.missing && parsedConditions.missing.length" class="pmiss">
+          <text class="pmisst">⚠️ 这些没提到，看你认不认</text>
+          <text v-for="(m, i) in parsedConditions.missing" :key="'m' + i" class="pmissl">· {{ m }}</text>
+        </view>
+      </view>
+
+      <text v-if="parseError" class="perr">{{ parseError }}</text>
 
       <!-- 录音不可用 / 不想说话时的兜底输入 -->
       <view class="manual">
@@ -87,8 +130,38 @@
     </view>
 
     <view class="app-cta">
+      <!--
+        主出口（2026-10-13 起）：先让 AI **读一遍**，把条件摆出来给用户核对，再建单。
+        与下面「交给 AI 生成方案」的区别必须说清楚：
+          这条走 /agent/parse，**不落单**；下面那条走 /agent/schedule，会真落一条待确认预约。
+      -->
       <view
         class="btn ai block"
+        :class="{ disabled: !agentText || parsing }"
+        hover-class="btn-on"
+        :hover-stay-time="60"
+        @tap="onParse"
+      >{{ parseBtnLabel }}</view>
+
+      <!--
+        方案 A 的第二个出口（2026-10-13 加）：先自己把时间 / 场地 / 设备选清楚，再直接下单。
+        语音和拍照不一样 —— 用户**可能**说了时间（「周六下午」），也可能一句都没提，
+        所以这条路是「补全」，不是「替换」：说到的那部分自动预填，没说的在确认页补。
+      -->
+      <view
+        class="btn ghost block cta-2"
+        :class="{ disabled: !agentText }"
+        hover-class="btn-on"
+        :hover-stay-time="60"
+        @tap="goConfirm"
+      >先核对时间 / 场地 / 设备 →</view>
+
+      <!--
+        原有主按钮降为第三位：它会**真的落一条待确认预约**（见 goAgent），
+        而上面两条都还没有副作用。有副作用的那个不该排在第一个。
+      -->
+      <view
+        class="btn ghost block cta-2"
         :class="{ disabled: !agentText }"
         hover-class="btn-on"
         :hover-stay-time="60"
@@ -117,8 +190,11 @@
 import { ref, computed, onUnmounted } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { asr, format } from '@/api/voice.js'
+import { parseRequest } from '@/api/agent.js'
 import { agentStore } from '@/store/agent.js'
+import { setPrefill } from '@/store/reservePrefill.js'
 import { RECORD_OPTIONS } from '@/config/index.js'
+import { parseDateTime } from '@/utils/format.js'
 import { toast } from '@/utils/toast.js'
 
 const recording = ref(false)
@@ -136,6 +212,26 @@ const draft = ref('')
 const formatting = ref(false)
 /** 规整请求序号：并发时只认最后一次的结果，防止旧响应盖掉新文本 */
 let fmtSeq = 0
+
+/**
+ * 「AI 解析条件」态（2026-10-13 新增）。
+ *
+ * 与 formatting 分开：两者都是模型调用、都可能同时在飞，共用一个标签会让
+ * 用户以为「规整完了」，其实解析还在跑。序号同 fmtSeq 的理由 —— 并发只认最后一次。
+ */
+const parsing = ref(false)
+const parseSeq = { n: 0 }
+/** POST /agent/parse 的结果：`{ conditions, recommend, confidence, latencyMs }` */
+const parsed = ref(null)
+/**
+ * 这份 parsed 是**针对哪段文本**解析出来的。
+ *
+ * 用来判断「还能不能直接复用」：用户改完字再点按钮，旧的条件就不能再拿去预填了，
+ * 必须重新解析。用文本本身比对，比加一个 dirty 标志可靠（改了又改回来仍算同一份）。
+ */
+const parsedFrom = ref('')
+/** 解析失败时的可读原因（后端 message / 网络原因），显示在按钮下方 */
+const parseError = ref('')
 /** 打字机：识别结果一个字一个字吐出来（typing 为 true 时展示 typed，而不是整段 rawText） */
 const typing = ref(false)
 const typed = ref('')
@@ -160,15 +256,75 @@ const hintText = computed(() => {
   if (recording.value) return '正在聆听… 松开结束'
   if (recognizing.value) return 'AI 正在识别语音…'
   if (typing.value) return '识别完成，稍后可直接修改'
+  if (parsing.value) return 'AI 正在读这句话里的时间 / 人数 / 设备…'
   if (formatting.value) return 'AI 正在规整为结构化约束…（文字已可用，可直接提交）'
   if (rawText.value) return '长按可以重新说一次'
   return '按住下方按钮，说出你的场地需求'
 })
 
-/** 交给 Agent 的文本：优先用规整后的，没有就用原始识别结果 */
+/**
+ * 交给 Agent 的文本：优先用规整后的，没有就用原始识别结果。
+ *
+ * ⚠️ 「AI 解析条件」解析的是**规整后**的文本（用户点按钮时屏幕上显示的就是它）。
+ * 规整还在飞的时候 `formattedText` 为空，此处自动退回 `rawText` ——
+ * 这正是我们要的：解析不等规整，用户点了就用现有的文字去读。
+ */
 const agentText = computed(() => formattedText.value || rawText.value)
 
 const chips = computed(() => keywords.value)
+
+// ------------------------------------------------------------------
+// AI 解析条件（POST /agent/parse）
+// ------------------------------------------------------------------
+/**
+ * 上次解析出来的条件，**是否仍然对应当前这段文字**。
+ *
+ * 为什么要有这个判断：解析一次要 10~32 秒，用户改一个字就得重跑一遍体验很差。
+ * 反过来，如果用户改了字还用旧条件去预填，就等于拿「别的话」读出来的结果
+ * 替他填表 —— 比不填更糟。用文本比对两头都占到。
+ */
+const parseFresh = computed(() => Boolean(parsed.value) && parsedFrom.value === agentText.value)
+
+const parsedConditions = computed(() => (parsed.value && parsed.value.conditions) || null)
+const parsedRecommend = computed(() => (parsed.value && parsed.value.recommend) || null)
+
+const SPACE_TYPE_TEXT = { 1: '会议室', 2: '展厅', 3: '多功能厅', 4: '户外场地' }
+
+/** 「AI 读出了什么」列出成对（`{ k, v }`），空值不占位置。 */
+const parsedRows = computed(() => {
+  const c = parsedConditions.value
+  if (!c) return []
+  const rows = []
+  if (c.capacity) rows.push({ k: '人数', v: c.capacity + ' 人' })
+  if (c.spaceType) rows.push({ k: '类型', v: SPACE_TYPE_TEXT[c.spaceType] || '不限' })
+  const start = parseDateTime(c.startTime)
+  if (start) {
+    const end = parseDateTime(c.endTime)
+    rows.push({
+      k: '时间',
+      v:
+        `${start.getMonth() + 1}-${start.getDate()} ` +
+        `${('0' + start.getHours()).slice(-2)}:${('0' + start.getMinutes()).slice(-2)}` +
+        (end
+          ? `~${('0' + end.getHours()).slice(-2)}:${('0' + end.getMinutes()).slice(-2)}`
+          : ''),
+    })
+  }
+  if (c.deviceTypes && c.deviceTypes.length) rows.push({ k: '设备', v: c.deviceTypes.join('、') })
+  if (c.budget) rows.push({ k: '预算', v: '¥ ' + c.budget })
+  return rows
+})
+
+/**
+ * 按钮文案。**点一次解析、再点一次进确认页**，不是一点就跳走。
+ *
+ * 为什么不第一次点就直接跳确认页：那样用户永远看不到「AI 读出了什么」，
+ * 只能到确认页里自己发现人数被读成了 20。先展示再带走，才是「猜错能当场纠正」。
+ */
+const parseBtnLabel = computed(() => {
+  if (parsing.value) return 'AI 正在解析条件…'
+  return parseFresh.value ? '确认条件并核对场地 →' : '解析条件'
+})
 
 // ------------------------------------------------------------------
 // 语义高亮
@@ -304,38 +460,22 @@ function stopTimer() {
   }
 }
 
-/** 先要录音权限，被拒过就引导去设置页 */
-function ensureAuth() {
-  return new Promise((resolve) => {
-    uni.authorize({
-      scope: 'scope.record',
-      success: () => resolve(true),
-      fail: () => {
-        uni.showModal({
-          title: '需要麦克风权限',
-          content: '语音预约需要录音权限，请在设置中开启后重试。',
-          confirmText: '去设置',
-          success: (res) => {
-            if (res.confirm) uni.openSetting({})
-            resolve(false)
-          },
-          fail: () => resolve(false),
-        })
-      },
-    })
-  })
-}
-
-async function onPressStart() {
+function onPressStart() {
   if (recording.value || recognizing.value) return
+  // 解析要跑 10~32 秒。这期间重新录一段不会让在飞的解析停下，
+  // 只会得到一份「针对上一句话」的条件卡 —— 直接不让起录更干净。
+  if (parsing.value) {
+    toast('AI 正在解析条件，请稍等')
+    return
+  }
   if (editing.value) {
     toast('先保存或取消正在修改的文字')
     return
   }
 
-  const ok = await ensureAuth()
-  if (!ok) return
-
+  // 直接 start()：微信小程序与 App 都会自动触发麦克风权限弹窗；
+  // 被拒绝时 recorder.onError 会兜住。不再用 uni.authorize ——
+  // 那是微信专用 API，在 Android App 上会静默失败，导致「按了没反应」。
   recording.value = true
   startTimer()
   try {
@@ -476,6 +616,12 @@ async function reformat(text) {
   // 每次规整领一个序号，回调时对不上就说明已经有更新的请求，直接丢弃
   const seq = ++fmtSeq
   stopTypewriter()
+  // 文字要变了，上一次的条件解析结果随之作废。
+  // `parseFresh` 本来就会因为文本对不上而失效，这里显式清掉卡片与错误提示 ——
+  // 否则屏幕上会留着一张描述**上一句话**的条件卡，用户会以为它还是准的。
+  parsed.value = null
+  parsedFrom.value = ''
+  parseError.value = ''
   // 注意：这里**不**动 editing —— 语音识别后要一直留在可编辑态，
   // 收起编辑框由 applyEdit / useManual 自己决定
   rawText.value = text
@@ -524,6 +670,173 @@ function applyEdit() {
   reformat(text)
 }
 
+/** 需求关键词 → 台账设备类型。只用于在确认页**预勾选**，抽错了取消即可。 */
+const REQ_TO_DEVICE = [
+  { keys: ['投影'], type: '投影仪' },
+  { keys: ['音响', '扩音', '话筒', '麦克'], type: '音响' },
+  { keys: ['显示屏', '大屏', '屏幕', 'LED'], type: 'LED显示屏' },
+  { keys: ['直播'], type: '直播设备' },
+  { keys: ['无人机', '航拍'], type: '无人机' },
+]
+
+function deviceTypesFromText(text) {
+  const hit = []
+  REQ_TO_DEVICE.forEach((m) => {
+    if (m.keys.some((k) => String(text).indexOf(k) >= 0) && hit.indexOf(m.type) < 0) hit.push(m.type)
+  })
+  return hit
+}
+
+/** 「20人」「12 位」→ 20 / 12；没说就返回 null（不猜） */
+function extractCapacity(text) {
+  const m = String(text).match(/(\d{1,4})\s*(人|位)/)
+  return m ? Number(m[1]) : null
+}
+
+/**
+ * 把模型给的时间**吸附到 15 分钟档**，返回 `'YYYY-MM-DD HH:mm:00'`；出界返回 ''。
+ *
+ * ⚠️ 为什么必须做（2026-10-13 补，这是个真会咬人的坑）：
+ *   确认页的时间是 picker 选的，档位固定 15 分钟一格
+ *   （`confirm.vue` 的 `TIME_OPTIONS`＝ 07:00~23:45 每 15 分钟）。
+ *   它算选中下标用的是 `Math.max(0, TIME_OPTIONS.indexOf(startTime))` ——
+ *   值不在档位里时 `indexOf` 返回 **-1**，被 `Math.max` 夹成 **0**，
+ *   于是 picker **静默显示 07:00**；而 `range()` 拼提交参数用的
+ *   又是那个错的 `startTime.value`。**看到的和提交的是同一个错值，没人会发现。**
+ *
+ *   模型完全可能给「下午两点二十」这种非整档时间（实测给过 14:20）。
+ *   不吸附的话，预约单会建在早上七点。
+ *
+ * 出界（早于 07:00 / 晚于 23:45 / 跨天）返回 ''：那说明模型理解出了问题，
+ * 让用户自己去确认页选，比替他决定一个错时间强。
+ */
+function toQuarterHourSlot(value) {
+  const raw = parseDateTime(value)
+  if (!raw) return ''
+  const d = new Date(raw.getTime())
+  // 向上取整到 15 分钟档
+  d.setSeconds(0, 0)
+  d.setMinutes(d.getMinutes() + ((15 - (d.getMinutes() % 15)) % 15))
+  // 取整后跨了天（23:5x → 次日），或落在 picker 覆盖不到的范围 → 不猜
+  if (d.getDate() !== raw.getDate() || d.getHours() < 7 || d.getHours() > 23) return ''
+  const p = (n) => (n < 10 ? '0' + n : '' + n)
+  return (
+    d.getFullYear() +
+    '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+    ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':00'
+  )
+}
+
+/**
+ * 「AI 解析条件」按钮（2026-10-13 新增）。
+ *
+ * 点第一次：把这句话交给 `POST /agent/parse`，把 AI 读出的时间 / 人数 / 设备 / 预算
+ * 就地摆出来给用户核对；点第二次（文案变成「确认条件并核对场地 →」）才带着这些
+ * 条件去确认页。**两次点击是有意的** —— 见 parseBtnLabel 的说明。
+ *
+ * 解析本身**没有任何副作用**（不建单、不锁资源），所以可以放心重复点；
+ * 与 `goAgent()`（/agent/schedule，真落一条待确认预约）是完全不同的两条路。
+ */
+async function onParse() {
+  const text = agentText.value
+  if (!text) {
+    toast('请先说出或输入你的需求')
+    return
+  }
+  if (recording.value || recognizing.value) {
+    toast('先等这次识别结束')
+    return
+  }
+  // 已经解析过、且文字没变 → 用户这次点的是「确认」，直接带着结果去确认页
+  if (parseFresh.value) {
+    goConfirmWithParsed()
+    return
+  }
+
+  const seq = ++parseSeq.n
+  parsing.value = true
+  parseError.value = ''
+  try {
+    const res = await parseRequest({ text, imageContext: agentStore.imageContext || {} })
+    // 期间用户又发起了一次解析 / 改了文字重新提交 —— 旧结果直接丢弃
+    if (seq !== parseSeq.n) return
+    parsed.value = res || null
+    parsedFrom.value = text
+    const c = (res && res.conditions) || {}
+    // 「AI 没读懂」要和「AI 读出来了但字段为空」区分开，否则用户以为解析失败了
+    if (!c.capacity && !c.spaceType && !c.startTime && (!c.deviceTypes || !c.deviceTypes.length)) {
+      parseError.value = '这句话里没读出人数/时间/场地的硬条件，去确认页自己选也很快。'
+    }
+  } catch (e) {
+    if (seq !== parseSeq.n) return
+    parsed.value = null
+    parsedFrom.value = ''
+    // request.js 这次是 silent 的，原因由这里说 —— 否则用户只看到按钮弹回去
+    parseError.value = (e && e.message) || 'AI 解析失败，可直接手动选择时间与场地'
+  } finally {
+    if (seq === parseSeq.n) parsing.value = false
+  }
+}
+
+/**
+ * 带着**已核对过的解析结果**去确认页。
+ *
+ * 预填口径：解析出来的条件优先，解析没读到的字段退回本地正则兜底
+ * （`extractCapacity` / `deviceTypesFromText`）—— 两者都不猜时留空，
+ * 由用户在确认页补齐，这与「不让 AI 替他补常识」是同一条原则。
+ */
+function goConfirmWithParsed() {
+  const text = agentText.value
+  const c = (parsedConditions.value || {})
+  const rec = parsedRecommend.value || {}
+  setPrefill({
+    source: 'voice',
+    sourceLabel: '语音预约 · AI 解析',
+    // ① 场地：推荐只是候选里的第一名，确认页仍会按该时段**真实可用性**重查一遍，
+    //    查不到就自动清掉（见 confirm.vue::refreshSpaces），所以这里给出去是安全的
+    spaceId: rec.spaceId || null,
+    capacity: c.capacity || extractCapacity(text),
+    spaceType: c.spaceType || 0,
+    deviceTypes: c.deviceTypes && c.deviceTypes.length ? c.deviceTypes : deviceTypesFromText(text),
+    // ② 时间：解析出的是绝对时间，确认页会拆成「日期 + 开始 + 结束」三段。
+    //    必须**吸附到 15 分钟档**再交出去 —— 理由见 toQuarterHourSlot：
+    //    非整档的值会被确认页的 picker 静默显示成 07:00，并且就这么提交上去。
+    slotStart: toQuarterHourSlot(c.startTime),
+    slotEnd: toQuarterHourSlot(c.endTime),
+    text: text,
+    imageContext: agentStore.imageContext || null,
+  })
+  uni.navigateTo({ url: '/pages/reserve/confirm' })
+}
+
+/**
+ * 去确认页自己把时间 / 场地 / 设备选清楚（方案 A 的第二个出口，2026-10-13 加）。
+ *
+ * 为什么不直接把这句话丢给 Agent：
+ *   Agent 得从「周六下午」反推绝对时间、从「要投影」猜设备类型、从场地名匹配 spaceId，
+ *   **猜错了用户没有机会纠正** —— 只能等方案出来再改，绕一圈。
+ * 这里把能抽出来的（人数、设备类型）预填好，抽不出的（具体时段、哪间场地、哪台设备）
+ * 让用户在确认页点一下就行。
+ *
+ * ⚠️ 这是**不经过 AI 解析**的兜底出口（纯本地正则），解析按钮走 goConfirmWithParsed。
+ */
+function goConfirm() {
+  const text = agentText.value
+  if (!text) {
+    toast('请先说出或输入你的需求')
+    return
+  }
+  setPrefill({
+    source: 'voice',
+    sourceLabel: '语音预约',
+    capacity: extractCapacity(text),
+    deviceTypes: deviceTypesFromText(text),
+    text: text,
+    imageContext: agentStore.imageContext || null,
+  })
+  uni.navigateTo({ url: '/pages/reserve/confirm' })
+}
+
 function goAgent() {
   const text = agentText.value
   if (!text) {
@@ -539,6 +852,146 @@ function goAgent() {
 </script>
 
 <style scoped>
+/* 底部 CTA 现在有三个按钮（解析 / 自己核对 / 交给 Agent），比默认两行高，
+   而 .app-body.has-cta 只留了 200rpx —— 不补的话最后一张卡片会被压住 */
+.app-body.has-cta {
+  padding-bottom: 340rpx;
+}
+
+.cta-2 {
+  margin-top: 18rpx;
+}
+
+/* ---- AI 解析出的条件（POST /agent/parse） ---- */
+.pcard {
+  margin-top: 30rpx;
+  background: var(--primary-bg);
+  border: 1px solid var(--ai-line);
+  border-radius: var(--r-lg);
+  padding: 24rpx;
+}
+
+.phead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12rpx;
+}
+
+.pt {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.pc {
+  font-size: 22rpx;
+  color: var(--t3);
+}
+
+/* 读出来的条件：左标签右值，用户一眼扫完就能判断「读错没有」 */
+.prows {
+  margin-top: 6rpx;
+}
+
+.prow {
+  display: flex;
+  align-items: flex-start;
+  padding: 12rpx 0;
+  border-top: 1rpx solid var(--primary-bg);
+}
+
+.pk {
+  width: 110rpx;
+  flex-shrink: 0;
+  font-size: 24rpx;
+  color: var(--t3);
+}
+
+.pv {
+  flex: 1;
+  font-size: 26rpx;
+  color: var(--t1);
+  line-height: 1.5;
+}
+
+.pnone {
+  display: block;
+  font-size: 24rpx;
+  color: var(--t3);
+  line-height: 1.7;
+  padding-top: 8rpx;
+}
+
+.prec {
+  margin-top: 20rpx;
+  padding-top: 18rpx;
+  border-top: 1rpx solid var(--primary-bg);
+}
+
+.prect {
+  display: block;
+  font-size: 24rpx;
+  color: var(--t3);
+  margin-bottom: 8rpx;
+}
+
+.precn {
+  display: block;
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--t1);
+}
+
+.precr {
+  display: block;
+  font-size: 23rpx;
+  color: var(--t2);
+  line-height: 1.7;
+  margin-top: 6rpx;
+}
+
+.preca {
+  display: block;
+  font-size: 22rpx;
+  color: var(--t3);
+  line-height: 1.7;
+  margin-top: 6rpx;
+}
+
+/* 「没说、我替你按什么默认值处理了」—— 用橙色，与普通信息区分开 */
+.pmiss {
+  margin-top: 20rpx;
+  padding: 18rpx 20rpx;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-bg);
+  border-radius: var(--r-sm);
+}
+
+.pmisst {
+  display: block;
+  font-size: 23rpx;
+  font-weight: 600;
+  color: var(--warning);
+  margin-bottom: 8rpx;
+}
+
+.pmissl {
+  display: block;
+  font-size: 22rpx;
+  color: var(--warning);
+  line-height: 1.7;
+}
+
+.perr {
+  display: block;
+  margin-top: 24rpx;
+  font-size: 23rpx;
+  color: var(--t3);
+  line-height: 1.7;
+  text-align: center;
+}
+
 .hint {
   display: block;
   text-align: center;
@@ -572,8 +1025,8 @@ function goAgent() {
   line-height: 1.7;
   color: var(--t1);
   background: #fff;
-  border: 1px solid #f0f3f8;
-  border-radius: 20rpx;
+  border: 1px solid var(--bd-l);
+  border-radius: var(--r-lg);
 }
 
 .manual .btn {
@@ -595,7 +1048,7 @@ function goAgent() {
 .asrbar {
   display: flex;
   justify-content: flex-end;
-  gap: 36rpx;
+  gap: var(--s4);
   margin-top: 16rpx;
 }
 
@@ -610,9 +1063,9 @@ function goAgent() {
 
 /* ---- AI 上次的追问（从方案页带过来） ---- */
 .askcard {
-  background: #f3f8ff;
+  background: var(--primary-bg);
   border: 1px solid var(--ai-line);
-  border-radius: 22rpx;
+  border-radius: var(--r-lg);
   padding: 22rpx 24rpx;
   margin-bottom: 26rpx;
 }

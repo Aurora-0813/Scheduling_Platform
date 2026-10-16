@@ -1,0 +1,207 @@
+.nb-fixed[data-v-1de34ced] {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+}
+.nb-inner[data-v-1de34ced] {
+  display: flex;
+  align-items: center;
+  padding-left: 0.8125rem;
+  border-bottom: 1px solid var(--bd-l, #ebeef5);
+  position: relative;
+}
+.nb-back[data-v-1de34ced] {
+  font-size: 1.375rem;
+  line-height: 1;
+  color: #7a8ba0;
+  padding-right: 0.375rem;
+  margin-top: -0.1875rem;
+}
+
+/* 二级页标题：绝对居中，不受左右元素宽度影响 */
+.nb-title[data-v-1de34ced] {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  transform: translateX(-50%);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--t1, #303133);
+  max-width: 50%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 首页大标题 */
+.nb-big[data-v-1de34ced] {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--t1, #303133);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  margin-right: 0.5rem;
+}
+.nb-right[data-v-1de34ced] {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--t3, #909399);
+  flex: none;
+}
+
+
+.empty[data-v-7423a8c1] {
+  padding: 3.75rem 1.25rem;
+  text-align: center;
+}
+.icon[data-v-7423a8c1] {
+  font-size: 2.8125rem;
+  opacity: 0.35;
+  display: block;
+  margin-bottom: 0.75rem;
+}
+.txt[data-v-7423a8c1] {
+  font-size: 0.8125rem;
+  color: var(--t3, #909399);
+  line-height: 1.7;
+  display: block;
+  margin-bottom: 0.875rem;
+}
+.act[data-v-7423a8c1] {
+  display: inline-block;
+  padding: 0.5rem 1.375rem;
+  border-radius: 0.375rem;
+  font-size: 0.78125rem;
+  color: var(--t2, #606266);
+  background: #fff;
+  border: 1px solid var(--bd, #dcdfe6);
+}
+.act-on[data-v-7423a8c1] {
+  opacity: 0.82;
+}
+
+
+.tb-fixed[data-v-a2e9bfbb] {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 100;
+  background: #fff;
+  border-top: 1px solid var(--bd-l, #ebeef5);
+  /* 全面屏 Home 指示条留白：mini-program 的 WXSS 支持 env() */
+  padding-bottom: constant(safe-area-inset-bottom);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.tb-inner[data-v-a2e9bfbb] {
+  display: flex;
+  height: 3.625rem;
+}
+.tb-holder[data-v-a2e9bfbb] {
+  height: 3.625rem;
+  height: calc(3.625rem + constant(safe-area-inset-bottom));
+  height: calc(3.625rem + env(safe-area-inset-bottom));
+}
+.tb-item[data-v-a2e9bfbb] {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.1875rem;
+}
+.tb-ic[data-v-a2e9bfbb] {
+  font-size: 1.1875rem;
+  line-height: 1;
+  opacity: 0.42;
+  transition: all 0.2s;
+}
+.tb-lb[data-v-a2e9bfbb] {
+  font-size: 0.65625rem;
+  color: var(--t3, #909399);
+  transition: all 0.2s;
+}
+.tb-item.on .tb-ic[data-v-a2e9bfbb] {
+  opacity: 1;
+  transform: scale(1.14) translateY(-0.0625rem);
+}
+.tb-item.on .tb-lb[data-v-a2e9bfbb] {
+  color: var(--primary, #409eff);
+  font-weight: 600;
+}
+.tb-on[data-v-a2e9bfbb] {
+  opacity: 0.7;
+}
+
+
+.segs[data-v-456ecf67] {
+  display: flex;
+  gap: 0.4375rem;
+  margin-bottom: 0.75rem;
+}
+.seg[data-v-456ecf67] {
+  flex: 1;
+  text-align: center;
+  padding: 0.5rem 0;
+  border-radius: 0.4375rem;
+  font-size: 0.75rem;
+  color: var(--t2);
+  background: #fff;
+  border: 1px solid #eef1f6;
+}
+.seg.on[data-v-456ecf67] {
+  color: #fff;
+  background: linear-gradient(135deg, var(--ai-a), var(--ai-b));
+  border-color: transparent;
+  font-weight: 600;
+}
+.seg .n[data-v-456ecf67] {
+  font-size: 0.65625rem;
+  opacity: 0.75;
+  margin-left: 0.1875rem;
+}
+.ohead[data-v-456ecf67] {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  margin-bottom: 0.25rem;
+}
+.oname[data-v-456ecf67] {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--t1);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.mono[data-v-456ecf67] {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.71875rem;
+  color: var(--t3);
+  word-break: break-all;
+}
+.oa[data-v-456ecf67] {
+  display: flex;
+  justify-content: flex-end;
+  /* 状态 1/2 各有两个动作（确认+取消 / 完成+取消），必须有间距；
+     flex-wrap 兜住窄屏 —— 两个按钮加内边距在 320px 宽的机型上会顶满 */
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.625rem;
+  padding-top: 0.625rem;
+  border-top: 1px solid #f5f7fa;
+}
+.oa .btn[data-v-456ecf67] {
+  padding: 0.375rem 1rem;
+  font-size: 0.75rem;
+}

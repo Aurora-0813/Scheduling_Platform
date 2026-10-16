@@ -3,21 +3,13 @@
     <div class="sp-pagebar">
       <h3>Agent 调度工作台</h3>
       <div class="sp-acts">
-        <span class="sp-tag is-purple">🧠 Thought → Action → Observation</span>
-        <button class="sp-btn is-ghost is-sm" :disabled="running" @click="onReset">清空</button>
+        <span class="sp-tag is-purple">Thought → Action → Observation</span>
+        <button class="sp-btn is-ghost is-sm" :disabled="running || parsing" @click="onReset">
+          清空
+        </button>
       </div>
     </div>
 
-    <!-- 副作用必须说在前面：这不是演示动画，跑一次就真的落一条单 -->
-    <div class="sp-ai-bar">
-      <div class="sp-ic">🧠</div>
-      <span>
-        <b>这不是演示动画。</b>
-        点一次「运行调度」会真的跑一轮大模型、真的在事务里
-        <code>SELECT ... FOR UPDATE</code> 锁资源，并真的落一条 <b>待确认</b> 预约。
-        生成后请<strong>确认或取消</strong>，别让它一直挂着占位。
-      </span>
-    </div>
 
     <div class="agentgrid">
       <!-- ==================== 左：需求 + 工具调用 ==================== -->
@@ -35,16 +27,123 @@
             placeholder="请输入需求：时间、地点、人数、设备、预算等"
             @keydown.ctrl.enter="onRun"
           ></textarea>
-          <button class="sp-btn is-ai is-block run-btn" :disabled="running" @click="onRun">
-            {{ running ? `Agent 思考中… ${elapsed}s` : '运行调度 →' }}
+
+          <!--
+            两个按钮的分工是这一屏最需要说清楚的事（2026-10-13 加）：
+              · 解析条件 —— POST /agent/parse，一次模型调用，**不建单**，可以反复点
+              · 运行调度 —— POST /agent/schedule，多轮 Agent，**会真落一条待确认预约**
+            所以有副作用的那个不用渐变色，且文案里保留「会建单」的暗示。
+          -->
+          <div class="runrow">
+            <button
+              class="sp-btn is-ghost is-block parse-btn"
+              :disabled="parsing || running"
+              @click="onParse"
+            >
+              {{ parseButtonLabel }}
+            </button>
+            <button
+              class="sp-btn is-ai is-block run-btn"
+              :disabled="running || parsing"
+              @click="onRun"
+            >
+              {{ running ? `Agent 思考中… ${elapsed}s` : '运行调度 →' }}
+            </button>
+          </div>
+          <!--
+            提示文案由两行收成一行（2026-10-14）。
+            原来第二行「『AI 解析条件』只读不建单…」与本卡片上方那条
+            「这不是演示动画…」讲的是同一件事（两个按钮的分工），属于重复；
+            去掉后省一行高度，信息并没有少。
+          -->
+          <div class="ask-tip">
+            Ctrl + Enter 提交 ｜ 需求越具体，Tool 调用越准
+          </div>
+        </div>
+
+        <!--
+          AI 解析出的条件（POST /agent/parse）。
+          刻意**不折叠**：用户点完按钮眼睛就在这一带，「AI 读错了没有」必须当场可见。
+        -->
+        <div v-if="parsing" class="sp-ai-bar parse-wait">
+          <div class="sp-ic">◈</div>
+          <span>正在用一次模型调用读出时间 / 人数 / 设备 / 预算…</span>
+        </div>
+
+        <div v-else-if="parseResult" class="sp-card parse-card">
+          <div class="sp-card-head">
+            <b>解析出的条件</b>
+            <span class="sp-grow"></span>
+            <span v-if="parsedConfidence !== null" class="sp-tag is-purple">
+              置信度 {{ parsedConfidence }}%
+            </span>
+            <span v-if="!parseFresh" class="sp-tag is-orange">需求已改，结果待刷新</span>
+          </div>
+
+          <div v-if="parsedRows.length" class="parse-rows">
+            <div v-for="r in parsedRows" :key="r.label" class="parse-row">
+              <span class="parse-k">{{ r.label }}</span>
+              <span class="parse-v">{{ r.value }}</span>
+            </div>
+          </div>
+          <div v-else class="sp-muted">
+            这句话里没有明确的硬条件（人数 / 时间 / 场地类型 / 设备都没读到）。
+          </div>
+
+          <!--
+            `missing` 是模型自报的「你没说、我按什么默认值处理的」。
+            这块**必须显示**：它是用户唯一能发现「AI 悄悄替他做了决定」的地方
+            （后端 prompt 里明文要求模型把默认值写在这里，见 agent/chains/parse.py）。
+          -->
+          <div v-if="parsedMissing.length" class="parse-missing">
+            <b>⚠️ 这些没说，是模型自己按默认值处理的</b>
+            <p v-for="(m, i) in parsedMissing" :key="i">· {{ m }}</p>
+          </div>
+
+          <!--
+            推荐只是**候选里的第一名**：模型看到的是全部可用场地、没带时间维度
+            （时间正是它要抽的东西）。真正的可用性由「运行调度」的事务兜底，
+            所以这里的措辞是「建议」而不是「已锁定」。
+          -->
+          <div v-if="parsedRecommend && (parsedRecommend.spaceName || parsedRecommend.reason)" class="parse-rec">
+            <div>
+              <span class="parse-reck">建议场地</span>
+              <span class="parse-recv">
+                {{ parsedRecommend.spaceName || `#${parsedRecommend.spaceId}` }}
+              </span>
+            </div>
+            <div v-if="parsedRecommend.reason" class="parse-reason">
+              {{ parsedRecommend.reason }}
+            </div>
+            <div
+              v-for="(a, i) in parsedRecommend.alternatives || []"
+              :key="i"
+              class="parse-alt"
+            >
+              备选：{{ a.spaceName }}
+              <span v-if="a.tradeoff">（{{ a.tradeoff }}）</span>
+            </div>
+          </div>
+
+          <!--
+            出口：把读出来的条件**写回输入框**，用户可以直接改这句话再跑调度。
+            不在这里直接调 /agent/schedule —— 那个接口会真落单，
+            由用户看过、改过、再亲手点「运行调度」才符合它「不是演示动画」的性质。
+          -->
+          <button class="sp-btn is-ghost is-sm parse-apply" @click="onApplyParsed">
+            把条件写回输入框，我再改一改
           </button>
-          <div class="ask-tip">Ctrl + Enter 提交 ｜ 需求越具体，Tool 调用越准</div>
+        </div>
+
+        <div v-else-if="parseError" class="sp-witem is-red">
+          <b>本次没能解析出条件</b>
+          <p>{{ parseError }}</p>
         </div>
 
         <!-- Tool 调用：**完全由真实思考链推导**，没有真实的 action 就不显示 -->
         <div class="sp-card">
           <div class="sp-card-head">
-            <b>⚡ Tool 调用</b>
+            <b>Tool 调用</b>
             <span class="sp-grow"></span>
             <span class="sp-tag" :class="toolCalls.length ? 'is-blue' : 'is-gray'">
               {{ toolCalls.length ? `${totalToolCalls} 次` : '未调用' }}
@@ -59,7 +158,7 @@
 
         <!-- 落库状态：orderId 是后端真的建出来的那一条 -->
         <div class="sp-card">
-          <div class="sp-card-head"><b>📌 落库状态</b></div>
+          <div class="sp-card-head"><b>落库状态</b></div>
           <div class="sp-mbrow">
             <span class="sp-k">预约单号</span>
             <span class="sp-v">
@@ -122,7 +221,7 @@
 
         <div class="sp-card trace-card">
           <div class="sp-card-head">
-            <b>🧠 Agent 思考链</b>
+            <b>Agent 思考链</b>
             <span class="sp-grow"></span>
             <span class="sp-tag is-purple">{{ trace.length }} 步</span>
           </div>
@@ -135,7 +234,7 @@
 
           <div v-if="running" class="trace-waiting">
             <span class="sp-live is-blue"></span>
-            正在等模型逐步返回…（实测一轮 40–105 秒，步骤边收边显示）
+            正在等模型逐步返回…
           </div>
 
           <div v-if="!trace.length && !running" class="sp-muted trace-empty">
@@ -186,7 +285,7 @@
       <div class="agcol is-side">
         <template v-if="plan">
           <div class="sp-planbox">
-            <h4>🤖 主方案 · {{ plan.spaceName || `场地 #${plan.spaceId}` }}</h4>
+            <h4>主方案 · {{ plan.spaceName || `场地 #${plan.spaceId}` }}</h4>
             <div class="sp-line">
               {{ formatRange(plan) }}<br />
               设备：{{ deviceNames(plan) }}<br />
@@ -201,7 +300,7 @@
             可比对、可解释，不是编出来的百分比。
           -->
           <div class="sp-card">
-            <div class="sp-card-head"><b>📊 方案要素完整度</b></div>
+            <div class="sp-card-head"><b>方案要素完整度</b></div>
             <div class="sp-ringwrap">
               <svg viewBox="0 0 36 36">
                 <circle cx="18" cy="18" r="15.9" fill="none" stroke="#eef2f8" stroke-width="3" />
@@ -226,7 +325,7 @@
               <defs>
                 <linearGradient id="spGAI" x1="0" y1="0" x2="1" y2="1">
                   <stop offset="0%" stop-color="#409EFF" />
-                  <stop offset="100%" stop-color="#7c5cff" />
+                  <stop offset="100%" stop-color="var(--sp-cat-purple)" />
                 </linearGradient>
               </defs>
             </svg>
@@ -243,7 +342,7 @@
           </div>
 
           <div v-if="backupPlan" class="sp-plan-alt">
-            <div class="sp-card-head" style="margin-bottom: 8px"><b>🔄 备选方案</b></div>
+            <div class="sp-card-head" style="margin-bottom: 8px"><b>备选方案</b></div>
             <div class="sp-mbrow">
               <span class="sp-k">场地</span>
               <span class="sp-v">{{ backupPlan.spaceName || `#${backupPlan.spaceId}` }}</span>
@@ -272,7 +371,7 @@
         -->
         <template v-if="orderId">
           <div class="sp-ai-bar cta-hint">
-            <div class="sp-ic">✅</div>
+            <div class="sp-ic">◈</div>
             <span>
               预约 <b>#{{ orderId }}</b> 已由本次调度创建，当前
               <b>{{ orderStatusText }}</b>。确认后才会进入「已确认」，占用才算真正落实。
@@ -306,7 +405,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import { ElMessage } from 'element-plus'
 import { storeToRefs } from 'pinia'
@@ -345,10 +444,96 @@ const {
   hasPendingAction,
   pendingActionText,
   pendingAction,
+  parsing,
+  parseResult,
+  parseFresh,
+  parseError,
+  parsedRows,
+  parsedMissing,
+  parsedRecommend,
+  parsedConfidence,
 } = storeToRefs(store)
 
 /** 输入框里的草稿。切页丢掉可接受，每次调度都要重新输入需求。 */
-const text = ref('')
+const text = ref(store.text || '')
+
+/**
+ * 输入框与 store 双向同步 —— **只有 store 里那份才参与「结果是否还有效」的判断**。
+ *
+ * `parseFresh` 比的是 `state.text` 与 `state.parseFrom`（见 store）。
+ * 若这里只写局部 ref，用户在解析完之后改一个字，界面会继续显示
+ * 「需求已改，结果待刷新」以外的旧结论 —— 判断依据就假了。
+ */
+watch(text, (v) => {
+  store.text = v || ''
+})
+
+
+/* ------------------------------------------------------------------ *
+ * AI 解析条件（POST /agent/parse）
+ * ------------------------------------------------------------------ */
+
+/** 按钮文案随状态变：解析在飞 / 结果已就绪 / 尚未解析 */
+const parseButtonLabel = computed(() => {
+  if (parsing.value) return 'AI 正在解析条件…'
+  if (parseResult.value && parseFresh.value) return '✓ 已有解析结果（可重新解析）'
+  return '解析条件'
+})
+
+/**
+ * 解析一次需求。
+ *
+ * 与 `onRun` 的区别是这个按钮**没有副作用**：不锁资源、不建单，
+ * 所以它不弹「已创建预约」之类的成功提示，也不需要确认框。
+ */
+async function onParse() {
+  const value = (text.value || '').trim()
+  if (!value) {
+    ElMessage.warning('请先输入一条调度需求')
+    return
+  }
+  const res = await store.parse(value)
+  if (res.ok) {
+    const rows = store.parsedRows
+    ElMessage.success(
+      rows.length ? `AI 读出了 ${rows.length} 项条件，请核对` : '解析完成，但这句里没有硬条件',
+    )
+  } else if (res.reason === 'empty') {
+    ElMessage.warning('请先输入一条调度需求')
+  }
+  // 其余失败：原因已经落在 store.parseError 上、由卡片显示，
+  // 同时 axios 拦截器弹过后端真实 message，不重复打扰。
+}
+
+/** 场地类型码 → 中文。与后端 `agent/chains/parse.py::SPACE_TYPE_CN` 同口径。 */
+const SPACE_TYPE_CN = { 1: '会议室', 2: '展厅', 3: '多功能厅', 4: '户外场地' }
+
+/**
+ * 把解析出的条件**写回输入框**，拼成一句人话。
+ *
+ * 为什么是「拼成一句话」而不是「把条件存起来直接调 /agent/schedule」：
+ *   1. 输入框是这一屏唯一的「需求真源」，把条件落到别处就会出现两个真源；
+ *   2. `/agent/schedule` 会真落单，必须由用户**看过、改过、亲手点**才符合它的性质；
+ *   3. 模型的 `missing` 项在这里正好变成用户可以顺手补的位置（缺什么一眼看得出来）。
+ */
+function onApplyParsed() {
+  const c = store.parsedConditions
+  if (!c) return
+  const parts = []
+  const rec = store.parsedRecommend
+  // 场地用**名字**而不是 id：输入框里给后端的是自然语言，id 反而读不懂
+  parts.push(`我要预约${(rec && rec.spaceName) || '场地'}`)
+  if (c.capacity) parts.push(`${c.capacity}人`)
+  if (c.spaceType) parts.push(SPACE_TYPE_CN[c.spaceType] || '场地')
+  if (c.startTime && c.endTime) parts.push(`${c.startTime}~${c.endTime}`)
+  else if (c.startTime) parts.push(c.startTime)
+  if (Array.isArray(c.deviceTypes) && c.deviceTypes.length) {
+    parts.push(`需要${c.deviceTypes.join('、')}`)
+  }
+  if (c.budget) parts.push(`预算${c.budget}元以内`)
+  text.value = parts.join('，').slice(0, 1024)
+  ElMessage.info('已写回输入框，改完再点「运行调度」——那一步才会真的建单')
+}
 
 /* ------------------------------------------------------------------ *
  * 展示辅助
@@ -424,6 +609,10 @@ async function onCancel() {
 
 function onReset() {
   store.onReset()
+  // 输入框也要清：它现在通过 watch 同步进 store.text，而 store.text 正是
+  // `parseFresh` 的比较基准。只清结果不清输入，界面上会留着上一次的需求文本，
+  // 用户会以为「清空」没生效。
+  text.value = ''
 }
 
 /**
@@ -453,16 +642,142 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* ================= 需求输入区的两个按钮 ================= */
+.runrow {
+  display: flex;
+  gap: var(--sp-s2);
+  margin-top: 11px;
+}
+
+.runrow .sp-btn {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 解析按钮不加渐变：它**不建单**，视觉上就不该和「运行调度」争主位 */
+.parse-btn {
+  white-space: normal;
+  line-height: 1.5;
+}
+
+/* ================= AI 解析结果 ================= */
+.parse-wait {
+  margin-bottom: 13px;
+  align-items: flex-start;
+}
+
+.parse-card {
+  /* 与思考链卡片区分开：左缘一条紫线，表示「这是 AI 读出来的，还没有落库」 */
+  border-left: 3px solid var(--sp-cat-purple);
+}
+
+.parse-rows {
+  margin-top: 4px;
+}
+
+.parse-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-s2);
+  padding: 7px 0;
+  border-bottom: 1px solid var(--sp-bg-hover);
+  font-size: 12.5px;
+}
+
+.parse-row:last-child {
+  border-bottom: none;
+}
+
+/*
+ * ⚠️ 这里用的不是全局的 `.sp-k` / `.sp-v`：那两个类在 styles/index.css 里
+ * 只作为 **`.sp-mbrow` 的后代选择器**存在（`.sp-mbrow .sp-k`），
+ * 单独用在别的容器里没有任何样式。本组件的 <style scoped> 也不该去改全局类。
+ * 所以这一块自建一对类名。
+ */
+.parse-k {
+  width: 72px;
+  flex: none;
+  color: var(--sp-t3, var(--sp-t3));
+}
+
+.parse-v {
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+  color: var(--sp-text);
+}
+
+/* 「没说、模型自己按默认值处理的」—— 橙色与普通信息区分，这是**必须被看见**的一块 */
+.parse-missing {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: #fffbeb;
+  border: 1px solid #fde8c8;
+  border-radius: var(--sp-r-sm);
+  font-size: 12px;
+  color: #9a5f0f;
+}
+
+.parse-missing b {
+  display: block;
+  margin-bottom: 6px;
+  color: #9a5f0f;
+}
+
+.parse-missing p {
+  margin: 0;
+  line-height: 1.7;
+}
+
+/* 推荐场地：一行「标签 + 名字」，下面的理由是正文 */
+.parse-rec {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--sp-border-l);
+}
+
+.parse-reck {
+  font-size: 12px;
+  color: var(--sp-t3, var(--sp-t3));
+  margin-right: 8px;
+}
+
+.parse-recv {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--sp-text);
+}
+
+.parse-reason {
+  font-size: 12px;
+  color: var(--sp-t2, var(--sp-t2));
+  line-height: 1.75;
+  margin-top: 4px;
+}
+
+.parse-alt {
+  font-size: 12px;
+  color: var(--sp-t3, var(--sp-t3));
+  line-height: 1.7;
+  margin-top: 4px;
+}
+
+.parse-apply {
+  margin-top: 12px;
+}
+
 .agentgrid {
   display: flex;
-  gap: 14px;
+  gap: var(--sp-s3);
   align-items: flex-start;
+  /* 行距（窄屏换行后生效）也收一档，避免换行后纵向叠出滚动 */
+  row-gap: 10px;
 }
 
 .agcol {
   display: flex;
   flex-direction: column;
-  gap: 13px;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -475,34 +790,87 @@ onMounted(() => {
   flex: 1;
 }
 
+/*
+ * 单列断点（2026-10-14 加）。
+ *
+ * 这一屏是「左输入 / 中思考链 / 右方案」三列，左列固定 326px。
+ * 窄屏下三列会被压到不可读（实测 390px 视口时中文被挤成「一个字一行」，
+ * 且文档横向溢出）。这里按宽度分两级降为单列：
+ *
+ *   ≤1200px  两列：输入列 + 主列（方案列并入主列下方）
+ *   ≤900px   单列：全部纵向堆叠，顺序不变
+ *
+ * 只改布局，不动任何内容与顺序。
+ */
+@media (max-width: 1200px) {
+  .agentgrid {
+    flex-wrap: wrap;
+  }
+
+  .agcol.is-side {
+    width: 300px;
+  }
+}
+
+@media (max-width: 900px) {
+  .agentgrid {
+    flex-direction: column;
+  }
+
+  .agcol.is-side,
+  .agcol.is-main {
+    width: 100%;
+    flex: none;
+  }
+}
+
 /* ---------------- 需求输入 ---------------- */
+/*
+ * 需求输入框。
+ *
+ * ⚠️ 高度口径（2026-10-14 调整）：本屏要**一屏放下**，输入框是纵向占用最大的一块。
+ *    · 行高 1.85 → 1.6：原先接近 1.9 的行高在 textarea 里显得空，压到 1.6 仍好读；
+ *    · 行数与上限交给 clamp()：视口高时给足 200px（写长需求舒服），
+ *      视口矮（笔记本 768~820）时自动收到 80px，避免整页被挤出滚动条。
+ *    用的是 height + min/max-height 而不是只给 rows，因为 rows 是固定行数、
+ *    不会随视口变。
+ */
 .ask-input {
   width: 100%;
-  border: 1px solid var(--sp-ai-line);
-  border-radius: 7px;
-  padding: 10px 12px;
+  border: 1px solid var(--sp-accent-line);
+  border-radius: var(--sp-r-sm);
+  padding: 8px 12px;
   font-size: 13px;
   font-family: inherit;
-  line-height: 1.85;
+  line-height: 1.6;
   color: var(--sp-text);
   background: #fff;
   resize: vertical;
   outline: none;
+  height: clamp(64px, 12vh, 180px);
+  min-height: 64px;
+  max-height: 40vh;
 }
 
 .ask-input:focus {
   border-color: var(--sp-accent);
-  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.12);
+  box-shadow: var(--sp-focus);
+}
+
+/* 键盘聚焦也要有同样明确的信号（:focus 已覆盖，这里补 outline 清空） */
+.ask-input:focus-visible {
+  outline: none;
 }
 
 .run-btn {
-  margin-top: 11px;
+  margin-top: var(--sp-s2);
 }
 
 .ask-tip {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--sp-t3);
-  margin-top: 9px;
+  margin-top: var(--sp-s2);
+  line-height: 1.6;
   text-align: center;
 }
 
@@ -513,7 +881,7 @@ onMounted(() => {
   justify-content: space-between;
   font-size: 12px;
   padding: 7px 0;
-  border-bottom: 1px solid #f5f7fa;
+  border-bottom: 1px solid var(--sp-bg-hover);
 }
 
 .tool-row:last-child {
@@ -522,9 +890,9 @@ onMounted(() => {
 
 .tool-row code {
   font-family: ui-monospace, Consolas, monospace;
-  color: #4a6a92;
-  background: #f7f9fc;
-  border-radius: 4px;
+  color: #3d5a80;
+  background: var(--sp-bg-hover);
+  border-radius: var(--sp-r-xs);
   padding: 1px 6px;
 }
 
@@ -545,7 +913,7 @@ onMounted(() => {
 .pending-card {
   /* 与思考链卡片拉开距离，让它在最上面独立成一块，不被当成思考链的一部分 */
   margin-bottom: 14px;
-  border-left: 3px solid var(--sp-warn, #e6a23c);
+  border-left: 3px solid var(--sp-warning);
 }
 
 .pending-card .sp-witem p {
@@ -563,13 +931,42 @@ onMounted(() => {
 .pending-acts {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--sp-s2);
   margin-top: 12px;
 }
 
-/* ---------------- 思考链 ---------------- */
+/* ---------------- 思考链 ----------------
+ *
+ * min-height 由 520px 降为 420px。
+ * 原先 520 是为了「空态也撑出一块像样的画布」，但本屏要一屏放下，
+ * 而这个值直接决定中列高度 —— 加上输入列的高度，整页就会被挤出滚动条。
+ * 420 仍足以容纳 5~6 步思考链（每步约 60~70px），不够时它自己会长高。
+ */
 .trace-card {
-  min-height: 520px;
+  min-height: 420px;
+}
+
+/*
+ * 矮屏收紧（2026-10-14 加）。
+ *
+ * 「一屏放下」在 ≥820px 视口高时已经成立，但 1366×768 这类笔记本还差约 33px。
+ * 与其继续压控件把所有人都挤到，不如只在**确实矮**的时候把列间距收一档：
+ * 12px → 8px，左列 3 个间距 + 网格行距一共省下约 20px，刚好补上缺口。
+ * 高度 ≥ 801px 的屏幕完全不受影响。
+ */
+@media (max-height: 800px) {
+  .agcol {
+    gap: 8px;
+  }
+
+  .agentgrid {
+    gap: 8px;
+    row-gap: 8px;
+  }
+
+  .trace-card {
+    min-height: 380px;
+  }
 }
 
 .trace-empty {
@@ -580,19 +977,19 @@ onMounted(() => {
 .trace-waiting {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-s2);
   font-size: 12.5px;
   color: var(--sp-accent);
   background: var(--sp-ai-soft);
   border: 1px solid var(--sp-ai-line);
-  border-radius: 7px;
+  border-radius: var(--sp-r-sm);
   padding: 9px 12px;
   margin-bottom: 13px;
 }
 
 .step-time {
   margin-left: auto;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--sp-t3);
   font-family: ui-monospace, Consolas, monospace;
   font-weight: 400;
@@ -602,7 +999,7 @@ onMounted(() => {
 .field-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--sp-s1);
   margin-top: 13px;
 }
 

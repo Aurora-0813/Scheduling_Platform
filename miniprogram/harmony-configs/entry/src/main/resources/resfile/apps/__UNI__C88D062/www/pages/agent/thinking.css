@@ -1,0 +1,113 @@
+.nb-fixed[data-v-1de34ced] {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+}
+.nb-inner[data-v-1de34ced] {
+  display: flex;
+  align-items: center;
+  padding-left: 0.8125rem;
+  border-bottom: 1px solid var(--bd-l, #ebeef5);
+  position: relative;
+}
+.nb-back[data-v-1de34ced] {
+  font-size: 1.375rem;
+  line-height: 1;
+  color: #7a8ba0;
+  padding-right: 0.375rem;
+  margin-top: -0.1875rem;
+}
+
+/* 二级页标题：绝对居中，不受左右元素宽度影响 */
+.nb-title[data-v-1de34ced] {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  transform: translateX(-50%);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--t1, #303133);
+  max-width: 50%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 首页大标题 */
+.nb-big[data-v-1de34ced] {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--t1, #303133);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  margin-right: 0.5rem;
+}
+.nb-right[data-v-1de34ced] {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--t3, #909399);
+  flex: none;
+}
+
+
+.req[data-v-66e84719] {
+  background: #fff;
+  border: 1px solid #f0f3f8;
+  border-radius: 0.625rem;
+  padding: 0.6875rem 0.75rem;
+  margin-bottom: 0.875rem;
+}
+.rq[data-v-66e84719] {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--t3);
+  margin-bottom: 0.3125rem;
+}
+.rt[data-v-66e84719] {
+  font-size: 0.78125rem;
+  color: var(--t1);
+  line-height: 1.7;
+}
+
+/* 结论行：结论文字 + 「推理」标签并排。
+   用 inline-flex（不是 flex）让这组只占自身宽度，
+   标签紧跟在结论后面 —— Web 端就是这样，不是把标签推到行尾。 */
+.sline[data-v-66e84719] {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  margin-bottom: 0.1875rem;
+}
+
+/* 主题里 .mbstep .txt .ss 是 display:block + 下边距；这里在 inline-flex 行内
+   要它按内容宽度排，所以只覆盖宽度行为，字号/字重仍用主题的 */
+.mbstep .txt .ss[data-v-66e84719] {
+  flex: none;
+  margin-bottom: 0;
+}
+.stime[data-v-66e84719] {
+  display: block;
+  font-size: 0.65625rem;
+  color: var(--t3);
+}
+.waiting[data-v-66e84719] {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1.25rem 0;
+  font-size: 0.78125rem;
+  color: var(--t3);
+}
+.witem .btn[data-v-66e84719] {
+  display: inline-block;
+  padding: 0.375rem 1rem;
+  font-size: 0.75rem;
+}

@@ -27,7 +27,7 @@ const map = computed(
 <style scoped>
 .status-tag {
   padding: 4rpx 16rpx;
-  border-radius: 8rpx;
+  border-radius: var(--r-xs);
   font-size: 24rpx;
   line-height: 1.6;
 }

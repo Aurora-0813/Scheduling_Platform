@@ -72,7 +72,13 @@ function isUnregisteredPage(f) {
 // ---------- 3. 收集所有 .vue / .js ----------
 // tools/ 是校验脚本自身，不属于小程序包体，跳过
 // （否则脚本里的正则字面量会被自己的规则误判）
-const SKIP_DIRS = ['node_modules', 'unpackage', 'tools']
+//
+// harmony-configs/ 与 unpackage/ 同理是**构建产物**（HBuilderX 编译鸿蒙端时生成的
+// resfile 快照），不是小程序源码。之前没跳过，于是每次自检都稳定报两条
+// 「使用了 ?. / ??（部分小程序构建链不降级 ES2020）」—— 那是鸿蒙打包器自己的
+// 输出文件里本来就带的语法，与微信小程序端无关，属于误报。
+// 噪声会掩盖真问题，所以一并排除。
+const SKIP_DIRS = ['node_modules', 'unpackage', 'tools', 'harmony-configs']
 
 function walk(dir, out = []) {
   for (const name of fs.readdirSync(dir)) {
@@ -200,6 +206,145 @@ for (const p of declared.slice(5)) {
   const src = read(path.join(ROOT, p + '.vue'))
   if (/<mp-tab-bar/.test(src)) fail(`${p} 是二级页却渲染了 <mp-tab-bar>`)
   if (!/<mp-nav-bar[^>]*\bback\b/.test(src)) notes.push(`${p} 的导航栏没有 back 属性（二级页通常需要）`)
+}
+
+// ---------- 11. 模板里调用的函数必须在 script 里定义或导入 ----------
+//
+// ⚠️ 这一条是 2026-10-14 补的，起因是一个真实事故：
+//    pages/inspect/index.vue 里写了 {{ relativeTime(t.createTime) }}，
+//    但**忘了 import relativeTime**。
+//
+//    这一类错误前面的所有检查都抓不到：
+//      · 模板语法合法（SFC 编译通过、HBuilderX 编译成功）；
+//      · 属于运行时错误，构建期完全静默；
+//      · 表现是**整段列表渲染中断**（Vue 渲染函数抛 TypeError），
+//        用户看到的是「数据加载不出来」，很容易误判成接口/网络问题 ——
+//        实际上接口是 200、数据也在。
+//
+// 只扫「模板里以 标识符( 形式出现的调用」，并排除内置全局对象与方法：
+//   这类误报（String() / Math.round() / arr.join()）没有意义。
+const BUILTIN = new Set([
+  'String', 'Number', 'Boolean', 'Array', 'Object', 'JSON', 'Math', 'Date', 'RegExp',
+  'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'encodeURIComponent', 'decodeURIComponent',
+  'join', 'map', 'filter', 'slice', 'split', 'replace', 'concat', 'includes', 'indexOf',
+  'round', 'floor', 'ceil', 'abs', 'max', 'min', 'pow', 'toFixed', 'trim', 'toUpperCase',
+  'toLowerCase', 'padStart', 'padEnd', 'startsWith', 'endsWith', 'sort', 'reverse', 'reduce',
+  'some', 'every', 'find', 'keys', 'values', 'entries', 'stringify', 'parse', 'now',
+])
+
+for (const f of checkedFiles) {
+  if (!f.endsWith('.vue')) continue
+  const src = read(f)
+  const tplM = src.match(/<template>([\s\S]*)<\/template>/)
+  if (!tplM) continue
+  const tpl = tplM[1]
+  // script 部分（script setup 或普通 script 都算）
+  const scripts = src.match(/<script[^>]*>[\s\S]*?<\/script>/g) || []
+  const script = scripts.join('\n')
+
+  const called = new Set()
+  // {{ foo( }} 形式
+  for (const m of tpl.matchAll(/\{\{[^}]*?([A-Za-z_$][\w$]*)\s*\(/g)) called.add(m[1])
+  // :prop="foo(" 与 @event="foo(" 形式
+  for (const m of tpl.matchAll(/[:@][\w.-]+="\s*([A-Za-z_$][\w$]*)\s*\(/g)) called.add(m[1])
+  // v-if / v-else-if / v-show="foo(" 形式
+  for (const m of tpl.matchAll(/v-(?:if|else-if|show)="[^"\n]*?([A-Za-z_$][\w$]*)\s*\(/g)) called.add(m[1])
+
+  for (const name of called) {
+    if (BUILTIN.has(name)) continue
+    // Vue 组件实例上的内置 API（$emit / $slots / $attrs …）与 uni 的全局对象，
+    // 都不需要 import，统统放行
+    if (name.startsWith('$')) continue
+    if (name === 'uni' || name === 'wx') continue
+    const defined =
+      new RegExp('function\\s+' + name + '\\b').test(script) ||
+      new RegExp('(const|let|var)\\s+' + name + '\\s*=').test(script) ||
+      new RegExp('import[^;]*\\b' + name + '\\b').test(script)
+    if (!defined) {
+      fail(
+        relOf(f) +
+          ' 模板里调用了 ' +
+          name +
+          '()，但 <script> 里既没定义也没 import —— ' +
+          '构建不会报错，运行时会让整段渲染中断（表现为「加载不出来」）'
+      )
+    }
+  }
+}
+
+// ---------- 12. computed 在 script 里必须用 .value ----------
+//
+// ⚠️ 这一条是 2026-10-14 补的，又一起真实事故：
+//    把 `const TIME_OPTIONS = [...]`（普通数组）改成 `computed(() => [...])` 之后，
+//    script 里原有的 `TIME_OPTIONS.indexOf(...)` 与 `TIME_OPTIONS[i]` **全部失效** ——
+//    computed 返回的是 ref 对象，不是数组，于是运行时抛
+//    `TypeError: TIME_OPTIONS.indexOf is not a function`，整个确认页挂载即失败
+//    （表现为「进入下一页直接全乱 + 报错」）。
+//
+//    为什么编译期抓不到：模板里 `{{ TIME_OPTIONS }}` / `:range="TIME_OPTIONS"`
+//    由 Vue **自动解包**，写得对；只有 <script> 里的引用需要显式 `.value`。
+//    SFC 编译、HBuilderX 编译都只检查语法，不检查 ref 是否被解包。
+const ARRAY_METHODS = [
+  'indexOf', 'includes', 'length', 'slice', 'find', 'filter', 'map', 'join',
+  'forEach', 'push', 'some', 'every', 'sort', 'concat', 'reduce', 'pop', 'shift',
+]
+for (const f of checkedFiles) {
+  if (!f.endsWith('.vue')) continue
+  const src = read(f)
+  const sm = src.match(/<script setup>([\s\S]*?)<\/script>/)
+  if (!sm) continue
+  const script = sm[1]
+  const scriptLines = script.split('\n')
+  // 只认「行首的 const X = computed(」——避免把注释里的 X[] 文档写法算进来
+  const computedNames = [
+    ...script.matchAll(/^\s*const\s+([A-Za-z_$][\w$]*)\s*=\s*computed\(/gm),
+  ].map((m) => m[1])
+
+  for (const name of computedNames) {
+    const re = new RegExp('\\b' + name + '\\.(' + ARRAY_METHODS.join('|') + ')\\b', 'g')
+    let hit
+    while ((hit = re.exec(script))) {
+      const ln = script.slice(0, hit.index).split('\n').length
+      const lineText = (scriptLines[ln - 1] || '').trim()
+      // 注释里的示例不算
+      if (lineText.startsWith('*') || lineText.startsWith('//') || lineText.startsWith('/*')) {
+        continue
+      }
+      fail(
+        relOf(f) +
+          ':' +
+          ln +
+          '  computed 变量 ' +
+          name +
+          ' 被当作数组用了（' +
+          name +
+          '.' +
+          hit[1] +
+          '），漏了 .value —— ' +
+          'computed 返回 ref，运行时会让整个页面渲染失败'
+      )
+    }
+    // 下标访问 name[0]
+    const re2 = new RegExp('\\b' + name + '\\s*\\[', 'g')
+    let hit2
+    while ((hit2 = re2.exec(script))) {
+      const ln = script.slice(0, hit2.index).split('\n').length
+      const lineText = (scriptLines[ln - 1] || '').trim()
+      if (lineText.startsWith('*') || lineText.startsWith('//') || lineText.startsWith('/*')) {
+        continue
+      }
+      fail(
+        relOf(f) +
+          ':' +
+          ln +
+          '  computed 变量 ' +
+          name +
+          ' 被下标访问（' +
+          name +
+          '[…]），漏了 .value'
+      )
+    }
+  }
 }
 
 // ---------- 输出 ----------

@@ -18,6 +18,15 @@ export function getMyOrders(status) {
   return bizHttp.get('/orders/my', { params })
 }
 
+// GET /orders/all **全部用户**的预约列表（2026-10-13 加，管理视角，**裸数组**）
+//
+// 权限：`order:approve`。系统管理员是 `*`、管理员是 `order:*`（前缀通配命中）→ 通过；
+// 普通用户 → 403。与 `/my` 的分工见 backend/app/api/orders.py 的 docstring。
+// 回包比 `/my` 多一个 `username`（管理列表要显示「这是谁的预约」）。
+export function getAllOrders(params = {}) {
+  return bizHttp.get('/orders/all', { params })
+}
+
 // GET /orders/{orderId} 预约详情
 //
 // 仅限本人的单：他人单与不存在的单**都返回 404**（后端刻意不区分，

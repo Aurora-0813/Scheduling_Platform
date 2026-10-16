@@ -41,6 +41,14 @@
       "style": { "navigationBarTitleText": "拍照识场" }
     },
     {
+      "path": "pages/reserve/confirm",
+      "style": { "navigationBarTitleText": "确认预约" }
+    },
+    {
+      "path": "pages/space/sketch",
+      "style": { "navigationBarTitleText": "草图预约" }
+    },
+    {
       "path": "pages/space/list",
       "style": { "navigationBarTitleText": "场地一览" }
     },

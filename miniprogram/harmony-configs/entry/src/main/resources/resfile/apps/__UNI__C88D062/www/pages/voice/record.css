@@ -1,0 +1,142 @@
+.nb-fixed[data-v-1de34ced] {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+}
+.nb-inner[data-v-1de34ced] {
+  display: flex;
+  align-items: center;
+  padding-left: 0.8125rem;
+  border-bottom: 1px solid var(--bd-l, #ebeef5);
+  position: relative;
+}
+.nb-back[data-v-1de34ced] {
+  font-size: 1.375rem;
+  line-height: 1;
+  color: #7a8ba0;
+  padding-right: 0.375rem;
+  margin-top: -0.1875rem;
+}
+
+/* 二级页标题：绝对居中，不受左右元素宽度影响 */
+.nb-title[data-v-1de34ced] {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  transform: translateX(-50%);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--t1, #303133);
+  max-width: 50%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 首页大标题 */
+.nb-big[data-v-1de34ced] {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--t1, #303133);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  margin-right: 0.5rem;
+}
+.nb-right[data-v-1de34ced] {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--t3, #909399);
+  flex: none;
+}
+
+
+.hint[data-v-106f66db] {
+  display: block;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--t3);
+  margin: 0.5rem 0 0.8125rem;
+}
+.sect[data-v-106f66db] {
+  display: block;
+  margin: 0.8125rem 0 0.5625rem;
+  font-size: 0.75rem;
+  color: var(--t3);
+}
+.manual[data-v-106f66db] {
+  margin-top: 1.0625rem;
+}
+.mlink[data-v-106f66db] {
+  font-size: 0.75rem;
+  color: var(--primary);
+}
+.marea[data-v-106f66db] {
+  width: 100%;
+  margin-top: 0.5625rem;
+  padding: 0.6875rem;
+  min-height: 5rem;
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  color: var(--t1);
+  background: #fff;
+  border: 1px solid #f0f3f8;
+  border-radius: 0.625rem;
+}
+.manual .btn[data-v-106f66db] {
+  margin-top: 0.5625rem;
+  display: block;
+}
+
+/* ---- 识别结果编辑 ---- */
+.earea[data-v-106f66db] {
+  width: 100%;
+  padding: 0;
+  min-height: 3rem;
+  font-size: 0.84375rem;
+  line-height: 2;
+  color: var(--t1);
+  background: transparent;
+}
+.asrbar[data-v-106f66db] {
+  display: flex;
+  justify-content: flex-end;
+  gap: 1.125rem;
+  margin-top: 0.5rem;
+}
+.alink[data-v-106f66db] {
+  font-size: 0.75rem;
+  color: var(--primary);
+}
+.alink.gray[data-v-106f66db] {
+  color: var(--t3);
+}
+
+/* ---- AI 上次的追问（从方案页带过来） ---- */
+.askcard[data-v-106f66db] {
+  background: #f3f8ff;
+  border: 1px solid var(--ai-line);
+  border-radius: 0.6875rem;
+  padding: 0.6875rem 0.75rem;
+  margin-bottom: 0.8125rem;
+}
+.askt[data-v-106f66db] {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--primary);
+  margin-bottom: 0.3125rem;
+}
+.askc[data-v-106f66db] {
+  display: block;
+  font-size: 0.71875rem;
+  color: var(--t2);
+  line-height: 1.7;
+}

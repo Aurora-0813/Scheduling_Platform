@@ -490,7 +490,11 @@ async def test_e01_non_json_reply_degrades_with_model_text(
     use_model(scripted([_ai(prose)]))
 
     resp = await dev_client.post(
-        "/api/v1/agent/schedule", json={"text": "帮我排一下"}, headers=auth
+        # ⚠️ 显式 `fast: False`：本用例验的是 `run_schedule`（多轮 Agent）的降级文案，
+        #    而端点默认已改为「跟随全局 deepMode 开关」。不写就是「碰运气看开关」。
+        "/api/v1/agent/schedule",
+        json={"text": "帮我排一下", "fast": False},
+        headers=auth,
     )
 
     assert resp.status_code == 200, "契约内降级不是异常，不能给非 200"
@@ -529,7 +533,11 @@ async def test_e01_fenced_json_in_text_is_salvaged(
 
     use_model(scripted([_ai(fenced)]))
 
-    resp = await dev_client.post("/api/v1/agent/schedule", json={"text": "安排一下"}, headers=auth)
+    resp = await dev_client.post(
+        "/api/v1/agent/schedule",
+        json={"text": "安排一下", "fast": False},
+        headers=auth,
+    )
 
     body = resp.json()
     assert resp.status_code == 200
@@ -638,7 +646,9 @@ async def test_e03_empty_query_result_yields_no_plan(
     )
 
     resp = await dev_client.post(
-        "/api/v1/agent/schedule", json={"text": "一万人户外"}, headers=auth
+        "/api/v1/agent/schedule",
+        json={"text": "一万人户外", "fast": False},
+        headers=auth,
     )
 
     body = resp.json()
@@ -680,7 +690,11 @@ async def test_e04_tool_exception_is_not_a_500(
         )
     )
 
-    resp = await dev_client.post("/api/v1/agent/schedule", json={"text": "排一下"}, headers=auth)
+    resp = await dev_client.post(
+        "/api/v1/agent/schedule",
+        json={"text": "排一下", "fast": False},
+        headers=auth,
+    )
 
     assert resp.status_code == 200, "工具异常穿透成了 5xx"
     body = resp.json()
@@ -733,7 +747,9 @@ async def test_i01_normal_call_returns_full_unified_body(
     )
 
     resp = await dev_client.post(
-        "/api/v1/agent/schedule", json={"text": "40人展厅+双投影"}, headers=auth
+        "/api/v1/agent/schedule",
+        json={"text": "40人展厅+双投影", "fast": False},
+        headers=auth,
     )
 
     assert resp.status_code == 200
@@ -950,7 +966,12 @@ async def test_i04_identity_comes_only_from_jwt(payload, dev_client, auth, monke
 
     monkeypatch.setattr("app.api.v1.agent.run_schedule", _spy)
 
-    resp = await dev_client.post("/api/v1/agent/schedule", json=payload, headers=auth)
+    # ⚠️ 必须显式 `fast: False`：本用例的探针打在 `run_schedule` 上，
+    #    而端点默认已改为「跟随全局 deepMode 开关」—— 不写就可能在开关关着时
+    #    走 `run_schedule_fast`，探针一次都不触发，报错却是「身份没从 JWT 取」。
+    resp = await dev_client.post(
+        "/api/v1/agent/schedule", json={**payload, "fast": False}, headers=auth
+    )
 
     assert resp.status_code == 200, "夹带 userId 应当是「被忽略」，不是校验失败也不是 500"
     assert seen["user_id"] == 1, f"身份不是从 JWT 取的：{seen.get('user_id')}"
@@ -978,7 +999,11 @@ async def test_i05_response_carries_no_secrets(
         )
     )
 
-    resp = await dev_client.post("/api/v1/agent/schedule", json={"text": "排一下"}, headers=auth)
+    resp = await dev_client.post(
+        "/api/v1/agent/schedule",
+        json={"text": "排一下", "fast": False},
+        headers=auth,
+    )
     text = resp.text
 
     for name, value in secrets.items():
@@ -1004,7 +1029,10 @@ async def test_i05_unavailable_llm_returns_503_naming_fields_not_values(
 
     monkeypatch.setattr("app.api.v1.agent.run_schedule", _raise)
 
-    resp = await dev_client.post("/api/v1/agent/schedule", json={"text": "排一下"}, headers=auth)
+    # ⚠️ 探针在 `run_schedule` 上，必须显式走深度模式（端点默认跟随全局开关）
+    resp = await dev_client.post(
+        "/api/v1/agent/schedule", json={"text": "排一下", "fast": False}, headers=auth
+    )
 
     assert resp.status_code == 503
     body = resp.json()

@@ -216,7 +216,7 @@ async function askCancel(o) {
     title: '取消预约',
     content: `确定取消「${spaceLabel(o.spaceId)}」的预约吗？取消后时段将释放给其他人。`,
     confirmText: '确定取消',
-    confirmColor: '#F56C6C',
+    confirmColor: 'var(--danger)',
   })
   if (!ok) return
 
@@ -298,7 +298,7 @@ function goVoice() {
 <style scoped>
 .segs {
   display: flex;
-  gap: 14rpx;
+  gap: var(--s2);
   margin-bottom: 24rpx;
 }
 
@@ -306,17 +306,19 @@ function goVoice() {
   flex: 1;
   text-align: center;
   padding: 16rpx 0;
-  border-radius: 14rpx;
+  border-radius: var(--r-sm);
   font-size: 24rpx;
   color: var(--t2);
   background: #fff;
-  border: 1px solid #eef1f6;
+  border: 1px solid var(--bd-l);
 }
 
 .seg.on {
   color: #fff;
-  background: linear-gradient(135deg, var(--ai-a), var(--ai-b));
-  border-color: transparent;
+  /* 原为 135deg 蓝→紫渐变。这是「分段控件」的选中态，
+     单选状态用单一实色表达即可。 */
+  background: var(--primary);
+  border-color: var(--primary);
   font-weight: 600;
 }
 
@@ -329,7 +331,7 @@ function goVoice() {
 .ohead {
   display: flex;
   align-items: center;
-  gap: 14rpx;
+  gap: var(--s2);
   margin-bottom: 8rpx;
 }
 
@@ -357,10 +359,10 @@ function goVoice() {
   /* 状态 1/2 各有两个动作（确认+取消 / 完成+取消），必须有间距；
      flex-wrap 兜住窄屏 —— 两个按钮加内边距在 320px 宽的机型上会顶满 */
   flex-wrap: wrap;
-  gap: 16rpx;
+  gap: var(--s2);
   margin-top: 20rpx;
   padding-top: 20rpx;
-  border-top: 1px solid #f5f7fa;
+  border-top: 1px solid var(--bg-hover);
 }
 
 .oa .btn {

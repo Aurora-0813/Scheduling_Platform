@@ -1,13 +1,64 @@
 /* ============================================================
-   全局设计系统（浅色企业风 · AI 蓝紫渐变）
+   全局设计系统 —— 中性蓝白 / 信息优先（2026-10-14 重构）
    ------------------------------------------------------------
    本文件是**唯一**的视觉契约，类名与 `docs/new_web.html` 原型一一对应
    （原型用裸类名，这里统一加 `sp-` 前缀避免污染 Element Plus）。
-   改样式请先改这里，不要在页面里写死颜色。
+
+   ## 这次重构改了什么（以及为什么）
+
+   | 维度 | 之前 | 现在 |
+   |---|---|---|
+   | 主色 | 蓝紫渐变 `#409eff → #7c5cff` | 单一蓝 `#409eff` 实色 + 明度阶梯 |
+   | 渐变 | 62 处 | **0 处**（唯一例外是柱状图的同色深浅，见 .sp-bar） |
+   | 持续动画 | 26 个 infinite | **0 个**（状态点保留极轻的呼吸，且受 reduce-motion 控制） |
+   | 文字对比度 | 辅助色 2.6:1（低于 AA） | 全部 ≥ 4.5:1 |
+   | 圆角 | 6/7/8/9/10 混用 | 6 / 8 / 10 三档 |
+   | 阴影 | 含发光型 | 只留两级，均无发光 |
+   | 内容宽度 | 无约束 | 自适应铺满（2026-10-14 按使用反馈从限宽 1200px 改回；`--sp-content-max` 仅供内容型页面用 `.sp-container` 局部引用） |
+   | 交互态 | 只有 hover（opacity） | hover / active / focus-visible / disabled 全覆盖 |
+
+   ## 三条硬约定
+
+   1. **改样式只改这里**，不要在页面里写死颜色。页面 scoped 样式只允许做布局。
+   2. **不要加渐变与发光**。它们是「AI 概念稿」最典型的签名，本系统刻意不用。
+      `--sp-cat-purple` 是**分类色**（日历事件/标签/实体高亮），不是品牌色 ——
+      它只作为小面积色块出现，不参与渐变。
+   3. **动效只做反馈**，时长 150~220ms ease-out。任何 `infinite` 动画都必须
+      同时给出 `prefers-reduced-motion` 降级（见文件末尾）。
+
+   ## 紫色为什么保留
+
+   它承担真实的**信息区分**职责：日历里区分事件类型、标签里区分状态档位、
+   语义高亮里区分「预算」实体。直接删掉会削弱可读性。
+   因此保留「小面积色块」用法，删掉「大面积渐变 + 发光」用法 —— 后者才是 AI 感来源。
    ============================================================ */
 
 :root {
-  /* ---- Element Plus 主色对齐 ---- */
+  /* ---- 间距（4 的倍数，全站唯一来源） ---- */
+  --sp-s1: 4px;
+  --sp-s2: 8px;
+  --sp-s3: 12px;
+  --sp-s4: 16px;
+  --sp-s5: 24px;
+  --sp-s6: 32px;
+  --sp-s7: 48px;
+
+  /* ---- 圆角（三档，不再混用） ---- */
+  --sp-r-xs: 4px; /* 极小元素专用：标签、复选框、日期格、代码行内块 */
+  --sp-r-sm: 6px;
+  --sp-r-md: 8px;
+  --sp-r-lg: 10px;
+  --sp-r-pill: 999px;
+
+  /* ---- 品牌色：单一蓝 + 明度阶梯（替代原来的 opacity 变淡） ---- */
+  --sp-accent: #409eff;
+  --sp-accent-h: #337ecc; /* hover：降明度，而不是降透明度 */
+  --sp-accent-a: #2a6fb8; /* active：再降一档 */
+  --sp-accent-bg: #ecf5ff; /* 选中/浅底 */
+  --sp-accent-line: #c6e2ff;
+  --sp-accent-d: #2a7fd4; /* 兼容旧引用，等价于 hover 档 */
+
+  /* Element Plus 主色对齐（上面改动时这里也要一起改，否则两套蓝会打架） */
   --el-color-primary: #409eff;
   --el-color-primary-light-3: #79bbff;
   --el-color-primary-light-5: #a0cfff;
@@ -15,48 +66,100 @@
   --el-color-primary-light-8: #d9ecff;
   --el-color-primary-light-9: #ecf5ff;
   --el-color-primary-dark-2: #337ecc;
-  --el-border-radius-base: 6px;
+  --el-border-radius-base: var(--sp-r-sm);
 
-  /* ---- 原型设计令牌 ---- */
-  --sp-accent: #409eff;
-  --sp-accent-d: #2a7fd4;
-  --sp-accent-2: #7c5cff;
-  --sp-ai-a: #409eff;
-  --sp-ai-b: #7c5cff;
-  --sp-ai-gradient: linear-gradient(135deg, #409eff, #7c5cff);
-  --sp-ai-soft: #eef4ff;
-  --sp-ai-line: #d6e4ff;
+  /* ---- 分类色（小面积色块；紫是分类色之一，不参与渐变） ---- */
+  --sp-cat-purple: #7c5cff;
+  --sp-cat-purple-bg: #f2eefc;
+  --sp-cat-purple-line: #ddd4fb;
 
-  --sp-success: #67c23a;
-  --sp-warning: #e6a23c;
-  --sp-danger: #f56c6c;
+  /* ---- @deprecated 兼容别名（2026-10-14 更名） ----
+   *
+   * 旧变量名不能直接删：12 个页面里有 11 处还在引用它们
+   * （MainLayout / Login / Profile / Calendar / AgentWorkbench）。
+   * 直接删会让那些声明**整条失效**（border、background 取不到值），
+   * 表现为「边框没了、这块变透明」—— 不报错，但很难查。
+   *
+   * ⚠️ --sp-ai-gradient 现在是一个**纯色**（不是渐变）。
+   * 这是刻意的：它原先就是蓝紫渐变，是本次重构要消灭的头号 AI 感来源。
+   * 保留这个名字 = 不改页面代码就完成了去渐变。
+   * 等页面逐个收敛完，删掉本段即可。
+   */
+  --sp-ai-a: var(--sp-accent);
+  --sp-ai-b: var(--sp-cat-purple);
+  --sp-ai-gradient: var(--sp-accent);
+  --sp-ai-soft: var(--sp-accent-bg);
+  --sp-ai-line: var(--sp-accent-line);
 
-  --sp-text: #303133;
-  --sp-t2: #606266;
-  --sp-t3: #909399;
+  /* ---- 语义色 ---- */
+  --sp-success: #17a34a;
+  --sp-success-bg: #eaf7ee;
+  --sp-warning: #c47b16;
+  --sp-warning-bg: #fdf4e6;
+  --sp-danger: #d92d20;
+  --sp-danger-bg: #fdeceb;
 
-  --sp-border: #dcdfe6;
-  --sp-border-l: #ebeef5;
+  /* ---- 文字层级（全部满足 WCAG AA：最浅的 #6b7280 在白底上 4.83:1） ---- */
+  --sp-text: #1f2329; /* 标题 / 强调 */
+  --sp-t1: var(--sp-text); /* @deprecated 旧名，左侧栏在用；等价于 --sp-text */
+  --sp-t2: #4e5969; /* 正文 */
+  --sp-t3: #6b7280; /* 辅助说明 */
+
+  /* ---- 边框与背景 ---- */
+  --sp-border: #d8dde5; /* 有交互的控件边框 */
+  --sp-border-l: #e8ecf1; /* 卡片/分隔线 */
   --sp-bg: #f5f7fa;
+  --sp-bg-hover: #f7f9fc;
+  --sp-bg-active: #eef1f6;
+  --sp-sidebar-active: var(--sp-accent-bg); /* @deprecated 旧名，左侧栏选中项在用 */
 
-  --sp-sidebar-bg: #ffffff;
-  --sp-sidebar-active: #eef4ff;
+  /* ---- 阴影：只两级，都不发光 ---- */
+  --sp-sh1: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --sp-sh2: 0 4px 16px rgba(16, 24, 40, 0.08);
 
-  /* ---- 布局尺寸（与原型一致） ---- */
+  /* ---- 动效 ---- */
+  --sp-dur: 180ms;
+  --sp-ease: cubic-bezier(0.22, 0.61, 0.36, 1); /* ease-out */
+
+  /* ---- 布局尺寸 ---- */
   --sp-side-w: 216px;
   --sp-head-h: 56px;
+  --sp-content-max: 1200px;
+  --sp-focus: 0 0 0 3px rgba(64, 158, 255, 0.28);
 }
 
 * {
   box-sizing: border-box;
 }
 
-html,
+/*
+ * ⚠️ 这里**不再给 html/body/#app 设 height: 100%**（2026-10-14 按反馈改）。
+ *
+ * 钉死高度会把整站变成一个「视口大小的盒子」，于是内容只能在内部某一块里滚 ——
+ * 实测症状是：页面**没有**文档级滚动，唯一的滚动条挂在 `.sp-main` 上，
+ * 而顶栏与侧栏永远不动。看起来就是「滚动条贴在整体上，跟内容对不上」。
+ *
+ * 现在改为正常文档流：`html` 只留 `height: 100%`（保证 body 背景铺满视口），
+ * 页面高度由内容决定，滚动条由浏览器加在文档上、随内容总高走。
+ * 侧栏改为 sticky 贴顶（见 MainLayout），所以它仍然不随内容滚走。
+ *
+ * `overflow-x: clip` 是**防横向溢出**用的：内容再宽也不会出现左右滚动条，
+ * 同时不会像 `hidden` 那样把元素变成滚动容器（那会破坏 sticky 定位）。
+ */
+html {
+  height: 100%;
+}
+
 body,
 #app {
-  height: 100%;
   margin: 0;
   padding: 0;
+  min-height: 100%;
+}
+
+html,
+body {
+  overflow-x: clip;
 }
 
 body {
@@ -67,100 +170,42 @@ body {
     -apple-system,
     'Inter',
     sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
   color: var(--sp-text);
   background-color: var(--sp-bg);
   -webkit-font-smoothing: antialiased;
 }
 
 /* ============================================================
-   一、动效
+   一、动效与状态指示
+   ------------------------------------------------------------
+   ⚠️ 本文件**不再有装饰性循环动画**。原先的 blink（打字光标）、
+   scan-y / scan-x（扫光）、spin-slow（雷达）、ring（脉冲环）、
+   gradient-move（渐变条流动）全部删除 —— 它们只制造「AI 演示动画」观感，
+   不承载任何信息。唯一保留的是 .sp-live 的状态呼吸，且幅度极低、可降级。
    ============================================================ */
-@keyframes sp-breathe {
+
+/* 运行中：极轻的呼吸，用于「有任务在跑」这类**瞬时**状态。
+   静止的在线状态请直接用 .sp-dot（见下），不要用这个类。 */
+@keyframes sp-pulse {
   0%,
   100% {
+    opacity: 1;
+  }
+  50% {
     opacity: 0.45;
-    transform: scale(0.9);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.15);
   }
 }
 
-@keyframes sp-blink {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0;
-  }
-}
-
-@keyframes sp-scan-y {
-  0% {
-    top: -12%;
-  }
-  100% {
-    top: 112%;
-  }
-}
-
-@keyframes sp-scan-x {
-  0% {
-    left: -24%;
-  }
-  100% {
-    left: 124%;
-  }
-}
-
-@keyframes sp-step-in {
-  from {
-    opacity: 0;
-    transform: translateY(9px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-@keyframes sp-gradient-move {
-  0% {
-    background-position: 0% 50%;
-  }
-  100% {
-    background-position: 200% 50%;
-  }
-}
-
-@keyframes sp-spin-slow {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes sp-ring {
-  0% {
-    transform: scale(0.7);
-    opacity: 0.85;
-  }
-  100% {
-    transform: scale(1.9);
-    opacity: 0;
-  }
-}
-
-/* 在线状态呼吸点 */
 .sp-live {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--sp-success);
   display: inline-block;
   flex: none;
-  animation: sp-breathe 1.8s ease-in-out infinite;
+  animation: sp-pulse 1.8s ease-in-out infinite;
 }
 
 .sp-live.is-blue {
@@ -171,26 +216,63 @@ body {
   background: var(--sp-warning);
 }
 
-/* 打字光标 */
+/* 静态状态点：表示「在线 / 已连接」这类**持续**状态。
+   不带动画 —— 状态没变就不该有东西在动。 */
+.sp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sp-success);
+  display: inline-block;
+  flex: none;
+}
+
+.sp-dot.is-blue {
+  background: var(--sp-accent);
+}
+
+.sp-dot.is-warning {
+  background: var(--sp-warning);
+}
+
+.sp-dot.is-gray {
+  background: var(--sp-t3);
+}
+
+/* 兼容：旧代码把打字光标用在「正在生成」的场景。
+   保留类名与字形，但**去掉闪烁** —— 闪烁的终端光标是典型的 AI 演示符号。 */
 .sp-caret::after {
   content: '▌';
   color: var(--sp-accent);
-  animation: sp-blink 1s step-end infinite;
   margin-left: 1px;
   font-weight: 400;
+  opacity: 0.7;
 }
 
 /* ============================================================
-   二、页面骨架（页头 / 工具栏）
+   二、页面骨架（页头 / 工具栏 / 内容容器）
    ============================================================ */
+
+/* 内容宽度约束。原先散落在 9 个页面的 max-width 收敛到这里。
+   超宽屏下正文不再被拉到 2000px+（那样一行 60+ 字，读起来很累）。 */
+.sp-container,
+.sp-content {
+  width: 100%;
+  max-width: var(--sp-content-max);
+  margin: 0 auto;
+}
+
 .sp-page-head {
-  margin-bottom: 16px;
+  margin-bottom: var(--sp-s4);
 }
 
 .sp-page-title {
   font-size: 20px;
-  font-weight: 700;
+  font-weight: 600;
+  line-height: 1.4;
   margin: 0;
+  color: var(--sp-text);
+  letter-spacing: 0.2px;
 }
 
 .sp-page-sub {
@@ -204,32 +286,65 @@ body {
 .sp-pagebar {
   display: flex;
   align-items: center;
-  margin-bottom: 14px;
-  gap: 10px;
+  margin-bottom: var(--sp-s3);
+  gap: var(--sp-s3);
+  min-height: 32px;
+  /* 窄屏时标题与右侧动作允许换行，否则动作区会被挤出可视范围 */
+  flex-wrap: wrap;
 }
 
 .sp-pagebar h3 {
   font-size: 17px;
-  font-weight: 700;
+  font-weight: 600;
+  line-height: 1.4;
   margin: 0;
+  color: var(--sp-text);
 }
 
 .sp-pagebar .sp-acts {
   margin-left: auto;
   display: flex;
-  gap: 8px;
+  gap: var(--sp-s2);
   align-items: center;
+}
+
+.sp-muted {
+  color: var(--sp-t3);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.sp-grow {
+  flex: 1;
+}
+
+.sp-link {
+  color: var(--sp-accent);
+  cursor: pointer;
+  border-radius: var(--sp-r-xs);
+  transition: color var(--sp-dur) var(--sp-ease);
+}
+
+.sp-link:hover {
+  color: var(--sp-accent-h);
 }
 
 /* ============================================================
    三、按钮
+   ------------------------------------------------------------
+   状态口径（全站统一，其余组件同理）：
+     hover   → 背景降一档明度（**不是** opacity，否则文字会一起变淡）
+     active  → 再降一档
+     focus   → 3px 主色浅环，键盘可见
+     disabled→ 灰底灰字 + 禁用光标
    ============================================================ */
 .sp-btn {
-  border: none;
-  border-radius: 6px;
-  padding: 8px 14px;
-  font-size: 12.5px;
+  border: 1px solid transparent;
+  border-radius: var(--sp-r-sm);
+  padding: 7px 14px;
+  font-size: 13px;
   font-family: inherit;
+  line-height: 1.5;
   color: #fff;
   cursor: pointer;
   background: var(--sp-accent);
@@ -237,44 +352,108 @@ body {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  transition: opacity 0.15s;
+  min-height: 32px;
+  transition:
+    background-color var(--sp-dur) var(--sp-ease),
+    border-color var(--sp-dur) var(--sp-ease),
+    color var(--sp-dur) var(--sp-ease);
 }
 
-.sp-btn:hover {
-  opacity: 0.88;
+.sp-btn:hover:not(:disabled) {
+  background: var(--sp-accent-h);
 }
 
-.sp-btn:disabled {
-  opacity: 0.55;
+.sp-btn:active:not(:disabled) {
+  background: var(--sp-accent-a);
+}
+
+.sp-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--sp-focus);
+}
+
+.sp-btn:disabled,
+.sp-btn.is-disabled {
+  background: var(--sp-bg-active);
+  color: var(--sp-t3);
+  border-color: var(--sp-border-l);
   cursor: not-allowed;
 }
 
 .sp-btn.is-ghost {
   background: #fff;
-  border: 1px solid var(--sp-border);
+  border-color: var(--sp-border);
   color: var(--sp-t2);
 }
 
-.sp-btn.is-sm {
-  padding: 5px 11px;
-  font-size: 12px;
+.sp-btn.is-ghost:hover:not(:disabled) {
+  background: var(--sp-bg-hover);
+  border-color: var(--sp-accent-line);
+  color: var(--sp-accent-h);
 }
 
+.sp-btn.is-ghost:active:not(:disabled) {
+  background: var(--sp-bg-active);
+}
+
+.sp-btn.is-ghost:disabled {
+  background: #fff;
+  color: var(--sp-t3);
+  border-color: var(--sp-border-l);
+}
+
+/* 次要强调按钮：浅蓝底 + 蓝字，用于「解析条件」这类**可反复点的只读动作**
+   （区别于会真的落单的主按钮 —— 主按钮才用实色） */
+.sp-btn.is-soft {
+  background: var(--sp-accent-bg);
+  color: var(--sp-accent-h);
+  border-color: var(--sp-accent-line);
+}
+
+.sp-btn.is-soft:hover:not(:disabled) {
+  background: #ddecff;
+}
+
+.sp-btn.is-soft:active:not(:disabled) {
+  background: var(--sp-accent-line);
+}
+
+.sp-btn.is-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+  min-height: 26px;
+}
+
+/* ⚠️ 兼容旧类名。原先是蓝紫渐变 + 发光阴影 —— 那正是最重的 AI 感来源。
+   现改为与 .sp-btn 同色的实色；调用方无需改动，观感已中性。 */
 .sp-btn.is-ai {
-  background: var(--sp-ai-gradient);
-  box-shadow: 0 3px 12px rgba(64, 158, 255, 0.32);
+  background: var(--sp-accent);
+  box-shadow: none;
+}
+
+.sp-btn.is-ai:hover:not(:disabled) {
+  background: var(--sp-accent-h);
 }
 
 .sp-btn.is-block {
   display: flex;
   width: 100%;
-  padding: 11px;
-  font-size: 13.5px;
-  border-radius: 8px;
+  padding: 10px;
+  font-size: 14px;
+  border-radius: var(--sp-r-md);
+  min-height: 40px;
 }
 
 .sp-btn.is-danger {
   background: var(--sp-danger);
+}
+
+.sp-btn.is-danger:hover:not(:disabled) {
+  background: #b42318;
+}
+
+.sp-btn.is-danger:active:not(:disabled) {
+  background: #912018;
 }
 
 /* ============================================================
@@ -283,60 +462,55 @@ body {
 .sp-card {
   background: #fff;
   border: 1px solid var(--sp-border-l);
-  border-radius: 8px;
-  padding: 15px 17px;
+  border-radius: var(--sp-r-md);
+  /* 内边距 16 → 12 → 10px：本端一屏里叠 4 张卡，纵向会被这层padding累加成整页溢出 */
+  padding: 10px var(--sp-s3);
+  box-shadow: var(--sp-sh1);
 }
 
 .sp-card-head {
   display: flex;
   align-items: center;
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--sp-t3);
-  margin-bottom: 13px;
-  gap: 8px;
+  margin-bottom: 10px;
+  gap: var(--sp-s2);
 }
 
 .sp-card-head b {
-  font-size: 13.5px;
+  font-size: 14px;
   color: var(--sp-text);
   font-weight: 600;
 }
 
 .sp-section-title {
-  font-size: 14px;
-  font-weight: 700;
-  margin: 0 0 13px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 0 0 10px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-s2);
   color: var(--sp-text);
 }
 
+/* 原先这里是一根**渐变**竖条（装饰）。现在没有任何标记 ——
+   标题靠字号与字重区分层级，不需要额外的彩色装饰条。 */
 .sp-section-title::before {
-  content: '';
-  width: 4px;
-  height: 15px;
-  border-radius: 2px;
-  background: var(--sp-ai-gradient);
-}
-
-.sp-muted {
-  color: var(--sp-t3);
-  font-size: 12.5px;
-}
-
-.sp-grow {
-  flex: 1;
+  content: none;
 }
 
 /* 键值行 */
 .sp-mbrow {
   display: flex;
-  align-items: center;
-  font-size: 12.5px;
+  align-items: flex-start;
+  font-size: 13px;
   color: var(--sp-t2);
-  padding: 9px 0;
-  border-bottom: 1px solid #f5f7fa;
+  /* 行内边距 10 → 6px：键值行在卡片里可能十几行（如「落库状态」），
+     每行省 8px 累加起来很可观，而 6px 仍能把相邻两行区分开 */
+  padding: 6px 0;
+  border-bottom: 1px solid var(--sp-border-l);
+  line-height: 1.6;
 }
 
 .sp-mbrow:last-child {
@@ -345,57 +519,69 @@ body {
 
 .sp-mbrow .sp-k {
   color: var(--sp-t3);
-  width: 76px;
+  width: 84px;
   flex: none;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .sp-mbrow .sp-v {
   flex: 1;
   min-width: 0;
-  word-break: break-all;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 /* ============================================================
    五、标签
+   ------------------------------------------------------------
+   圆角从 10px（胶囊）改为 4px —— 小面积色块用方角更「工具感」，
+   胶囊形在中文界面里容易显得像聊天气泡。
+   紫色保留为**分类色**，只做小色块。
    ============================================================ */
 .sp-tag {
   display: inline-block;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-size: 11px;
-  line-height: 16px;
+  padding: 2px 7px;
+  border-radius: var(--sp-r-xs);
+  font-size: 12px;
+  line-height: 18px;
   white-space: nowrap;
+  border: 1px solid transparent;
 }
 
 .sp-tag.is-blue {
-  background: #ecf5ff;
-  color: #409eff;
+  background: var(--sp-accent-bg);
+  color: var(--sp-accent-h);
+  border-color: var(--sp-accent-line);
 }
 
 .sp-tag.is-purple {
-  background: #f2eefc;
-  color: #7c5cff;
+  background: var(--sp-cat-purple-bg);
+  color: #5b3fd1;
+  border-color: var(--sp-cat-purple-line);
 }
 
 .sp-tag.is-green {
-  background: #f0f9eb;
-  color: #67c23a;
+  background: var(--sp-success-bg);
+  color: #0f7a37;
+  border-color: #c4e8d1;
 }
 
 .sp-tag.is-orange {
-  background: #fdf6ec;
-  color: #e6a23c;
+  background: var(--sp-warning-bg);
+  color: #9a5f0f;
+  border-color: #f2ddb8;
 }
 
 .sp-tag.is-red {
-  background: #fef0f0;
-  color: #f56c6c;
+  background: var(--sp-danger-bg);
+  color: #b42318;
+  border-color: #f6cdc9;
 }
 
 .sp-tag.is-gray {
-  background: #f4f4f5;
-  color: #909399;
+  background: var(--sp-bg-active);
+  color: var(--sp-t2);
+  border-color: var(--sp-border-l);
 }
 
 /* ============================================================
@@ -404,55 +590,157 @@ body {
 .sp-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12.5px;
+  font-size: 13px;
+}
+
+/*
+ * 台账表格的「容器内滚动」（2026-10-14 加，供 Orders / Resources 共用）。
+ *
+ * ## 解决什么问题
+ *
+ * 本平台的台账是**不分页、一次展示全部**（预约单 22 行、资源台账十几行），
+ * 纵向必然超过一屏，于是整页出现右侧滚动条。
+ * 挂在卡片上之后：页面本身不滚，**数据一行不少**，只是需要在卡片里划一下。
+ *
+ * ## 用法
+ *
+ *   <div class="sp-card sp-table-wrap"><table class="sp-table">…</table></div>
+ *
+ * ## 两个细节
+ *
+ * 1. `max-height: calc(100vh - 300px)` 里的 300px 是「顶栏 + 页头 + 筛选 +
+ *    卡片头 + 底部留白」之外的余量。用 vh 而不是固定 px，视口变高时表格自动变高，
+ *    不会白白留出一截空白。
+ * 2. 表头 sticky 必须**自带不透明底色**，否则滚动的行会从它下面透出来。
+ *    同时把左右内边距从卡片移到首/末列，滚动条才能贴住卡片边缘。
+ */
+.sp-table-wrap {
+  /*
+   * ⚠️ 这个 380px 是实测出来的，不要凭感觉改小。
+   *
+   * 它代表「表格之外的所有纵向占用」：顶栏 56 + sp-main 上内边距 12 +
+   * 页头/页签/筛选/说明条 + 卡片内边距 10 + 分页器 + 底部留白。
+   *
+   * 实测（1440×820，资源页）：表格容器在 sp-main 内的偏移就已经是 311px，
+   * 卡片内还有 sp-tabs 33 + sp-filters 32 + sp-ai-bar 68。原先写 300px
+   * 低估了约 80px，导致表格被允许长得过高、页面照样溢出。
+   *
+   * 取 380 让「资源与设备」这类块数最多的页面刚好一屏放下；
+   * 块更少的页面（预约单）表格会略矮一点，但不会出现空白 ——
+   * 因为 max-height 只是上限，表格矮的时候容器就矮。
+   */
+  max-height: calc(100vh - 440px);
+  overflow-y: auto;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.sp-table-wrap .sp-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--sp-bg-hover);
+  box-shadow: inset 0 -1px 0 var(--sp-border);
+}
+
+.sp-table-wrap .sp-table th:first-child,
+.sp-table-wrap .sp-table td:first-child {
+  padding-left: var(--sp-s3);
+}
+
+.sp-table-wrap .sp-table th:last-child,
+.sp-table-wrap .sp-table td:last-child {
+  padding-right: var(--sp-s3);
+}
+
+/*
+ * 窄屏下的表格（2026-10-14 加）。
+ *
+ * 本平台的台账表格列多且必须保留（「所属用户」「借用时段」这类列删掉就丢信息），
+ * 强行压缩只会让每格换行到不可读。所以让**表格自己在容器内横向滚动**：
+ *
+ *   · 页面整体不再被表格推宽（实测修复前 390px 视口下文档 scrollWidth 远超视口）；
+ *   · 用户仍能看到全部列，只是需要横向划一下 —— 这是宽表的通行做法。
+ *
+ * ⚠️ 只对窄屏生效：桌面端表格本来就放得下，加上滚动容器反而会
+ *    凭空多出一条滚动条、并影响 sticky 表头的定位。
+ */
+@media (max-width: 900px) {
+  .sp-card:has(> .sp-table),
+  .sp-card:has(.sp-table) {
+    overflow-x: auto;
+  }
+
+  /* 表格自身保底：即使不在卡片里也能滚 */
+  .sp-table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+
+  /* 表格是块级滚动容器后，表头/表体仍需按表格排版 */
+  .sp-table thead,
+  .sp-table tbody,
+  .sp-table tr {
+    display: table;
+    width: 100%;
+    border-collapse: collapse;
+  }
 }
 
 .sp-table th {
-  background: #fafafa;
-  color: #909399;
+  background: var(--sp-bg-hover);
+  color: var(--sp-t2);
   font-weight: 500;
   text-align: left;
   padding: 10px 12px;
-  border-bottom: 1px solid var(--sp-border-l);
+  border-bottom: 1px solid var(--sp-border);
   white-space: nowrap;
+  line-height: 1.5;
 }
 
 .sp-table td {
   padding: 11px 12px;
-  border-bottom: 1px solid #f5f7fa;
+  border-bottom: 1px solid var(--sp-border-l);
   color: var(--sp-t2);
+  line-height: 1.6;
+}
+
+.sp-table tbody tr {
+  transition: background-color var(--sp-dur) var(--sp-ease);
 }
 
 .sp-table tbody tr:hover {
-  background: #fafcff;
+  background: var(--sp-bg-hover);
 }
 
 .sp-pager {
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
+  gap: var(--sp-s2);
+  font-size: 12.5px;
   color: var(--sp-t3);
-  padding-top: 13px;
+  padding-top: var(--sp-s3);
 }
 
 .sp-filters {
   display: flex;
-  gap: 10px;
-  margin-bottom: 13px;
+  gap: var(--sp-s3);
+  margin-bottom: var(--sp-s3);
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .sp-tabs {
   display: flex;
-  gap: 26px;
-  border-bottom: 1px solid #e9ecf2;
-  margin-bottom: 13px;
+  gap: var(--sp-s5);
+  border-bottom: 1px solid var(--sp-border-l);
+  margin-bottom: var(--sp-s3);
 }
 
 .sp-tab {
-  font-size: 13.5px;
+  font-size: 14px;
   color: var(--sp-t2);
   padding: 0 2px 11px;
   position: relative;
@@ -460,10 +748,22 @@ body {
   background: none;
   border: none;
   font-family: inherit;
+  line-height: 1.5;
+  transition: color var(--sp-dur) var(--sp-ease);
+}
+
+.sp-tab:hover {
+  color: var(--sp-text);
+}
+
+.sp-tab:focus-visible {
+  outline: none;
+  box-shadow: var(--sp-focus);
+  border-radius: var(--sp-r-xs);
 }
 
 .sp-tab.is-on {
-  color: var(--sp-accent);
+  color: var(--sp-accent-h);
   font-weight: 600;
 }
 
@@ -475,115 +775,111 @@ body {
   bottom: -1px;
   height: 2px;
   background: var(--sp-accent);
-  border-radius: 2px;
+  border-radius: 1px;
 }
 
 /* ============================================================
-   七、AI 提示条 / 语义高亮
+   七、提示条 / 语义高亮
+   ------------------------------------------------------------
+   原先是「蓝→紫渐变 + 左侧渐变竖条」，是最重的 AI 感符号。
+   现在：中性浅底 + 1px 边框 + 左侧 3px 实色条（实色条是**信息**：
+   用颜色区分提示级别，不是装饰）。
    ============================================================ */
 .sp-ai-bar {
   display: flex;
-  align-items: center;
-  gap: 11px;
-  padding: 11px 15px;
-  margin-bottom: 14px;
-  border-radius: 8px;
-  font-size: 12.5px;
+  align-items: flex-start;
+  gap: var(--sp-s3);
+  padding: 10px 14px;
+  margin-bottom: var(--sp-s3);
+  border-radius: var(--sp-r-md);
+  font-size: 13px;
+  line-height: 1.7;
   color: var(--sp-t2);
-  background: linear-gradient(90deg, #eef5ff, #f5f1ff 60%, #fff);
-  border: 1px solid var(--sp-ai-line);
-  position: relative;
-  overflow: hidden;
-}
-
-.sp-ai-bar::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--sp-ai-gradient);
+  background: var(--sp-accent-bg);
+  border: 1px solid var(--sp-accent-line);
 }
 
 .sp-ai-bar .sp-ic {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   flex: none;
-  border-radius: 7px;
+  border-radius: var(--sp-r-sm);
   font-size: 12px;
-  color: #fff;
+  color: var(--sp-accent-h);
+  background: #fff;
+  border: 1px solid var(--sp-accent-line);
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--sp-ai-gradient);
+  margin-top: 1px;
 }
 
 .sp-ai-bar b {
   color: var(--sp-text);
+  font-weight: 600;
+}
+
+/* 中性提示条：不需要强调级别时用这个（白底 + 灰边） */
+.sp-ai-bar.is-plain {
+  background: #fff;
+  border-color: var(--sp-border-l);
 }
 
 /* 用户口述气泡 */
 .sp-ask {
-  background: linear-gradient(135deg, #eff5ff, #f7f3ff);
-  border: 1px solid var(--sp-ai-line);
-  border-radius: 10px;
-  padding: 13px 15px;
-  font-size: 13px;
-  line-height: 1.95;
+  background: #fff;
+  border: 1px solid var(--sp-border-l);
+  border-left: 3px solid var(--sp-accent);
+  border-radius: var(--sp-r-md);
+  padding: var(--sp-s3) 15px;
+  font-size: 14px;
+  line-height: 1.7;
   color: var(--sp-text);
-  position: relative;
-  overflow: hidden;
-}
-
-.sp-ask::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--sp-ai-gradient);
 }
 
 .sp-ask .sp-who {
-  font-size: 11.5px;
-  color: #7a93b5;
-  margin-bottom: 8px;
+  font-size: 12.5px;
+  color: var(--sp-t3);
+  margin-bottom: var(--sp-s2);
   display: flex;
   align-items: center;
   gap: 7px;
+  line-height: 1.5;
 }
 
-/* 实体高亮：时间 / 数量 / 设备 / 预算 */
+/* 实体高亮：时间 / 数量 / 设备 / 预算。
+   预算用的是分类紫（小面积色块），不是品牌渐变。 */
 .sp-ent {
-  padding: 1px 5px;
-  border-radius: 4px;
+  padding: 0 5px;
+  border-radius: 3px;
   font-weight: 600;
 }
 
 .sp-ent.is-t {
   background: #e2f1ff;
-  color: #2a7fd4;
+  color: #1f5f9e;
 }
 
 .sp-ent.is-n {
-  background: #e6f8ec;
-  color: #3d9a34;
+  background: var(--sp-success-bg);
+  color: #0f7a37;
 }
 
 .sp-ent.is-d {
-  background: #fdf0dd;
-  color: #c47b16;
+  background: var(--sp-warning-bg);
+  color: #9a5f0f;
 }
 
 .sp-ent.is-b {
-  background: #f7e9f8;
-  color: #a44fc0;
+  background: var(--sp-cat-purple-bg);
+  color: #5b3fd1;
 }
 
 /* ============================================================
    八、思考链（Thought → Action → Observation）
+   ------------------------------------------------------------
+   逐步入场动画保留（它是**一次性的**，用于让用户跟上新增步骤），
+   但去掉了原先每个步骤都有的 0.5s 位移 —— 多步同时出现时会显得乱。
    ============================================================ */
 .sp-trace {
   display: flex;
@@ -592,20 +888,29 @@ body {
 
 .sp-tstep {
   display: flex;
-  gap: 12px;
-  padding-bottom: 14px;
+  gap: var(--sp-s3);
+  padding-bottom: var(--sp-s4);
   position: relative;
-  animation: sp-step-in 0.5s ease both;
+  animation: sp-fade-in 200ms var(--sp-ease) both;
+}
+
+@keyframes sp-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .sp-tstep::before {
   content: '';
   position: absolute;
-  left: 11.5px;
-  top: 25px;
+  left: 11px;
+  top: 26px;
   bottom: 0;
-  width: 1.5px;
-  background: linear-gradient(180deg, #bfd9ff, #e4ecfa);
+  width: 1px;
+  background: var(--sp-border-l);
 }
 
 .sp-tstep:last-child::before {
@@ -613,34 +918,31 @@ body {
 }
 
 .sp-tnum {
-  width: 24px;
-  height: 24px;
+  width: 23px;
+  height: 23px;
   flex: none;
   border-radius: 50%;
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 11.5px;
+  font-weight: 600;
   color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1;
-  background: var(--sp-ai-gradient);
-  box-shadow: 0 0 0 3px #eaf2ff;
+  background: var(--sp-accent);
+  border: 2px solid #fff;
 }
 
 .sp-tnum.is-g {
-  background: linear-gradient(135deg, #67c23a, #3d9a34);
-  box-shadow: 0 0 0 3px #eaf7e6;
+  background: var(--sp-success);
 }
 
 .sp-tnum.is-o {
-  background: linear-gradient(135deg, #e6a23c, #d18a1f);
-  box-shadow: 0 0 0 3px #fdf3e4;
+  background: var(--sp-warning);
 }
 
 .sp-tnum.is-r {
-  background: linear-gradient(135deg, #f56c6c, #d94a4a);
-  box-shadow: 0 0 0 3px #fdeaea;
+  background: var(--sp-danger);
 }
 
 .sp-tb {
@@ -650,44 +952,36 @@ body {
 }
 
 .sp-tb h5 {
-  font-size: 12.5px;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.6;
   margin: 0 0 5px;
   display: flex;
   align-items: center;
   gap: 7px;
   flex-wrap: wrap;
-  /*
-   * 挂起缩进（hanging indent）。
-   *
-   * `h5` 是 flex 容器，`step.result` 那段中文结论是其中一个**匿名 flex 项**
-   * （没包标签的裸文本节点，而 flex 容器会给它生成匿名项）。
-   * 结论现在可达 300 字（见 backend/app/agent/chains/trace.py 的
-   * _RESULT_MAX_LEN），必然折行；不处理的话第二行会顶到该项的最左边，
-   * 也就是「查询场地：」那四个字的下面，而不是与它们对齐。
-   *
-   * `text-indent` 负值正是干这个的：整块右推半行，首行再拉回来。
-   * 只对块内首行生效，所以后续行保持缩进 —— 一个属性就够，不必动结构。
-   * 取值 1.3em ≈ 3 个中文字：与左侧那排「查询场地：」的视觉宽度相当。
-   */
+  /* 挂起缩进（hanging indent）：结论可长达 300 字，必然折行；
+     不处理的话第二行会顶到该项最左边，而不是与「查询场地：」对齐。
+     只对块内首行生效，所以后续行保持缩进 —— 一个属性就够，不必动结构。 */
   text-indent: -1.3em;
   padding-left: 1.3em;
 }
 
 .sp-tb p {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--sp-t3);
   line-height: 1.7;
   margin: 0;
 }
 
 .sp-code {
-  background: #f7f9fc;
-  border: 1px solid #e9eef6;
-  border-radius: 6px;
+  background: var(--sp-bg-hover);
+  border: 1px solid var(--sp-border-l);
+  border-radius: var(--sp-r-sm);
   padding: 7px 10px;
   font-family: ui-monospace, Consolas, monospace;
-  font-size: 11.5px;
-  color: #4a6a92;
+  font-size: 12px;
+  color: #3d5a80;
   margin-top: 6px;
   line-height: 1.6;
   white-space: pre-wrap;
@@ -696,59 +990,51 @@ body {
 
 /* ============================================================
    九、方案卡 / 置信度环
+   ------------------------------------------------------------
+   原先：蓝紫渐变底 + 一道 4.4s 循环扫光 + 渐变文字价格。
+   扫光与渐变文字是纯装饰，已删除；底色改为中性白 + 主色左边框，
+   让「方案内容」而不是「卡片外观」成为主角。
    ============================================================ */
 .sp-planbox {
-  border-radius: 10px;
-  padding: 15px 17px;
-  position: relative;
-  overflow: hidden;
-  background: linear-gradient(140deg, #eef5ff, #f5f0ff);
-  border: 1px solid var(--sp-ai-line);
+  border-radius: var(--sp-r-md);
+  padding: var(--sp-s4);
+  background: #fff;
+  border: 1px solid var(--sp-border-l);
+  border-left: 3px solid var(--sp-accent);
+  box-shadow: var(--sp-sh1);
 }
 
+/* 扫光装饰已删除（原来是一个 4.4s 无限循环的高光扫过动画）。 */
 .sp-planbox::after {
-  content: '';
-  position: absolute;
-  top: -60%;
-  left: -40%;
-  width: 60%;
-  height: 220%;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.85), transparent);
-  transform: rotate(20deg);
-  animation: sp-scan-x 4.4s ease-in-out infinite;
+  content: none;
 }
 
 .sp-planbox h4 {
-  font-size: 14.5px;
-  margin: 0 0 9px;
-  position: relative;
-  z-index: 2;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 0 0 var(--sp-s2);
+  color: var(--sp-text);
 }
 
 .sp-planbox .sp-line {
-  font-size: 12.5px;
+  font-size: 13.5px;
   color: var(--sp-t2);
-  line-height: 1.95;
-  position: relative;
-  z-index: 2;
+  line-height: 1.7;
 }
 
 .sp-planbox .sp-price {
-  font-size: 23px;
-  font-weight: 700;
-  margin-top: 9px;
-  position: relative;
-  z-index: 2;
-  background: linear-gradient(90deg, #2a7fd4, #7c5cff);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  font-size: 24px;
+  font-weight: 600;
+  margin-top: var(--sp-s2);
+  color: var(--sp-text);
+  /* 原先是渐变文字（background-clip: text）—— 已改为实色。 */
 }
 
 .sp-ringwrap {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: var(--sp-s4);
 }
 
 .sp-ringwrap svg {
@@ -758,22 +1044,24 @@ body {
 }
 
 .sp-ringwrap .sp-rc {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--sp-t3);
-  line-height: 1.75;
+  line-height: 1.7;
 }
 
 .sp-ringwrap .sp-rc b {
   display: block;
-  font-size: 17px;
+  font-size: 18px;
+  font-weight: 600;
   color: var(--sp-text);
+  line-height: 1.35;
 }
 
 /* 备选方案（虚线） */
 .sp-plan-alt {
-  border-radius: 8px;
-  padding: 12px 14px;
-  background: #f7f9fc;
+  border-radius: var(--sp-r-md);
+  padding: var(--sp-s3) 14px;
+  background: var(--sp-bg-hover);
   border: 1px dashed var(--sp-border);
 }
 
@@ -781,26 +1069,29 @@ body {
    十、告警条目（右侧预警 / 降级记录共用）
    ============================================================ */
 .sp-witem {
+  border: 1px solid var(--sp-warning-bg);
   border-left: 3px solid var(--sp-warning);
-  background: #fffaf1;
-  border-radius: 0 7px 7px 0;
+  background: var(--sp-warning-bg);
+  border-radius: 0 var(--sp-r-sm) var(--sp-r-sm) 0;
   padding: 10px 12px;
   margin-bottom: 10px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--sp-t2);
+  line-height: 1.6;
 }
 
 .sp-witem b {
   display: block;
-  font-size: 12.5px;
+  font-size: 13.5px;
+  font-weight: 600;
   color: var(--sp-text);
   margin-bottom: 5px;
 }
 
 .sp-witem p {
-  font-size: 11.5px;
+  font-size: 12.5px;
   color: var(--sp-t3);
-  line-height: 1.55;
+  line-height: 1.65;
   margin: 0 0 7px;
 }
 
@@ -810,36 +1101,40 @@ body {
 
 .sp-witem.is-red {
   border-left-color: var(--sp-danger);
-  background: #fef6f6;
+  border-color: var(--sp-danger-bg);
+  background: var(--sp-danger-bg);
 }
 
 .sp-witem.is-blue {
   border-left-color: var(--sp-accent);
-  background: #f2f8ff;
+  border-color: var(--sp-accent-bg);
+  background: var(--sp-accent-bg);
 }
 
-/* 正向结果（如 AI 核验通过）。原先只有 warning / is-red / is-blue 三档，
- * 而「通过」不是告警、也不该用蓝色（蓝在本系统里表示信息/主色），故补 green。 */
+/* 正向结果（如核验通过）。「通过」不是告警，也不该用蓝色
+   （蓝在本系统里表示信息/主色），故单独一档绿色。 */
 .sp-witem.is-green {
   border-left-color: var(--sp-success);
-  background: #f6fbf3;
+  border-color: var(--sp-success-bg);
+  background: var(--sp-success-bg);
 }
 
-/* 雷达 */
+/* 雷达：保留同心圆与扫描扇形（那是**信息图**，表示覆盖范围），
+   但去掉「旋转的扫描线」与「脉冲扩散环」这类纯装饰动画。 */
 .sp-radar {
   width: 96px;
   height: 96px;
-  margin: 2px auto 12px;
+  margin: var(--sp-s1) auto var(--sp-s3);
   position: relative;
   border-radius: 50%;
-  background: radial-gradient(circle, #f4f9ff, #eef4ff);
-  border: 1px solid var(--sp-ai-line);
+  background: var(--sp-bg-hover);
+  border: 1px solid var(--sp-border-l);
 }
 
 .sp-radar i {
   position: absolute;
   border-radius: 50%;
-  border: 1px solid #dbe8fa;
+  border: 1px solid var(--sp-border-l);
 }
 
 .sp-radar i:nth-child(1) {
@@ -854,20 +1149,25 @@ body {
   inset: 40%;
 }
 
+/* 静态扇形：去掉旋转。它仍然表示「扫描覆盖」，只是不再转动。 */
 .sp-radar .sp-sweep {
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  background: conic-gradient(from 0deg, rgba(64, 158, 255, 0.45), transparent 24%);
-  animation: sp-spin-slow 2.8s linear infinite;
+  background: conic-gradient(
+    from 0deg,
+    rgba(64, 158, 255, 0.16),
+    transparent 24%
+  );
 }
 
+/* 脉冲扩散环已删除动画，只留一个静态圈。 */
 .sp-radar .sp-ping {
   position: absolute;
-  inset: 0;
+  inset: 30%;
   border-radius: 50%;
-  border: 1.5px solid var(--sp-accent);
-  animation: sp-ring 2.2s ease-out infinite;
+  border: 1px solid var(--sp-accent);
+  opacity: 0.5;
 }
 
 /* ============================================================
@@ -875,8 +1175,8 @@ body {
    ============================================================ */
 .sp-kpis {
   display: flex;
-  gap: 13px;
-  margin-bottom: 15px;
+  gap: var(--sp-s3);
+  margin-bottom: var(--sp-s4);
   flex-wrap: wrap;
 }
 
@@ -885,20 +1185,24 @@ body {
   min-width: 150px;
   background: #fff;
   border: 1px solid var(--sp-border-l);
-  border-radius: 8px;
-  padding: 15px 17px;
+  border-radius: var(--sp-r-md);
+  padding: var(--sp-s4);
+  box-shadow: var(--sp-sh1);
 }
 
 .sp-kpi .sp-k {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--sp-t3);
   margin-bottom: 10px;
+  line-height: 1.5;
 }
 
 .sp-kpi .sp-v {
   font-size: 26px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1.2;
+  color: var(--sp-text);
+  font-variant-numeric: tabular-nums;
 }
 
 .sp-kpi .sp-v small {
@@ -909,9 +1213,10 @@ body {
 }
 
 .sp-kpi .sp-d {
-  font-size: 11.5px;
-  margin-top: 8px;
+  font-size: 12.5px;
+  margin-top: var(--sp-s2);
   color: var(--sp-success);
+  line-height: 1.5;
 }
 
 .sp-kpi .sp-d.is-down {
@@ -921,7 +1226,7 @@ body {
 .sp-chart {
   display: flex;
   align-items: flex-end;
-  gap: 20px;
+  gap: var(--sp-s5);
   height: 150px;
   padding: 0 6px;
   border-bottom: 1px solid var(--sp-border-l);
@@ -936,80 +1241,73 @@ body {
   height: 100%;
 }
 
+/* 柱子用**同色深浅**表示高低（不是多彩渐变）。
+   这是数据可视化里允许的轻量渐变：同色系、竖向、幅度很小。 */
 .sp-bar i {
   width: 100%;
   max-width: 34px;
-  border-radius: 5px 5px 0 0;
+  border-radius: 3px 3px 0 0;
   display: block;
-  background: linear-gradient(180deg, #79bbff, #409eff);
-  transition: height 0.6s ease;
+  background: #79bbff;
+  transition: height var(--sp-dur) var(--sp-ease);
 }
 
 .sp-bar.is-peak i {
-  background: linear-gradient(180deg, #ffc46b, #e6a23c);
+  background: var(--sp-accent);
 }
 
 .sp-bar em {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--sp-t3);
   font-style: normal;
-  margin-top: 8px;
+  margin-top: var(--sp-s2);
   white-space: nowrap;
 }
 
+/* 建议卡：去掉渐变底与渐变左边条，改为中性卡片 + 主色左边框。 */
 .sp-sug {
-  border: 1px solid var(--sp-ai-line);
-  border-radius: 8px;
-  padding: 12px 14px;
+  border: 1px solid var(--sp-border-l);
+  border-left: 3px solid var(--sp-accent);
+  border-radius: 0 var(--sp-r-md) var(--sp-r-md) 0;
+  padding: var(--sp-s3) 14px;
   margin-bottom: 10px;
-  font-size: 12.5px;
-  line-height: 1.75;
+  font-size: 13.5px;
+  line-height: 1.7;
   color: var(--sp-t2);
-  position: relative;
-  overflow: hidden;
-  background: linear-gradient(135deg, #f6faff, #faf7ff);
-}
-
-.sp-sug::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--sp-ai-gradient);
+  background: #fff;
 }
 
 .sp-sug b {
   color: var(--sp-text);
+  font-weight: 600;
 }
 
 .sp-sug .sp-lbl {
   display: inline-block;
   width: 62px;
   color: var(--sp-t3);
-  font-size: 11.5px;
+  font-size: 12.5px;
 }
 
+/* 加载进度条：去掉了那条无限流动的渐变。
+   静态细条仍然传达「正在进行」，且不制造持续动效。 */
 .sp-sug .sp-bar-anim {
   position: absolute;
   left: 0;
   bottom: 0;
   height: 2px;
   width: 100%;
-  background: linear-gradient(90deg, var(--sp-ai-a), var(--sp-ai-b), var(--sp-ai-a));
-  background-size: 200% 100%;
-  animation: sp-gradient-move 2.6s linear infinite;
+  background: var(--sp-accent-line);
 }
 
 /* ============================================================
    十二、图像识别框（巡检）
    ============================================================ */
 .sp-imgbox {
-  border-radius: 9px;
+  border-radius: var(--sp-r-md);
   position: relative;
   overflow: hidden;
-  background: linear-gradient(140deg, #eef2f8, #e3eaf4);
+  background: var(--sp-bg-hover);
   border: 1px solid var(--sp-border-l);
 }
 
@@ -1020,14 +1318,15 @@ body {
   align-items: center;
   justify-content: center;
   flex-direction: column;
-  gap: 9px;
-  color: #a8b6c9;
-  font-size: 12.5px;
+  gap: var(--sp-s2);
+  color: var(--sp-t3);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .sp-imgbox .sp-cam span {
-  font-size: 44px;
-  opacity: 0.6;
+  font-size: 40px;
+  opacity: 0.4;
 }
 
 .sp-imgbox img {
@@ -1036,14 +1335,17 @@ body {
   object-fit: cover;
 }
 
+/* 扫描线：去掉了无限上下来回扫动，改为静止在顶部的一条细线。
+   「正在识别」的信号交给文案与骨架态，不靠持续动画。 */
 .sp-imgbox .sp-scanline {
   position: absolute;
   left: 0;
   right: 0;
+  top: 0;
   height: 2px;
-  background: linear-gradient(90deg, transparent, #409eff, transparent);
-  box-shadow: 0 0 16px rgba(64, 158, 255, 0.8);
-  animation: sp-scan-y 2.8s linear infinite;
+  background: var(--sp-accent);
+  opacity: 0.7;
+  box-shadow: none;
 }
 
 .sp-bbox {
@@ -1053,8 +1355,7 @@ body {
   width: 45%;
   height: 52%;
   border: 2px solid var(--sp-success);
-  border-radius: 6px;
-  box-shadow: 0 0 0 4px rgba(103, 194, 58, 0.14);
+  border-radius: var(--sp-r-sm);
 }
 
 .sp-bbox::after {
@@ -1062,12 +1363,13 @@ body {
   position: absolute;
   top: -24px;
   left: -2px;
-  font-size: 11.5px;
+  font-size: 12px;
   background: var(--sp-success);
   color: #fff;
-  padding: 2px 9px;
-  border-radius: 5px;
+  padding: 2px 8px;
+  border-radius: var(--sp-r-xs);
   white-space: nowrap;
+  line-height: 1.4;
 }
 
 /* ============================================================
@@ -1076,7 +1378,7 @@ body {
 .sp-cal {
   display: flex;
   flex-direction: column;
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .sp-cal-row {
@@ -1094,13 +1396,14 @@ body {
   text-align: center;
   padding: 9px 0;
   color: var(--sp-t2);
-  border-left: 1px solid #f2f5f9;
+  border-left: 1px solid var(--sp-border-l);
+  line-height: 1.5;
 }
 
 .sp-cal-row .sp-dcol.is-today {
-  color: var(--sp-accent);
+  color: var(--sp-accent-h);
   font-weight: 600;
-  background: #f5faff;
+  background: var(--sp-accent-bg);
 }
 
 .sp-cal-body {
@@ -1119,39 +1422,42 @@ body {
   height: 42px;
   text-align: right;
   padding-right: 9px;
-  font-size: 11px;
+  font-size: 11.5px;
+  line-height: 1.5;
 }
 
 .sp-cal-body .sp-dcol {
   flex: 1;
-  border-left: 1px solid #f2f5f9;
+  border-left: 1px solid var(--sp-border-l);
   position: relative;
   min-height: 42px;
 }
 
 .sp-cal-body .sp-dcol .sp-cell {
   height: 42px;
-  border-bottom: 1px solid #f7f9fc;
+  border-bottom: 1px solid var(--sp-border-l);
 }
 
-/* 日历事件 */
+/* 日历事件。分类色保留为实色小色块（含紫），但**去掉了红色事件的呼吸动画**。 */
 .sp-ev {
   position: absolute;
   left: 4px;
   right: 4px;
-  border-radius: 6px;
-  padding: 5px 7px;
-  font-size: 10.5px;
-  line-height: 1.35;
+  border-radius: var(--sp-r-xs);
+  padding: 4px 7px;
+  font-size: 11.5px;
+  line-height: 1.4;
   color: #fff;
   overflow: hidden;
   cursor: pointer;
-  transition: filter 0.15s;
+  transition:
+    filter var(--sp-dur) var(--sp-ease),
+    box-shadow var(--sp-dur) var(--sp-ease);
 }
 
 .sp-ev:hover {
-  filter: brightness(1.08);
-  box-shadow: 0 2px 8px rgba(23, 42, 74, 0.22);
+  filter: brightness(1.06);
+  box-shadow: var(--sp-sh2);
 }
 
 .sp-ev.is-blue {
@@ -1159,29 +1465,29 @@ body {
 }
 
 .sp-ev.is-purple {
-  background: #7c5cff;
+  background: var(--sp-cat-purple);
 }
 
 .sp-ev.is-green {
-  background: #67c23a;
+  background: #17a34a;
 }
 
 .sp-ev.is-orange {
-  background: #e6a23c;
+  background: #d18a1f;
 }
 
 .sp-ev.is-gray {
-  background: #b6bec9;
+  background: #98a2b3;
 }
 
+/* 红色事件去掉呼吸动画：冲突需要用**文案与图标**表达，而不是让色块一直闪。 */
 .sp-ev.is-red {
-  background: #f56c6c;
-  animation: sp-breathe 2.2s ease-in-out infinite;
+  background: var(--sp-danger);
 }
 
 .sp-ev.is-ai {
-  background: var(--sp-ai-gradient);
-  border: 1px dashed rgba(255, 255, 255, 0.85);
+  background: var(--sp-accent);
+  border: 1px dashed rgba(255, 255, 255, 0.7);
 }
 
 /* ============================================================
@@ -1189,18 +1495,64 @@ body {
    ============================================================ */
 .el-card {
   border-color: var(--sp-border-l);
+  border-radius: var(--sp-r-md);
+  box-shadow: var(--sp-sh1) !important;
 }
 
 .el-table th.el-table__cell {
-  background-color: #fafafa !important;
-  color: var(--sp-t3);
+  background-color: var(--sp-bg-hover) !important;
+  color: var(--sp-t2);
   font-weight: 500;
 }
 
+.el-table {
+  border-radius: var(--sp-r-md);
+  font-size: 13px;
+}
+
+.el-table td.el-table__cell,
+.el-table th.el-table__cell {
+  border-bottom-color: var(--sp-border-l);
+}
+
+.el-button {
+  border-radius: var(--sp-r-sm);
+  transition:
+    background-color var(--sp-dur) var(--sp-ease),
+    border-color var(--sp-dur) var(--sp-ease);
+}
+
+.el-button:focus-visible {
+  outline: none;
+  box-shadow: var(--sp-focus);
+}
+
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  border-radius: var(--sp-r-sm);
+  box-shadow: 0 0 0 1px var(--sp-border) inset;
+}
+
+.el-input__wrapper.is-focus,
+.el-textarea__inner:focus,
+.el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px var(--sp-accent) inset;
+}
+
+.el-dialog {
+  border-radius: var(--sp-r-lg);
+  box-shadow: var(--sp-sh2);
+}
+
+.el-message-box {
+  border-radius: var(--sp-r-lg);
+}
+
 .el-drawer__header {
-  margin-bottom: 12px;
+  margin-bottom: var(--sp-s3);
   padding: 18px 20px 0;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--sp-text);
 }
 
@@ -1208,14 +1560,24 @@ body {
   padding: 14px 20px 20px;
 }
 
+/* 消息提示去阴影发光，改用细边框 —— 与整体「轻阴影」口径一致 */
+.el-message {
+  border-radius: var(--sp-r-md);
+  box-shadow: var(--sp-sh2);
+  border: 1px solid var(--sp-border-l);
+}
+
 /* ============================================================
    十五、旧版类名（保留兼容，新页面请勿使用）
+   ------------------------------------------------------------
+   这些类名只在样式文件里出现、模板已不再引用。保留是为避免
+   外部（如 docs/new_web.html 原型或旧分支）引用时报错。
    ============================================================ */
 .sp-trace-step {
   position: relative;
   padding: 0 0 22px 26px;
-  border-left: 2px solid #e4ecfa;
-  margin-left: 8px;
+  border-left: 2px solid var(--sp-border-l);
+  margin-left: var(--sp-s2);
 }
 
 .sp-trace-step:last-child {
@@ -1239,14 +1601,33 @@ body {
 }
 
 .sp-trace-code {
-  background: #f7f9fc;
-  border: 1px solid #e9eef6;
-  border-radius: 6px;
+  background: var(--sp-bg-hover);
+  border: 1px solid var(--sp-border-l);
+  border-radius: var(--sp-r-sm);
   padding: 8px 10px;
   font-family: 'Consolas', ui-monospace, monospace;
   font-size: 12px;
-  color: #4a6a92;
+  color: #3d5a80;
   white-space: pre-wrap;
   word-break: break-all;
   margin-top: 6px;
+  line-height: 1.6;
+}
+
+/* ============================================================
+   十六、可访问性降级
+   ------------------------------------------------------------
+   尊重系统「减少动态效果」设置。开着它的人（前庭功能敏感、
+   或单纯觉得界面晃）应该看到一个完全静止的界面 ——
+   我们只保留 0.01ms 的极短过渡以维持状态切换的即时反馈。
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

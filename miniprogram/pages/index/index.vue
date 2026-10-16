@@ -316,21 +316,22 @@ function openOrder(o) {
 
 /* 第 5 个入口的图标底色（theme.css 只定义了 g2/g3/g4） */
 .grid4 .cell .ic.g5 {
-  background: #eef8f1;
+  background: var(--success-bg);
 }
 
 /* 即将开始的卡片：原型用 border-image 做渐变竖条，
    border-image 在小程序端兼容性不稳，改用实心渐变块 */
 .upnext {
   display: flex;
-  gap: 22rpx;
+  gap: var(--s3);
 }
 
 .upnext .bar {
   width: 6rpx;
   flex: none;
-  border-radius: 6rpx;
-  background: linear-gradient(180deg, #409eff, #7c5cff);
+  border-radius: var(--r-xs);
+  /* 原为 180deg 蓝→紫渐变；改为单一主色（该处只是一条进度标识线）。 */
+  background: var(--primary);
 }
 
 .upnext .bd {
@@ -367,7 +368,7 @@ function openOrder(o) {
 .upscroll .upnext + .upnext {
   margin-top: 24rpx;
   padding-top: 24rpx;
-  border-top: 1px solid #f0f3f8;
+  border-top: 1px solid var(--bd-l);
 }
 
 /* 底部「加载更多」，点击后一次追加 PAGE_SIZE 条 */
@@ -378,9 +379,9 @@ function openOrder(o) {
   text-align: center;
   font-size: 25rpx;
   color: var(--primary);
-  background: #f5f9ff;
+  background: var(--primary-bg);
   border: 1px solid var(--ai-line);
-  border-radius: 18rpx;
+  border-radius: var(--r-md);
 }
 
 /* 快捷入口角标 */
@@ -395,7 +396,7 @@ function openOrder(o) {
   min-width: 30rpx;
   height: 30rpx;
   padding: 0 8rpx;
-  border-radius: 15rpx;
+  border-radius: var(--r-sm);
   background: var(--danger);
   color: #fff;
   font-size: 19rpx;

@@ -275,6 +275,10 @@ async def analyze_sketch_image(
     # layout 描述限长，防止异常输出撑爆字段
     layout = (parsed.layout or "").strip()[:512] or None
 
+    # spaceType 合法性：schema 已归一化过，这里再挡一道（schema 可能被绕过）。
+    # 越界或 None 都置空 —— 前端不传该查询参数即可退化成「不限类型」。
+    space_type = parsed.spaceType if parsed.spaceType in (1, 2, 3, 4) else None
+
     # ---- ⑥ 语义空结果判定 ----
     # 模型可能返回一个「结构合法但内容全空」的对象（例如 {} ，或所有字段都是 null）。
     # 这种结果对用户毫无价值；若它还带着高 confidence 就更糟 ——
@@ -308,6 +312,7 @@ async def analyze_sketch_image(
         capacity=capacity,
         layout=layout,
         requirements=requirements,
+        spaceType=space_type,
         confidence=confidence,
         needConfirm=need_confirm,
         question=question,

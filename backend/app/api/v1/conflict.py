@@ -19,7 +19,8 @@ import logging
 from fastapi import APIRouter, Depends
 from langchain_core.language_models import BaseChatModel
 
-from app.api.deps import CurrentUser, get_current_user, get_llm
+from app.api.deps import CurrentUser, get_llm, require_permission
+from app.core.permissions import Permission
 from app.core.database import session_scope
 from app.core.response import ApiResponse, ok
 from app.schemas.conflict import ConflictItem
@@ -41,7 +42,10 @@ router = APIRouter(prefix="/conflicts", tags=["AI冲突预警与智能通知"])
     summary="软冲突扫描（只读）",
 )
 async def scan_conflicts(
-    _user: CurrentUser = Depends(get_current_user),
+    # 2026-10-13 加权限：本接口会**遍历全库活跃订单**（含他人占用），
+    # 原先任何登录用户都能调 —— 前端只要输 /conflicts 就能看到别人的占用与冲突。
+    # 口径：管理员 `conflict:*`（前缀通配命中）/ 系统管理员 `*` 通过，普通用户 403。
+    _user: CurrentUser = Depends(require_permission(Permission.CONFLICT_VIEW)),
     llm: BaseChatModel = Depends(get_llm),
 ) -> ApiResponse[list[ConflictItem]]:
     """

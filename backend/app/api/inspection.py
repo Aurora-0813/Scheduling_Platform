@@ -37,7 +37,8 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from langchain_core.language_models import BaseChatModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentUser, get_current_user
+from app.api.deps import CurrentUser, require_permission
+from app.core.permissions import Permission
 from app.core.database import get_db
 from app.core.llm import get_optional_vision_llm, get_vision_llm
 from app.core.response import ApiResponse, success
@@ -67,9 +68,27 @@ router = APIRouter(tags=["AI 智能巡检与维修工单（模块 6）"])
 async def submit_inspect(
     file: UploadFile = File(..., description="巡检照片，JPG/PNG/WEBP，≤5MB"),
     spaceId: int = Form(..., description="拍摄所在场地 ID"),
+    deviceId: int | None = Form(
+        None,
+        description=(
+            "要巡检的设备 ID（扫码或下拉选中的那一台）。"
+            "传了就精确更新这一台、跳过 AI 名称模糊匹配；不传则保持原行为。"
+        ),
+    ),
+    locationHint: str | None = Form(
+        None,
+        max_length=128,
+        description=(
+            "具体位置（可选），如「3楼走廊东侧」。"
+            "固定设施（插座 / 门把手）不在设备台账里，位置是它们唯一的精度来源。"
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
     # 鉴权闸门：巡检人只从 JWT 取（§5.1）
-    current_user: CurrentUser = Depends(get_current_user),
+    # 2026-10-13：加**权限**校验。原先只校验「登录」—— 普通用户拿自己的 token
+    # 直接调 API 照样能巡检，前端的菜单隐藏形同虚设。
+    # 现要求 `inspect:submit`：系统管理员（`*`）与管理员（`inspect:*`）通过，普通用户 403。
+    current_user: CurrentUser = Depends(require_permission(Permission.INSPECT_SUBMIT)),
     # 模型以依赖形式注入 → 测试可用 app.dependency_overrides 整体换假模型
     llm: BaseChatModel = Depends(get_vision_llm),
 ):
@@ -77,6 +96,7 @@ async def submit_inspect(
     上传一张巡检照片，AI 判定设备状况并落库。
 
     请求：multipart/form-data，字段 `file`（图片）+ `spaceId`（场地 ID）
+         + 可选 `deviceId`（扫码 / 下拉明确指定的设备）
     响应：`{deviceStatus, report, repairSuggestion, ticketId}`
 
     `ticketId` 为 `null` 表示**判定为完好或无法识别、没有建工单**，
@@ -88,6 +108,8 @@ async def submit_inspect(
         space_id=spaceId,
         inspector_id=current_user.id,
         llm=llm,
+        device_id=deviceId,
+        location_hint=locationHint,
     )
     # 用不同的 message 区分「建了工单」与「没建」，前端可直接按 message 做提示分级
     message = "巡检完成，已生成维修工单" if data.ticketId else "巡检完成，未发现需处理的异常"
@@ -106,7 +128,7 @@ async def tickets_list(
         None, ge=1, le=3, description="按状态筛选：1 待处理 / 2 处理中 / 3 已完成；不传=全部"
     ),
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_permission(Permission.INSPECT_VIEW)),
 ):
     """工单列表，倒序分页。`report` / `deviceStatus` 来自关联的巡检记录。"""
     return success(await list_tickets(db, page=page, page_size=pageSize, status=status))
@@ -122,7 +144,7 @@ async def ticket_status(
     payload: TicketStatusUpdate,
     db: AsyncSession = Depends(get_db),
     # 处理人只从 JWT 取（§5.1）
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_permission(Permission.INSPECT_SUBMIT)),
 ):
     """流转工单状态。处理人记为当前登录用户。"""
     data = await update_ticket_status(
@@ -145,7 +167,7 @@ async def ticket_handle(
     file: UploadFile = File(..., description="维修后的照片，JPG/PNG/WEBP，≤5MB"),
     db: AsyncSession = Depends(get_db),
     # 处理人只从 JWT 取（§5.1）
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_permission(Permission.INSPECT_SUBMIT)),
     # ⚠️ 与 /inspect/submit 的差别：这里**不注入 get_vision_llm**。
     #    那个依赖在模型没配时直接抛 41003，会把「没配 key 的机器」上的
     #    整个处理流程变成 500/41003 —— 而提交处理照片这件事本身不依赖模型，

@@ -143,6 +143,27 @@ class Settings(BaseSettings):
     VISION_API_KEY: str = ""  # 密钥，真实值放 .env
     VISION_API_BASE: str = ""  # OpenAI 兼容端点地址
     VISION_STRUCTURED_OUTPUT: bool = True  # 是否启用 with_structured_output（见 app/core/llm.py）
+    #: 是否关闭视觉模型的「思考模式」（2026-10-14 加）。
+    #:
+    #: 背景：qwen3.8 / qwen3.7 / qwen3.6 / qwen3.5 系列属**混合思考模型，
+    #: **默认开启思考**（见官方《深度思考》文档的「支持的模型」清单）。
+    #: 思考模式会先生成大量推理 token 再给答案，实测同一张图 + 同一段提示词：
+    #:   开启思考 ≈ 40 秒；而思考 token 量可达正常回答的 **10 倍以上**
+    #:   （实测一个 233 字符的回复耗掉 1624 output tokens）。
+    #:
+    #: ⚠️ 三态语义，默认值刻意保证**行为不变**：
+    #:   - None（默认）→ **不发送** enable_thinking，模型用自己的默认值
+    #:                    → 与本次改动前的行为完全一致，零风险
+    #:   - True        → 显式发送 enable_thinking=true（先思考再回复）
+    #:   - False       → 显式发送 enable_thinking=false（直接回复，显著更快）
+    #:
+    #: 之所以不用 bool 默认 False，是因为那会**改变所有既有部署的行为**；
+    #: 用 None 表示「不干预」，只有明确配置才生效。
+    #:
+    #: ⚠️ 若该模型不支持此参数会返回 400。视觉链路的兜底是
+    #:    「降级为自然语言引导」（见 image_service），但功能会退化，
+    #:    所以开这个开关前先用 scripts 里的探针确认一次。
+    VISION_ENABLE_THINKING: bool | None = None
     # 单次模型调用超时（秒）。视觉任务比纯文本慢，给足。
     # 单次模型调用超时（秒）。视觉任务比纯文本慢，给足。
     # ⚠️ 类型 int → float 是模块 7 合并时的统一：模块 7 的超时降级用例要传
@@ -257,6 +278,34 @@ class Settings(BaseSettings):
     # ⚠️ 本值同时喂单次与整体两处，且 `LLM_MAX_RETRIES=1`：一次慢请求就能吃满整个预算。
     # 若要更稳，需把这一个键拆成「整体 90 / 单次 60」两个键（详见 done/README.md 硬卡点 #11）。
     AGENT_TIMEOUT: float = 60.0
+    #: 「深度模式」（多轮 Agent，思考链完整但 40~80 秒）的**默认**开关。
+    #: 只是初值 —— 运行时会被 core/flags.py 的持久化开关覆盖，
+    #: 答辩时不必改这里、更不必重启后端，见 PUT /api/v1/agent/mode。
+    AGENT_DEEP_MODE_ENABLED: bool = False
+    #: 「AI 推荐」（/agent/parse 的推荐 + 理由 + 备选由谁给）的**默认**开关。
+    #: True  → 大模型给（展示效果好，但整次解析约 32 秒）
+    #: False → 规则算（约 10~15 秒，理由由真实场地数据拼出）
+    #: 与 AGENT_DEEP_MODE_ENABLED 同理：只是初值，运行时被 flags.py 的持久化
+    #: 开关覆盖（PUT /api/v1/agent/mode），演示前切换不必重启后端。
+    #:
+    #: ⚠️ 2026-10-13 补：这个字段原先**只在 flags.py 里用 getattr 兜底读**，
+    #: Settings 中根本没有它 —— 于是 .env 里写 AGENT_AI_RECOMMEND 不生效、
+    #: 也不报错（Settings 是 extra="forbid"，照理该拒绝未知键，但 getattr 的
+    #: 兜底让它静默取默认值 True）。现在它是个真字段，.env 保底开关才立得住。
+    AGENT_AI_RECOMMEND: bool = True
+    #: 是否关闭**Agent / 文本链路**的「思考模式」（2026-10-14 加）。
+    #:
+    #: 与 VISION_ENABLE_THINKING 同源同语义，只是管另一条链路。
+    #: 这里收益更大：Agent 一次调度要跑 6~7 轮「模型↔工具」往返
+    #: （见 .env 里 AGENT_TIMEOUT 的注释实测 60~90 秒），**每一轮都带思考开销**。
+    #:
+    #: ⚠️ 三态，默认 None = 不发送该参数 = 行为不变（理由同 VISION_ENABLE_THINKING）。
+    #:
+    #: ⚠️ 关掉思考会削弱多步推理能力，而 Agent 正是靠推理做工具选择与
+    #:    「预算不足就降级设备」这类权衡（见 prompts/scheduler.py）。
+    #:    若开启后方案质量下降，表现形式是 **200 + degraded**（不会报错），
+    #:    所以评估时必须看 degraded 标志，不能只看 HTTP 状态码。
+    LLM_ENABLE_THINKING: bool | None = None
     # LangGraph 递归上限。一次正常调度约 4~8 个节点（模型↔工具往返），
     # 25 足够覆盖「多轮查询 + 重试 + 生成通知」的长链路；再高只会让跑飞的 Agent 拖满超时。
     AGENT_RECURSION_LIMIT: int = 25

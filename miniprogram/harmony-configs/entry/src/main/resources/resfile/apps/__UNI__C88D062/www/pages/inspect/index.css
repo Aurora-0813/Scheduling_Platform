@@ -1,0 +1,186 @@
+.nb-fixed[data-v-1de34ced] {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+}
+.nb-inner[data-v-1de34ced] {
+  display: flex;
+  align-items: center;
+  padding-left: 0.8125rem;
+  border-bottom: 1px solid var(--bd-l, #ebeef5);
+  position: relative;
+}
+.nb-back[data-v-1de34ced] {
+  font-size: 1.375rem;
+  line-height: 1;
+  color: #7a8ba0;
+  padding-right: 0.375rem;
+  margin-top: -0.1875rem;
+}
+
+/* 二级页标题：绝对居中，不受左右元素宽度影响 */
+.nb-title[data-v-1de34ced] {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  transform: translateX(-50%);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--t1, #303133);
+  max-width: 50%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 首页大标题 */
+.nb-big[data-v-1de34ced] {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--t1, #303133);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  margin-right: 0.5rem;
+}
+.nb-right[data-v-1de34ced] {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--t3, #909399);
+  flex: none;
+}
+
+
+.tb-fixed[data-v-a2e9bfbb] {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 100;
+  background: #fff;
+  border-top: 1px solid var(--bd-l, #ebeef5);
+  /* 全面屏 Home 指示条留白：mini-program 的 WXSS 支持 env() */
+  padding-bottom: constant(safe-area-inset-bottom);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.tb-inner[data-v-a2e9bfbb] {
+  display: flex;
+  height: 3.625rem;
+}
+.tb-holder[data-v-a2e9bfbb] {
+  height: 3.625rem;
+  height: calc(3.625rem + constant(safe-area-inset-bottom));
+  height: calc(3.625rem + env(safe-area-inset-bottom));
+}
+.tb-item[data-v-a2e9bfbb] {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.1875rem;
+}
+.tb-ic[data-v-a2e9bfbb] {
+  font-size: 1.1875rem;
+  line-height: 1;
+  opacity: 0.42;
+  transition: all 0.2s;
+}
+.tb-lb[data-v-a2e9bfbb] {
+  font-size: 0.65625rem;
+  color: var(--t3, #909399);
+  transition: all 0.2s;
+}
+.tb-item.on .tb-ic[data-v-a2e9bfbb] {
+  opacity: 1;
+  transform: scale(1.14) translateY(-0.0625rem);
+}
+.tb-item.on .tb-lb[data-v-a2e9bfbb] {
+  color: var(--primary, #409eff);
+  font-weight: 600;
+}
+.tb-on[data-v-a2e9bfbb] {
+  opacity: 0.7;
+}
+
+
+.entry[data-v-47b0dedd] {
+  height: 10rem;
+}
+.sec[data-v-47b0dedd] {
+  margin-top: 0.75rem;
+}
+.mini-empty[data-v-47b0dedd] {
+  text-align: center;
+  padding: 1.25rem 0;
+}
+.mini-empty .ei[data-v-47b0dedd] {
+  display: block;
+  font-size: 2.0625rem;
+  opacity: 0.35;
+  margin-bottom: 0.5rem;
+}
+.mini-empty .et[data-v-47b0dedd] {
+  font-size: 0.78125rem;
+  color: var(--t3);
+}
+.ticket.sep[data-v-47b0dedd] {
+  margin-top: 0.8125rem;
+  padding-top: 0.8125rem;
+  border-top: 1px solid #f5f7fa;
+}
+.thead[data-v-47b0dedd] {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  margin-bottom: 0.25rem;
+}
+.tname[data-v-47b0dedd] {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.84375rem;
+  font-weight: 600;
+  color: var(--t1);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.tno[data-v-47b0dedd] {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--t3);
+  margin-bottom: 0.375rem;
+}
+.tdesc[data-v-47b0dedd] {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--t2);
+  line-height: 1.7;
+}
+.tdesc.sug[data-v-47b0dedd] {
+  margin-top: 0.25rem;
+  color: #c47b16;
+}
+.tfoot[data-v-47b0dedd] {
+  display: flex;
+  align-items: center;
+  /* 两个动作并列（拍照核验 / 标记完成），必须有间距，否则两个按钮贴在一起 */
+  gap: 0.5rem;
+  margin-top: 0.625rem;
+}
+.who[data-v-47b0dedd] {
+  flex: 1;
+  font-size: 0.71875rem;
+  color: var(--t3);
+}
+.btn.tiny[data-v-47b0dedd] {
+  padding: 0.3125rem 0.8125rem;
+  font-size: 0.71875rem;
+}

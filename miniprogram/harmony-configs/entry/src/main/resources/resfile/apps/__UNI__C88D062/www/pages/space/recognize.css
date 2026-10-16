@@ -1,0 +1,197 @@
+.nb-fixed[data-v-1de34ced] {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+}
+.nb-inner[data-v-1de34ced] {
+  display: flex;
+  align-items: center;
+  padding-left: 0.8125rem;
+  border-bottom: 1px solid var(--bd-l, #ebeef5);
+  position: relative;
+}
+.nb-back[data-v-1de34ced] {
+  font-size: 1.375rem;
+  line-height: 1;
+  color: #7a8ba0;
+  padding-right: 0.375rem;
+  margin-top: -0.1875rem;
+}
+
+/* 二级页标题：绝对居中，不受左右元素宽度影响 */
+.nb-title[data-v-1de34ced] {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  transform: translateX(-50%);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--t1, #303133);
+  max-width: 50%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 首页大标题 */
+.nb-big[data-v-1de34ced] {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--t1, #303133);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  margin-right: 0.5rem;
+}
+.nb-right[data-v-1de34ced] {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--t3, #909399);
+  flex: none;
+}
+
+
+.photo[data-v-910b72f6] {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+.note[data-v-910b72f6] {
+  display: block;
+  text-align: center;
+  font-size: 0.6875rem;
+  color: var(--t3);
+  padding: 0 0.9375rem;
+  line-height: 1.7;
+}
+.cands[data-v-910b72f6] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4375rem;
+  margin-top: 0.5625rem;
+}
+.cand[data-v-910b72f6] {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  background: #fff;
+  border: 1px solid var(--ai-line);
+  border-radius: 0.5rem;
+  padding: 0.625rem 0.75rem;
+}
+.cn-name[data-v-910b72f6] {
+  flex: 1;
+  font-size: 0.8125rem;
+  color: var(--t1);
+}
+.cn-conf[data-v-910b72f6] {
+  font-size: 0.6875rem;
+  color: var(--t3);
+}
+.app-cta-row .btn.ghost[data-v-910b72f6] {
+  flex: 1;
+}
+.app-cta-row .grow[data-v-910b72f6] {
+  flex: 1.8;
+}
+
+/* ---- 选时段：两步（先日期，后时间段） ---- */
+.stepk[data-v-910b72f6] {
+  display: block;
+  font-size: 0.71875rem;
+  color: var(--t3);
+  margin: 0.6875rem 0 0.4375rem;
+}
+
+/* 日期横向滚动条 */
+.dayscroll[data-v-910b72f6] {
+  width: 100%;
+  white-space: nowrap;
+}
+.dayrow[data-v-910b72f6] {
+  display: flex;
+  gap: 0.4375rem;
+  padding-bottom: 0.125rem;
+}
+
+/*
+  ⚠️ 关键：**未选中态必须是中性灰**。
+  之前一排在用主色描边 + 浅蓝底，看上去全都是「已选中」——
+  用户反馈的就是这个。现在未选中一律灰底灰边，只有 .on 才上主色实心。
+*/
+.day[data-v-910b72f6] {
+  flex: none;
+  width: 3.375rem;
+  padding: 0.4375rem 0;
+  text-align: center;
+  border-radius: 0.5rem;
+  background: #f5f7fa;
+  border: 1px solid #e6eaf0;
+}
+.day.off[data-v-910b72f6] {
+  opacity: 0.35;
+}
+.day .dl[data-v-910b72f6] {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--t1);
+}
+.day .ds[data-v-910b72f6] {
+  display: block;
+  font-size: 0.625rem;
+  color: var(--t3);
+  margin-top: 0.125rem;
+}
+.day.on[data-v-910b72f6] {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+.day.on .dl[data-v-910b72f6],
+.day.on .ds[data-v-910b72f6] {
+  color: #fff;
+}
+
+/* 时间段按钮：同样，未选中灰、选中才实心主色 */
+.slotgrid[data-v-910b72f6] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4375rem;
+}
+.slotbtn[data-v-910b72f6] {
+  min-width: 5.5rem;
+  text-align: center;
+  font-size: 0.78125rem;
+  padding: 0.5rem 0.625rem;
+  border-radius: 0.5rem;
+  color: var(--t1);
+  background: #f5f7fa;
+  border: 1px solid #e6eaf0;
+}
+.slotbtn.on[data-v-910b72f6] {
+  color: #fff;
+  background: var(--primary);
+  border-color: var(--primary);
+  font-weight: 600;
+}
+.slotnote[data-v-910b72f6] {
+  display: block;
+  margin-top: 0.625rem;
+  font-size: 0.6875rem;
+  color: var(--t3);
+  line-height: 1.7;
+}
+.slotnote.on[data-v-910b72f6] {
+  color: var(--primary);
+  font-weight: 600;
+}

@@ -1,11 +1,23 @@
 import { bizHttp } from '@/utils/request'
 
 // 模块 6：AI 智能巡检与维修工单
-// POST /inspect/submit 提交巡检（FormData：file + spaceId）
-export function submitInspect(file, spaceId) {
+// POST /inspect/submit 提交巡检（FormData：file + spaceId + 可选 deviceId / locationHint）
+//
+// `deviceId`：用户明确指定的设备。传了后端就**精确更新这一台**，跳过
+//   「按 AI 认出的名字模糊匹配 → 多台时自动分配（挑 id 最小的）」那条会标错设备的路径 ——
+//   照片里两台投影仪长得一样，模型只报得出「投影仪」这个品类。
+// `locationHint`：具体位置。插座/门把手这类不在设备台账里的固定设施，
+//   位置是它们唯一的精度来源。
+export function submitInspect(file, spaceId, deviceId, locationHint) {
   const formData = new FormData()
   formData.append('file', file)
   formData.append('spaceId', spaceId)
+  if (deviceId !== undefined && deviceId !== null && deviceId !== '') {
+    formData.append('deviceId', deviceId)
+  }
+  if (locationHint) {
+    formData.append('locationHint', String(locationHint).slice(0, 128))
+  }
   return bizHttp.post('/inspect/submit', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
